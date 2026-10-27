@@ -1,0 +1,11 @@
+{
+  "dart.projectSearchPaths": [
+    "hdl/rohd"
+  ],
+  "dart.analysisExcludedFolders": [
+    "hdl/verilog"
+  ],
+  "files.watcherExclude": {
+    "**/.dart_tool/**": true
+  }
+}

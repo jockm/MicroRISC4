@@ -1,0 +1,255 @@
+// ==============================================================================
+// File: mr4src/act4/monitor.a4
+// Description:
+//   Interactive Serial Memory Monitor for MiniRISC4 written in ACT4.
+//   Commands:
+//     e [<addr>]       - Examine 8 consecutive words (continues if <addr> omitted)
+//     c <addr> <val>   - Change word at <addr> to <val>
+//     g <addr>         - Go / Execute code at <addr>
+// ==============================================================================
+
+// Memory-mapped UART ports
+u16 uart_rx @ 0x000E;
+u16 uart_tx @ 0x000F;
+
+// Line input buffer
+u16 line_buf[40];
+
+// Global parse cursor
+u16 parse_idx = 0;
+
+// Persistent dump pointer for consecutive examine ('e' without address)
+u16 dump_ptr = 0;
+
+// ------------------------------------------------------------------------------
+// UART Character I/O
+// ------------------------------------------------------------------------------
+
+void putc(u16 ch) {
+    while (uart_tx != 0) {
+        // Wait until UART TX status indicates idle (0x0000)
+    }
+    uart_tx = ch;
+}
+
+u16 getc(void) {
+    u16 val = 0;
+    while ((val & 0x8000) == 0) {
+        val = uart_rx; // Bit 15 indicates data ready
+    }
+    return val & 0x00FF;
+}
+
+void puts(u16 *str) {
+    u16 i = 0;
+    u16 ch = 0;
+    ch = getbyte(str, 0);
+    while (ch != 0) {
+        putc(ch);
+        i++;
+        ch = getbyte(str, i);
+    }
+}
+
+// ------------------------------------------------------------------------------
+// Formatted Output
+// ------------------------------------------------------------------------------
+
+void print_nibble(u16 n) {
+    u16 v = 0;
+    v = n & 0x000F;
+    if (v < 10) {
+        putc(v + 48); // '0'..'9'
+    } else {
+        putc(v + 55); // 'A'..'F'
+    }
+}
+
+void print_hex16(u16 val) {
+    print_nibble(val >> 12);
+    print_nibble(val >> 8);
+    print_nibble(val >> 4);
+    print_nibble(val);
+}
+
+void print_space(void) {
+    putc(32); // ' '
+}
+
+void print_newline(void) {
+    putc(13); // '\r'
+    putc(10); // '\n'
+}
+
+// ------------------------------------------------------------------------------
+// Line Input Reader
+// ------------------------------------------------------------------------------
+
+void read_line(void) {
+    u16 idx = 0;
+    u16 ch = 0;
+    while (idx < 39) {
+        ch = getc();
+        if (ch == 13 || ch == 10) {
+            setbyte(line_buf, idx, 0);
+            print_newline();
+            return;
+        } else if (ch == 8 || ch == 127) { // Backspace
+            if (idx > 0) {
+                idx--;
+                putc(8);
+                putc(32);
+                putc(8);
+            }
+        } else if (ch >= 32 && ch <= 126) {
+            setbyte(line_buf, idx, ch);
+            putc(ch); // Echo
+            idx++;
+        }
+    }
+    setbyte(line_buf, idx, 0);
+    print_newline();
+}
+
+// ------------------------------------------------------------------------------
+// Hex Parsing Utilities
+// ------------------------------------------------------------------------------
+
+void skip_spaces(void) {
+    u16 ch = 0;
+    ch = getbyte(line_buf, parse_idx);
+    while (ch == 32 || ch == 9) {
+        parse_idx++;
+        ch = getbyte(line_buf, parse_idx);
+    }
+}
+
+u16 parse_hex(void) {
+    u16 res = 0;
+    u16 ch = 0;
+    skip_spaces();
+    ch = getbyte(line_buf, parse_idx);
+    while (true) {
+        if (ch >= 48 && ch <= 57) { // '0'..'9'
+            res = (res << 4) | (ch - 48);
+            parse_idx++;
+        } else if (ch >= 65 && ch <= 70) { // 'A'..'F'
+            res = (res << 4) | (ch - 55);
+            parse_idx++;
+        } else if (ch >= 97 && ch <= 102) { // 'a'..'f'
+            res = (res << 4) | (ch - 87);
+            parse_idx++;
+        } else {
+            return res;
+        }
+        ch = getbyte(line_buf, parse_idx);
+    }
+    return res;
+}
+
+// ------------------------------------------------------------------------------
+// Monitor Commands
+// ------------------------------------------------------------------------------
+
+void do_examine(void) {
+    u16 addr = 0;
+    u16 i = 0;
+    u16 *ptr;
+
+    skip_spaces();
+
+    // If no argument was provided (end of string), continue from dump_ptr
+    if (getbyte(line_buf, parse_idx) == 0) {
+        addr = dump_ptr;
+    } else {
+        addr = parse_hex();
+    }
+
+    ptr = addr;
+
+    print_hex16(addr);
+    puts(": ");
+
+    while (i < 8) {
+        print_hex16(*ptr);
+        print_space();
+        ptr++;
+        i++;
+    }
+    print_newline();
+
+    // Advance dump_ptr for subsequent consecutive 'e' commands
+    dump_ptr = ptr;
+}
+
+void do_change(void) {
+    u16 addr = 0;
+    u16 val = 0;
+    u16 *ptr;
+
+    addr = parse_hex();
+    val = parse_hex();
+    ptr = addr;
+
+    *ptr = val;
+
+    puts("Wrote ");
+    print_hex16(val);
+    puts(" to [");
+    print_hex16(addr);
+    puts("]");
+    print_newline();
+}
+
+void do_go(void) {
+    u16 addr = 0;
+    func(void) : void *target;
+
+    addr = parse_hex();
+    target = addr;
+
+    puts("Running at [");
+    print_hex16(addr);
+    puts("]...\r\n");
+
+    target();
+
+    puts("\r\n[Program returned to monitor]\r\n");
+}
+
+// ------------------------------------------------------------------------------
+// Main Entry Point
+// ------------------------------------------------------------------------------
+
+void main(void) {
+    u16 cmd = 0;
+
+    puts("\r\n============================\r\n");
+    puts("  MiniRISC4 ACT4 Monitor    \r\n");
+    puts("  Commands:                 \r\n");
+    puts("    e [<addr>]    (Examine) \r\n");
+    puts("    c <addr> <val>(Change)  \r\n");
+    puts("    g <addr>      (Go / Run)\r\n");
+    puts("============================\r\n");
+
+    while (true) {
+        puts("> ");
+        read_line();
+        parse_idx = 0;
+        skip_spaces();
+
+        cmd = getbyte(line_buf, parse_idx);
+        if (cmd == 101 || cmd == 69) {        // 'e' or 'E'
+            parse_idx++;
+            do_examine();
+        } else if (cmd == 99 || cmd == 67) { // 'c' or 'C'
+            parse_idx++;
+            do_change();
+        } else if (cmd == 103 || cmd == 71) { // 'g' or 'G'
+            parse_idx++;
+            do_go();
+        } else if (cmd != 0) {
+            puts("Unknown command. Use 'e [<addr>]', 'c <addr> <val>', or 'g <addr>'\r\n");
+        }
+    }
+}

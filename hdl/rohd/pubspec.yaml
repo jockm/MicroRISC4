@@ -1,0 +1,16 @@
+name: minirisc4_rohd
+description: MiniRISC4 16-bit Von Neumann Processor implemented in Intel ROHD.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  rohd: ^0.6.2
+  rohd_hcl: any
+  rohd_cosim: ^0.3.0
+
+dev_dependencies:
+  test: ^1.24.0
+  lints: ^6.1.0

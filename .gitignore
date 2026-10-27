@@ -1,0 +1,9 @@
+# Dart package manager build cache & toolchain artifacts
+.dart_tool/
+**/.dart_tool/
+
+# macOS metadata, Finder state, and AppleDouble resource fork shadow files
+.DS_Store
+**/.DS_Store
+._*
+**/._*

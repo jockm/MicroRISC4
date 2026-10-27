@@ -1,9 +1,11 @@
 // ==============================================================================
+// FILE: hdl/rohd/lib/cpu_core.dart
 // MiniRISC4 16-Bit CPU Core Architecture
 // Intel ROHD Implementation
 //
 // Key Features:
-// - Word-addressed 16-bit Von Neumann architecture (64K words = 128 KB).
+// - Word-addressed 16-bit Von Neumann architecture (configurable memWords).
+// - Parameterized through immutable CpuConfig (trapTableBase, enableUart, memWords).
 // - Dual-instruction packing: two 8-bit instruction slots per 16-bit memory word.
 // - 4 architectural registers (R0-R3) + 4 hardware shadow registers (shadow_r[0..3]).
 // - Single-cycle XCHG Rr swapping register with shadow counterpart (101111rr).
@@ -14,24 +16,39 @@
 // - Word-aligned instructions: LINK, PUSH8, TRAP (Slot 1 fault vectors to TRAP 15).
 // - Direct MMIO interface for UART at 0x000E (RX) and 0x000F (TX).
 // ==============================================================================
+
 import 'package:rohd/rohd.dart';
 import 'constants.dart';
+import 'cpu_config.dart';
 
 /// Complete MiniRISC4 CPU core module with instruction execution FSM, ALU,
 /// architectural register file, hardware shadow registers, and memory bus ports.
 class CpuCore extends Module {
+  final CpuConfig config;
+
   CpuCore({
     required Logic clk,
     required Logic rstN,
-    required Logic mmioRxData,
-    required Logic mmioTxStatus,
+    Logic? mmioRxData,
+    Logic? mmioTxStatus,
+    this.config = const CpuConfig(),
     super.name = 'cpu_core',
   }) {
     // Top-level module ports
     clk = addInput('clk', clk);
     rstN = addInput('rst_n', rstN);
-    final rxData = addInput('mmio_rx_data', mmioRxData, width: 16);
-    final txStatus = addInput('mmio_tx_status', mmioTxStatus, width: 16);
+
+    final Logic rxData;
+    final Logic txStatus;
+    if (config.enableUart) {
+      rxData = addInput('mmio_rx_data', mmioRxData ?? Const(0, width: 16),
+          width: 16);
+      txStatus = addInput('mmio_tx_status', mmioTxStatus ?? Const(0, width: 16),
+          width: 16);
+    } else {
+      rxData = Const(0, width: 16);
+      txStatus = Const(0, width: 16);
+    }
 
     final rxPop = addOutput('mmio_rx_pop');
     final txData = addOutput('mmio_tx_data', width: 8);
@@ -79,10 +96,19 @@ class CpuCore extends Module {
     final illegalSlot1 =
         slot.eq(MiniRISC4Constants.slotByte1) & (isLink | isPush8 | isTrap);
 
-    final isMmioRx = portBAddr.eq(MiniRISC4Constants.addrUartRx);
-    final isMmioTx = portBAddr.eq(MiniRISC4Constants.addrUartTx);
+    // Dynamic Vector Table Base & Alignment Fault (Trap 15)
+    final trapTableBaseConst = Const(config.trapTableBase, width: 16);
+    final trapAlignFaultConst = Const(config.trapTableBase + 15, width: 16);
 
-    // Direct read muxing: MMIO overrides memory bus on Port B read
+    // MMIO Address Decoding (Gated by config.enableUart)
+    final isMmioRx = config.enableUart
+        ? portBAddr.eq(MiniRISC4Constants.addrUartRx)
+        : Const(0);
+    final isMmioTx = config.enableUart
+        ? portBAddr.eq(MiniRISC4Constants.addrUartTx)
+        : Const(0);
+
+    // Direct read muxing: MMIO overrides memory bus on Port B read when UART is enabled
     final effectivePortBData = mux(
       isMmioRx,
       rxData,
@@ -114,7 +140,7 @@ class CpuCore extends Module {
       destReg: Const(0, width: 2),
       portAAddr: Const(0, width: 16),
       portAEn: Const(0, width: 1),
-      portBAddr: Const(MiniRISC4Constants.trapTableBase, width: 16),
+      portBAddr: trapTableBaseConst,
       portBWdata: Const(0, width: 16),
       portBWe: Const(0, width: 1),
       portBEn: Const(0, width: 1),
@@ -125,6 +151,9 @@ class CpuCore extends Module {
     }, [
       txStrobe < 0,
       Case(state, [
+        // ---------------------------------------------------------------------
+        // ST_RESET: Fetch reset vector from mem[config.trapTableBase]
+        // ---------------------------------------------------------------------
         CaseItem(Const(MiniRISC4Constants.stReset, width: 3), [
           portBEn < 0,
           pc < effectivePortBData,
@@ -133,12 +162,20 @@ class CpuCore extends Module {
           slot < MiniRISC4Constants.slotByte0,
           state < Const(MiniRISC4Constants.stExec, width: 3),
         ]),
+
+        // ---------------------------------------------------------------------
+        // ST_FETCH: Instruction word fetch from PC
+        // ---------------------------------------------------------------------
         CaseItem(Const(MiniRISC4Constants.stFetch, width: 3), [
           portAAddr < pc,
           portAEn < 1,
           slot < MiniRISC4Constants.slotByte0,
           state < Const(MiniRISC4Constants.stExec, width: 3),
         ]),
+
+        // ---------------------------------------------------------------------
+        // ST_EXEC: Execute current 8-bit instruction slot
+        // ---------------------------------------------------------------------
         CaseItem(Const(MiniRISC4Constants.stExec, width: 3), [
           If(slot.eq(MiniRISC4Constants.slotByte0), then: [
             instReg < portARdata,
@@ -147,23 +184,28 @@ class CpuCore extends Module {
           portBWe < 0,
           If(illegalSlot1, then: [
             r[0] < pc + 1,
-            portBAddr < Const(MiniRISC4Constants.trapAlignAddr, width: 16),
+            portBAddr < trapAlignFaultConst,
             portBWe < 0,
             portBEn < 1,
             state < Const(MiniRISC4Constants.stTrapRd, width: 3),
           ], orElse: [
             Case(op, [
+              // LD Rr, Rl: Register Copy
               CaseItem(Const(MiniRISC4Constants.opLdReg, width: 4), [
                 for (int i = 0; i < 4; i++)
                   If(rr.eq(i), then: [r[i] < getReg(rl)]),
                 _advanceSlotOrFetch(
                     slot, instReg, portAAddr, portAEn, state, pc),
               ]),
+
+              // LD R0, imm4: 4-bit unsigned immediate load into R0
               CaseItem(Const(MiniRISC4Constants.opLdImm4, width: 4), [
                 r[0] < [Const(0, width: 12), imm4].swizzle(),
                 _advanceSlotOrFetch(
                     slot, instReg, portAAddr, portAEn, state, pc),
               ]),
+
+              // LD Rr, (Rl): Memory read (peek)
               CaseItem(Const(MiniRISC4Constants.opLdPeek, width: 4), [
                 portBAddr < getReg(rl),
                 portBWe < 0,
@@ -171,18 +213,23 @@ class CpuCore extends Module {
                 destReg < rr,
                 state < Const(MiniRISC4Constants.stMemRd, width: 3),
               ]),
+
+              // LD (Rr), Rl: Memory write (poke)
               CaseItem(Const(MiniRISC4Constants.opLdPoke, width: 4), [
                 portBAddr < getReg(rr),
                 portBWdata < getReg(rl),
                 portBWe < 1,
                 portBEn < 1,
-                If(getReg(rr).eq(MiniRISC4Constants.addrUartTx), then: [
-                  txData < getReg(rl).slice(7, 0),
-                  txStrobe < 1,
-                ]),
+                if (config.enableUart)
+                  If(getReg(rr).eq(MiniRISC4Constants.addrUartTx), then: [
+                    txData < getReg(rl).slice(7, 0),
+                    txStrobe < 1,
+                  ]),
                 _advanceSlotOrFetch(
                     slot, instReg, portAAddr, portAEn, state, pc),
               ]),
+
+              // LD Rr, (Rl++): Pop (post-increment load)
               CaseItem(Const(MiniRISC4Constants.opLdPostinc, width: 4), [
                 portBAddr < getReg(rl),
                 portBWe < 0,
@@ -192,6 +239,8 @@ class CpuCore extends Module {
                   If(rl.eq(i), then: [r[i] < r[i] + 1]),
                 state < Const(MiniRISC4Constants.stMemRd, width: 3),
               ]),
+
+              // LD (--Rr), Rl: Push (pre-decrement store)
               CaseItem(Const(MiniRISC4Constants.opLdPredec, width: 4), [
                 for (int i = 0; i < 4; i++)
                   If(rr.eq(i), then: [
@@ -201,43 +250,56 @@ class CpuCore extends Module {
                 portBWdata < getReg(rl),
                 portBWe < 1,
                 portBEn < 1,
-                If((getReg(rr) - 1).eq(MiniRISC4Constants.addrUartTx), then: [
-                  txData < getReg(rl).slice(7, 0),
-                  txStrobe < 1,
-                ]),
+                if (config.enableUart)
+                  If((getReg(rr) - 1).eq(MiniRISC4Constants.addrUartTx), then: [
+                    txData < getReg(rl).slice(7, 0),
+                    txStrobe < 1,
+                  ]),
                 _advanceSlotOrFetch(
                     slot, instReg, portAAddr, portAEn, state, pc),
               ]),
+
+              // ADD Rr, Rl: 16-bit addition
               CaseItem(Const(MiniRISC4Constants.opAdd, width: 4), [
                 for (int i = 0; i < 4; i++)
                   If(rr.eq(i), then: [r[i] < r[i] + getReg(rl)]),
                 _advanceSlotOrFetch(
                     slot, instReg, portAAddr, portAEn, state, pc),
               ]),
+
+              // SUB Rr, Rl: 16-bit subtraction
               CaseItem(Const(MiniRISC4Constants.opSub, width: 4), [
                 for (int i = 0; i < 4; i++)
                   If(rr.eq(i), then: [r[i] < r[i] - getReg(rl)]),
                 _advanceSlotOrFetch(
                     slot, instReg, portAAddr, portAEn, state, pc),
               ]),
+
+              // OR Rr, Rl: Bitwise inclusive OR
               CaseItem(Const(MiniRISC4Constants.opOr, width: 4), [
                 for (int i = 0; i < 4; i++)
                   If(rr.eq(i), then: [r[i] < r[i] | getReg(rl)]),
                 _advanceSlotOrFetch(
                     slot, instReg, portAAddr, portAEn, state, pc),
               ]),
+
+              // XOR Rr, Rl: Bitwise exclusive OR
               CaseItem(Const(MiniRISC4Constants.opXor, width: 4), [
                 for (int i = 0; i < 4; i++)
                   If(rr.eq(i), then: [r[i] < r[i] ^ getReg(rl)]),
                 _advanceSlotOrFetch(
                     slot, instReg, portAAddr, portAEn, state, pc),
               ]),
+
+              // AND Rr, Rl: Native single-cycle bitwise AND
               CaseItem(Const(MiniRISC4Constants.opAnd, width: 4), [
                 for (int i = 0; i < 4; i++)
                   If(rr.eq(i), then: [r[i] < r[i] & getReg(rl)]),
                 _advanceSlotOrFetch(
                     slot, instReg, portAAddr, portAEn, state, pc),
               ]),
+
+              // SHIFT Group & Hardware Shadow Register Exchange (XCHG)
               CaseItem(Const(MiniRISC4Constants.opShift, width: 4), [
                 Case(rr, [
                   CaseItem(Const(MiniRISC4Constants.subShiftL, width: 2), [
@@ -267,6 +329,8 @@ class CpuCore extends Module {
                 _advanceSlotOrFetch(
                     slot, instReg, portAAddr, portAEn, state, pc),
               ]),
+
+              // Rotate, Increment, Decrement Group
               CaseItem(Const(MiniRISC4Constants.opRotIncDec, width: 4), [
                 Case(rr, [
                   CaseItem(Const(MiniRISC4Constants.subRotL, width: 2), [
@@ -289,6 +353,8 @@ class CpuCore extends Module {
                 _advanceSlotOrFetch(
                     slot, instReg, portAAddr, portAEn, state, pc),
               ]),
+
+              // JMP.Z Rr, Rl: Branch to Rr if Rl == 0
               CaseItem(Const(MiniRISC4Constants.opJmpZ, width: 4), [
                 If(getReg(rl).eq(0), then: [
                   _branchTo(getReg(rr), pc, portAAddr, portAEn, slot, state),
@@ -297,6 +363,8 @@ class CpuCore extends Module {
                       slot, instReg, portAAddr, portAEn, state, pc),
                 ]),
               ]),
+
+              // JMP.M Rr, Rl: Branch to Rr if Rl is negative (bit 15 set)
               CaseItem(Const(MiniRISC4Constants.opJmpM, width: 4), [
                 If(getReg(rl)[15].eq(1), then: [
                   _branchTo(getReg(rr), pc, portAAddr, portAEn, slot, state),
@@ -305,6 +373,8 @@ class CpuCore extends Module {
                       slot, instReg, portAAddr, portAEn, state, pc),
                 ]),
               ]),
+
+              // Special Control Instructions (JMP, LINK, PUSH8, TRAP)
               CaseItem(Const(MiniRISC4Constants.opJmpSpecial, width: 4), [
                 Case(rr, [
                   CaseItem(Const(MiniRISC4Constants.subJmp, width: 2), [
@@ -325,7 +395,7 @@ class CpuCore extends Module {
                   ]),
                   CaseItem(Const(MiniRISC4Constants.subTrap, width: 2), [
                     portBAddr <
-                        Const(MiniRISC4Constants.trapTableBase, width: 16) +
+                        trapTableBaseConst +
                             (getReg(rl) & Const(0x000F, width: 16)),
                     r[0] < pc + 1,
                     portBWe < 0,
@@ -337,12 +407,20 @@ class CpuCore extends Module {
             ]),
           ]),
         ]),
+
+        // ---------------------------------------------------------------------
+        // ST_MEM_RD: Latch read data into target destination register
+        // ---------------------------------------------------------------------
         CaseItem(Const(MiniRISC4Constants.stMemRd, width: 3), [
           portBEn < 0,
           for (int i = 0; i < 4; i++)
             If(destReg.eq(i), then: [r[i] < effectivePortBData]),
           _advanceSlotOrFetch(slot, instReg, portAAddr, portAEn, state, pc),
         ]),
+
+        // ---------------------------------------------------------------------
+        // ST_TRAP_RD: Latch trap handler vector into PC and fetch target
+        // ---------------------------------------------------------------------
         CaseItem(Const(MiniRISC4Constants.stTrapRd, width: 3), [
           portBEn < 0,
           pc < effectivePortBData,

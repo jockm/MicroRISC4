@@ -388,6 +388,11 @@ class Assembler:
     def __init__(self, source_lines: List[SourceLine]):
         self.lines = source_lines
         self.symbols: Dict[str, int] = {}
+        self.mem_words = 65536
+        self.symbols['MEM_WORDS'] = self.mem_words
+        self.symbols['MEM_TOP'] = self.mem_words - 1
+        self.trap_base = 0x0010
+        self.symbols['TRAP_BASE'] = self.trap_base
         self.assembled_items: List[AssembledItem] = []
         self.memory: Dict[int, int] = {}
 
@@ -824,6 +829,8 @@ def main():
     )
     parser.add_argument("inputs", nargs="+", help="Source assembly file(s) (.asm, .inc)")
     parser.add_argument("-o", "--output", default=None, help="Output filename")
+    parser.add_argument("--mem-words", dest="mem_words", default="65536", help="Configured memory capacity in 16-bit words (default: 65536)")
+    parser.add_argument("--trap-base", dest="trap_base", default="0x0010", help="Vector table base address (default: 0x0010)")
     parser.add_argument("-l", "--listing", default=None, help="Generate assembly listing file (.lst)")
     parser.add_argument("-I", "--include", action="append", default=["."], help="Add search directory for .include")
     parser.add_argument("--hex", action="store_true", help="Output 64K Verilog $readmemh hex file (.hex)")

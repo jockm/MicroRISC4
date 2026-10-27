@@ -42,8 +42,8 @@ BYTE_MASK       = 0xFF
 
 ADDR_UART_RX    = 0x000E
 ADDR_UART_TX    = 0x000F
-ADDR_RESET_VEC  = 0xFFF0
-TRAP_BASE       = 0xFFF0
+ADDR_RESET_VEC  = 0x0010
+TRAP_BASE       = 0x0010
 
 # MiniRISC4 Primary Opcodes (Bits [7:4] / [15:12])
 OP_LD_REG       = 0x0
@@ -97,10 +97,12 @@ class RawTerminal:
 
 class MiniRISC4Sim:
     def __init__(self, trace: bool = False):
+        self.mem_words = 65536
         self.mem = [0] * MEM_WORDS
         self.r = [0] * 4
         self.shadow_r = [0] * 4
         self.pc = 0
+        self.trap_base = 0x0010
         self.slot = 0          # 0 = Slot 0 [7:0], 1 = Slot 1 [15:8]
         self.trace = trace
         self.running = True
@@ -559,6 +561,8 @@ Control:
 def main():
     parser = argparse.ArgumentParser(description="MiniRISC4 Instruction-Level Python Simulator (mr4sim)")
     parser.add_argument("binary", help="Path to binary file (.bin)")
+    parser.add_argument("--memwords", type=lambda x: int(x, 0), default=65536, help="Physical memory capacity in words (default: 65536)")
+    parser.add_argument("--trapbase", type=lambda x: int(x, 0), default=0x0010, help="Vector table base address (default: 0x0010)")
     parser.add_argument("--startaddr", type=lambda x: int(x, 0), default=None,
                         help="Starting word address (hex e.g. 0x0100). Default: reset vector at mem[0xFFF0]")
     parser.add_argument("--loadaddr", type=lambda x: int(x, 0), default=0,

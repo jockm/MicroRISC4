@@ -60,7 +60,12 @@ python3 tools/mr4asm.py <inputs...> [-o <output>] [-l <listing.lst>] [-I <dir>] 
 
 ### Formats:
 - `--bin`: Raw binary from address 0 up to highest defined address (default).
+- `--trap-base <addr>`: Base address for trap table (default: `0x0010`).
 - `--fullbin`: Complete 64K-word (128 KB) raw binary file.
 - `--sparsebin`: Raw binary starting at lowest `.org` up to highest defined address.
 - `--hex`: 65,536-line Verilog `$readmemh` format.
 - `-l, --listing`: Generates detailed assembly listing file (`.lst`).
+
+
+#### Pre-Seeded Symbols
+- `TRAP_BASE`, `_TRAP_BASE`: Vector table base address (default `0x0010`, configurable via `--trap-base`).

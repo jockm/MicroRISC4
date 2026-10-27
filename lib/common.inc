@@ -1,4 +1,22 @@
 ; ==============================================================================
+; Configurable Physical Memory Capacity
+; Default: 64K words (0x10000). Override before including or via assembler CLI.
+; ==============================================================================
+.ifndef MEM_WORDS
+    .define MEM_WORDS   0x10000
+.endif
+.define MEM_TOP         (MEM_WORDS - 1)
+.define RSP_INIT        (MEM_WORDS - 0x0101)    ; Return Stack top
+.define ASP_INIT        (MEM_WORDS - 0x0501)    ; Argument Stack top
+
+; ==============================================================================
+; Architectural Traps and Vectors Configuration
+; ==============================================================================
+; TRAP_BASE is defined by the assembler (defaults to 0x0010)
+.define TRAP_RESET_ADDR (TRAP_BASE + 0)
+.define TRAP_FAULT_ADDR (TRAP_BASE + 15)
+
+; ==============================================================================
 ; FILE: lib/common.inc
 ; Architecture: MiniRISC4 16-Bit Word-Addressed Processor
 ; Target Hardware: Lattice ECP5 FPGA (ULX3S) / Verilog Core
@@ -32,12 +50,12 @@
 ; ==============================================================================
 .macro START_PROGRAM
     ; 1. Initialize Return Stack Pointer (RSP) at [0x0004] = 0xFEFF
-    LOAD16  R1, 0xFEFF          ; Default Return Stack top
+    LOAD16  R1, RSP_INIT          ; Default Return Stack top
     LD      R0, 4               ; R0 = 0x0004 (RSP scratchpad address)
     LD      (R0), R1            ; [0x0004] = 0xFEFF
 
     ; 2. Initialize Argument Stack Pointer (ASP) at [0x0005] = 0xFAFF
-    LOAD16  R1, 0xFAFF          ; Default Argument Stack top
+    LOAD16  R1, ASP_INIT          ; Default Argument Stack top
     INC     R0                  ; R0 = 0x0005 (ASP scratchpad address)
     LD      (R0), R1            ; [0x0005] = 0xFAFF
 

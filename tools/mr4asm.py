@@ -334,7 +334,7 @@ class Preprocessor:
                 continue
 
             if is_active():
-                if directive == ".DEFINE":
+                if directive in ('.DEFINE', '.EQU'):
                     def_parts = arg.split(None, 1)
                     if def_parts:
                         sname = def_parts[0].upper()
@@ -352,6 +352,18 @@ class Preprocessor:
         return out_lines
 
     def __init__(self, include_dirs: List[str]):
+        self.symbols = {
+            'TRAP_BASE': 0x0100,
+            'CPUID_ADDR': 0x000D,
+            'CPUID': 0x000D,
+            'FIFO_IN': 0x000A,
+            'FIFO_OUT': 0x000B,
+            'MAILBOX': 0x000C,
+            'UART_RX': 0x000E,
+            'UART_TX': 0x000F,
+            'RSP_INIT': 0xFEFF,
+            'ASP_INIT': 0xFAFF,
+        }
         self.include_dirs = include_dirs
         self.macros: Dict[str, MacroDef] = {}
         self.unique_id = 0
@@ -368,8 +380,9 @@ class Preprocessor:
         raise AssemblerError(f"Included file not found: '{filename}'")
 
     def run(self, filename: str) -> List[SourceLine]:
-        loaded_lines = self._load_file(filename)
-        return self._expand_macros(loaded_lines, depth=0)
+        raw_lines = self._load_file(filename)
+        expanded = self._expand_macros(raw_lines, depth=0)
+        return self._evaluate_conditionals(expanded)
 
     def _load_file(self, filename: str) -> List[SourceLine]:
         abs_path = os.path.abspath(filename)
@@ -584,7 +597,7 @@ class Assembler:
                 cur_slot = SLOT_0
                 continue
 
-            if mnemonic == ".DEFINE":
+            if mnemonic in ('.DEFINE', '.EQU'):
                 def_parts = operands.split(None, 1)
                 if len(def_parts) != 2:
                     raise AssemblerError("Syntax error in .DEFINE directive. Expected: .DEFINE NAME value", line)
@@ -934,7 +947,7 @@ def main():
     parser.add_argument("--mem-words", dest="mem_words", default="65536", help="Configured memory capacity in 16-bit words (default: 65536)")
     parser.add_argument("--trap-base", dest="trap_base", default="0x0100", help="Vector table base address (default: 0x0010)")
     parser.add_argument("-l", "--listing", default=None, help="Generate assembly listing file (.lst)")
-    parser.add_argument("-I", "--include", action="append", default=["."], help="Add search directory for .include")
+    parser.add_argument("-I", "-i",  "-i",  "-i",  "--include", action="append", default=["."], help="Add search directory for .include")
     parser.add_argument("--hex", action="store_true", help="Output 64K Verilog $readmemh hex file (.hex)")
     parser.add_argument("--bin", action="store_true", help="Output raw binary from 0 up to highest address")
     parser.add_argument("--fullbin", action="store_true", help="Output complete 64K-word (128 KB) binary")

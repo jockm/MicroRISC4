@@ -10,30 +10,95 @@
 ;   c <addr> <val>   - Change word at <addr> to <val>
 ;   g <addr>         - Go / Execute code at <addr>
 ;
-; Table of Contents:
-;   1. Program Entry & Stack Setup (_start)
-;   2. Main Command Dispatch Loop (monitor_loop)
-;   3. Command Implementations (cmd_go, cmd_examine, cmd_change)
-;   4. String & Formatting Subroutines (puts, print_newline, print_hex16, print_nibble)
-;   5. Terminal Line Input & Space Skipping (read_line, skip_spaces)
-;   6. Hexadecimal Parsing Subroutine (parse_hex)
-;   7. Static Banners, Prompts, Messages & Buffers
+; Architecture & Memory Map:
+;   - Direct Stride Vector Table: 0x0100 - 0x01FF (16 vectors * 16 words)
+;   - Trap 0 (Reset Entry) at 0x0100 contains START_PROGRAM (<= 16 words)
+;   - Application code & subroutines begin at 0x0200
 ; ==============================================================================
 
 .include "common.inc"
 
+; ==============================================================================
+; DIRECT STRIDE VECTOR TABLE (0x0100 - 0x01FF)
+; 16 vectors, fixed 16-word stride (32 bytes per slot)
+; Combinational hardware dispatch: PC <- 0x0100 + (vector << 4)
+; ==============================================================================
 .org 0x0100
 
-.equ TRAP_BASE, 0xFFF0
+; --- Trap 0: Reset / Boot Entry (0x0100 - 0x010F: strictly <= 16 words) ---
+_reset_vector:
+    START_PROGRAM           ; Initialize stack pointers and jump to _main
+
+; --- Trap 1 to Trap 14: Default Fast Returns ---
+.org 0x0110                 ; Trap 1: Inbound FIFO / Message Ready
+_trap1_vector:
+    JMP     R0
+
+.org 0x0120                 ; Trap 2: DMA / Burst Done
+_trap2_vector:
+    JMP     R0
+
+.org 0x0130                 ; Trap 3: Cache Miss
+_trap3_vector:
+    JMP     R0
+
+.org 0x0140                 ; Trap 4: Timer Strobe
+_trap4_vector:
+    JMP     R0
+
+.org 0x0150                 ; Trap 5
+_trap5_vector:
+    JMP     R0
+
+.org 0x0160                 ; Trap 6
+_trap6_vector:
+    JMP     R0
+
+.org 0x0170                 ; Trap 7
+_trap7_vector:
+    JMP     R0
+
+.org 0x0180                 ; Trap 8
+_trap8_vector:
+    JMP     R0
+
+.org 0x0190                 ; Trap 9
+_trap9_vector:
+    JMP     R0
+
+.org 0x01A0                 ; Trap 10
+_trap10_vector:
+    JMP     R0
+
+.org 0x01B0                 ; Trap 11
+_trap11_vector:
+    JMP     R0
+
+.org 0x01C0                 ; Trap 12
+_trap12_vector:
+    JMP     R0
+
+.org 0x01D0                 ; Trap 13
+_trap13_vector:
+    JMP     R0
+
+.org 0x01E0                 ; Trap 14: Core Fault
+_trap14_vector:
+    JMP     R0
+
+; --- Trap 15: Hardware Alignment Violation / Illegal Instruction (0x01F0) ---
+.org 0x01F0
+_trap15_vector:
+    LOAD16  R0, _start_app  ; Restart monitor on alignment violation
+    JMP     R0
 
 ; ==============================================================================
-; SECTION 1: Program Entry & Stack Initialization
+; SECTION 1: Monitor Application Entry & Initialization (0x0200)
 ; ==============================================================================
-_start:
-    START_PROGRAM
+.org 0x0200
 
 _main:
-    ; 3. Print startup banner
+_start_app:
     LOAD16  R1, msg_banner
     RCALL   puts
 
@@ -129,7 +194,6 @@ cmd_go:
     RCALL   puts
     LOAD16  R2, monitor_loop
     JMP     R2
-
 
 ; ------------------------------------------------------------------------------
 ; COMMAND: 'e [<addr>]' (Examine 8 Words)
@@ -619,24 +683,3 @@ line_buffer:
 ; Runtime Library Inclusion at the Bottom
 ; ==============================================================================
 .include "M4R_LIB.asm"
-
-; ==============================================================================
-; Trap Vectors
-; ==============================================================================
-.org TRAP_BASE
-    .word _start            ; Trap 0 / Reset Vector
-    .word 0000              ; Trap 1
-    .word 0000              ; Trap 2
-    .word 0000              ; Trap 3
-    .word 0000              ; Trap 4
-    .word 0000              ; Trap 5
-    .word 0000              ; Trap 6
-    .word 0000              ; Trap 7
-    .word 0000              ; Trap 8
-    .word 0000              ; Trap 9
-    .word 0000              ; Trap 10
-    .word 0000              ; Trap 11
-    .word 0000              ; Trap 12
-    .word 0000              ; Trap 13
-    .word 0000              ; Trap 14
-    .word _start            ; Trap 15 Illegal instructions and Slot 1 alignment violations

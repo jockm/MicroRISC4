@@ -102,7 +102,7 @@ class MiniRISC4Sim:
         self.r = [0] * 4
         self.shadow_r = [0] * 4
         self.pc = 0
-        self.trap_base = 0x0010
+        self.trap_base = 0x0100
         self.core_id = 0
         self.enable_cpuid = True
         self.enable_uart = True
@@ -570,7 +570,7 @@ def main():
     parser.add_argument("--core-id", type=lambda x: int(x, 0), default=0, help="Hardware Core ID (default: 0)")
     parser.add_argument("--disable-cpuid", action="store_true", help="Disable CPUID at 0x000D (treat as RAM)")
     parser.add_argument("--disable-uart", action="store_true", help="Disable UART MMIO at 0x000E/0x000F (treat as RAM)")
-    parser.add_argument("--trapbase", type=lambda x: int(x, 0), default=0x0010, help="Vector table base address (default: 0x0010)")
+    parser.add_argument("--trapbase", type=lambda x: int(x, 0), default=0x0100, help="Vector table base address (default: 0x0010)")
     parser.add_argument("--startaddr", type=lambda x: int(x, 0), default=None,
                         help="Starting word address (hex e.g. 0x0100). Default: reset vector at mem[0xFFF0]")
     parser.add_argument("--loadaddr", type=lambda x: int(x, 0), default=0,

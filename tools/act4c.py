@@ -1,3 +1,5 @@
+TRAP_BASE = 0x0100
+TRAP_STRIDE = 16
 #!/usr/bin/env python3
 """
 act4c.py - Self-contained compiler for the ACT4 systems programming language
@@ -1549,7 +1551,7 @@ def main():
     parser = argparse.ArgumentParser(description="ACT4 Compiler for MiniRISC4 Architecture (act4c)")
     parser.add_argument("input", help="ACT4 source file (.a4)")
     parser.add_argument("-o", "--output", default=None, help="Output assembly file (.asm) (default: a_out.asm)")
-    parser.add_argument("--org", type=lambda x: int(x, 0), default=0x0100,
+    parser.add_argument("--org", type=lambda x: int(x, 0), default=0x0200,
                         help="Code origin address (default: 0x0100)")
     parser.add_argument("--nopreamble", action="store_true",
                         help="Omit startup vector and stack initialization preamble")

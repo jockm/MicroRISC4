@@ -201,7 +201,7 @@ always @(posedge clk) begin
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state          <= ST_RESET;
-            pc             <= {ADDR_WIDTH{1'b0}};
+            pc             <= TRAP_TABLE_BASE;
             slot           <= SLOT_BYTE0;
             dest_reg       <= {REG_ADDR_WIDTH{1'b0}};
             port_a_addr    <= {ADDR_WIDTH{1'b0}};

@@ -1,4 +1,43 @@
 ; ==============================================================================
+; Architectural Control & MMIO Port Addresses (Low Memory 0x0000 - 0x000F)
+; ==============================================================================
+.define FIFO_IN_ADDR    0x000A      ; Inter-core inbound stream FIFO (RO pop)
+.define FIFO_OUT_ADDR   0x000B      ; Inter-core outbound stream FIFO (WO push)
+.define MAILBOX_ADDR    0x000C      ; Cross-core trap trigger register (WO)
+.define CPUID_ADDR      0x000D      ; Hardware CPUID register (RO)
+.define UART_RX_ADDR    0x000E      ; Physical UART RX register
+.define UART_TX_ADDR    0x000F      ; Physical UART TX register
+
+.ifndef TRAP_BASE
+    .define TRAP_BASE   0x0100      ; Direct Stride Vector Table Base
+.endif
+.define TRAP_STRIDE     16          ; 16 words (32 bytes) per direct vector slot
+
+; ------------------------------------------------------------------------------
+; Multi-Core & Hardware Control Macros
+; ------------------------------------------------------------------------------
+.macro GET_CPUID dest_reg
+    LD      R0, 13                  ; Slot 0: R0 = 0x000D (Opcode 0x1)
+    LD      %dest_reg, (R0)         ; Slot 1: Read CPUID
+.endmacro
+
+.macro FIFO_POP dest_reg
+    LD      R0, 10                  ; Slot 0: R0 = 0x000A (Opcode 0x1)
+    LD      %dest_reg, (R0)         ; Slot 1: Pop inbound FIFO
+.endmacro
+
+.macro FIFO_PUSH src_reg
+    LD      R0, 11                  ; Slot 0: R0 = 0x000B (Opcode 0x1)
+    LD      (R0), %src_reg          ; Slot 1: Push outbound FIFO
+.endmacro
+
+.macro TRIGGER_TRAP target_core, trap_num
+    LOAD16  R0, ((%target_core << 8) | (%trap_num & 0x0F))
+    LD      R1, 12                  ; Slot 0: R1 = 0x000C (Opcode 0x1)
+    LD      (R1), R0                ; Slot 1: Write to MAILBOX_ADDR
+.endmacro
+
+; ==============================================================================
 ; Architectural MMIO Addresses (Optional / Parameterized)
 ; ==============================================================================
 .define CPUID_ADDR      0x000D      ; Hardware CPUID register (RO)
@@ -51,7 +90,18 @@
 ; ==============================================================================
 
 ; ==============================================================================
+; ==============================================================================
 ; MACRO: START_PROGRAM
+; Description:
+;   Standard program initialization macro executed at Trap 0 (Reset) entry (0x0100).
+;   Initializes RSP, ASP, and jumps to _main.
+;
+; CRITICAL ARCHITECTURAL CONSTRAINT:
+;   Under Direct Stride Vectoring (stride = 16 words), Trap 0 code occupies
+;   addresses 0x0100 - 0x010F. Therefore, START_PROGRAM MUST NOT EXCEED
+;   16 WORDS (32 bytes / 32 single-byte instruction slots). Any additional startup
+;   logic must be placed after 0x0200 or inside _main.
+; ==============================================================================
 ; Description:
 ;   Initializes the Return Stack Pointer (RSP at 0x0004) to 0xFEFF and the
 ;   Argument Stack Pointer (ASP at 0x0005) to 0xFAFF, then jumps directly

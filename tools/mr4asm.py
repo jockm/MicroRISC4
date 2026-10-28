@@ -251,6 +251,106 @@ def evaluate_expression(expr_str: str, symbols: Dict[str, int], line: SourceLine
 # ==============================================================================
 
 class Preprocessor:
+    
+    def _evaluate_conditionals(self, lines: List[SourceLine]) -> List[SourceLine]:
+        """Filters source lines based on .ifdef, .ifndef, .if, .elif, .else, .endif."""
+        out_lines: List[SourceLine] = []
+        cond_stack: List[List[bool]] = []
+
+        def is_active() -> bool:
+            return all(frame[2] for frame in cond_stack)
+
+        for line in lines:
+            raw = line.text.strip()
+            code = raw.split(";", 1)[0].strip()
+            if not code:
+                if is_active():
+                    out_lines.append(line)
+                continue
+
+            parts = code.split(None, 1)
+            directive = parts[0].upper()
+            arg = parts[1].strip() if len(parts) > 1 else ""
+
+            if directive in (".IFDEF", ".IFNDEF", ".IF"):
+                parent_active = is_active()
+                if not parent_active:
+                    cond_stack.append([False, True, False, False])
+                else:
+                    if directive == ".IFDEF":
+                        sym = arg.upper()
+                        cond = (sym in self.symbols) or (hasattr(self, "defines") and sym in self.defines)
+                    elif directive == ".IFNDEF":
+                        sym = arg.upper()
+                        cond = (sym not in self.symbols) and (not hasattr(self, "defines") or sym not in self.defines)
+                    elif directive == ".IF":
+                        try:
+                            val = evaluate_expression(arg, self.symbols, line)
+                            cond = (val != 0)
+                        except Exception:
+                            cond = False
+                    cond_stack.append([True, cond, cond, False])
+                continue
+
+            elif directive in (".ELIF", ".ELSEIF"):
+                if not cond_stack:
+                    raise AssemblerError(f"{directive} without matching .if/.ifdef/.ifndef", line)
+                frame = cond_stack[-1]
+                if frame[3]:
+                    raise AssemblerError(f"{directive} after .else", line)
+                if frame[0]:
+                    if frame[1]:
+                        frame[2] = False
+                    else:
+                        try:
+                            val = evaluate_expression(arg, self.symbols, line)
+                            cond = (val != 0)
+                        except Exception:
+                            cond = False
+                        frame[1] = cond
+                        frame[2] = cond
+                else:
+                    frame[2] = False
+                continue
+
+            elif directive == ".ELSE":
+                if not cond_stack:
+                    raise AssemblerError(".else without matching .if/.ifdef/.ifndef", line)
+                frame = cond_stack[-1]
+                if frame[3]:
+                    raise AssemblerError("Duplicate .else directive", line)
+                frame[3] = True
+                if frame[0]:
+                    frame[2] = not frame[1]
+                    frame[1] = True
+                else:
+                    frame[2] = False
+                continue
+
+            elif directive == ".ENDIF":
+                if not cond_stack:
+                    raise AssemblerError(".endif without matching .if/.ifdef/.ifndef", line)
+                cond_stack.pop()
+                continue
+
+            if is_active():
+                if directive == ".DEFINE":
+                    def_parts = arg.split(None, 1)
+                    if def_parts:
+                        sname = def_parts[0].upper()
+                        sval = 1
+                        if len(def_parts) > 1:
+                            try:
+                                sval = evaluate_expression(def_parts[1].strip(), self.symbols, line)
+                            except Exception:
+                                sval = 1
+                        self.symbols[sname] = sval
+                out_lines.append(line)
+
+        if cond_stack:
+            raise AssemblerError("Unterminated conditional directive at end of file (missing .endif)")
+        return out_lines
+
     def __init__(self, include_dirs: List[str]):
         self.include_dirs = include_dirs
         self.macros: Dict[str, MacroDef] = {}
@@ -391,7 +491,7 @@ class Assembler:
         self.mem_words = 65536
         self.symbols['MEM_WORDS'] = self.mem_words
         self.symbols['MEM_TOP'] = self.mem_words - 1
-        self.trap_base = 0x0010
+        self.trap_base = 0x0100
         self.symbols['TRAP_BASE'] = self.trap_base
         self.symbols['CPUID_ADDR'] = 0x000D
         self.symbols['CPUID'] = 0x000D
@@ -832,7 +932,7 @@ def main():
     parser.add_argument("inputs", nargs="+", help="Source assembly file(s) (.asm, .inc)")
     parser.add_argument("-o", "--output", default=None, help="Output filename")
     parser.add_argument("--mem-words", dest="mem_words", default="65536", help="Configured memory capacity in 16-bit words (default: 65536)")
-    parser.add_argument("--trap-base", dest="trap_base", default="0x0010", help="Vector table base address (default: 0x0010)")
+    parser.add_argument("--trap-base", dest="trap_base", default="0x0100", help="Vector table base address (default: 0x0010)")
     parser.add_argument("-l", "--listing", default=None, help="Generate assembly listing file (.lst)")
     parser.add_argument("-I", "--include", action="append", default=["."], help="Add search directory for .include")
     parser.add_argument("--hex", action="store_true", help="Output 64K Verilog $readmemh hex file (.hex)")

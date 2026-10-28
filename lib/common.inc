@@ -1,4 +1,20 @@
 ; ==============================================================================
+; Architectural MMIO Addresses (Optional / Parameterized)
+; ==============================================================================
+.define CPUID_ADDR      0x000D      ; Hardware CPUID register (RO)
+.define UART_RX_ADDR    0x000E      ; Hardware UART RX register
+.define UART_TX_ADDR    0x000F      ; Hardware UART TX register
+
+; ------------------------------------------------------------------------------
+; MACRO: GET_CPUID dest_reg
+; Reads the hardware core ID into dest_reg in 2 single-byte instructions (1 word).
+; ------------------------------------------------------------------------------
+.macro GET_CPUID dest_reg
+    LD      R0, 13                  ; Slot 0: R0 = 0x000D (Opcode 0x1)
+    LD      %dest_reg, (R0)         ; Slot 1: Read CPUID
+.endmacro
+
+; ==============================================================================
 ; Configurable Physical Memory Capacity
 ; Default: 64K words (0x10000). Override before including or via assembler CLI.
 ; ==============================================================================

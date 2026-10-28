@@ -11,7 +11,8 @@ MiniRISC4 features a completely unified 64K-word (128 KB) read/write RAM space. 
 | `0x0000` – `0x0003` | 4 words | Scratchpad RAM for register save/restore (`SAVEALL` / `LOADALL`). |
 | `0x0004` | 1 word | **Return Stack Pointer (RSP)**. Default base: `0xFEFF`, grows down. |
 | `0x0005` | 1 word | **Argument Stack Pointer (ASP)**. Default base: `0xFAFF`, grows down. |
-| `0x0006` – `0x000D` | 8 words | Scratchpad workspace cells. |
+| `0x0006` – `0x000C` | 7 words | General scratchpad workspace cells. |
+| `0x000D` | 1 word | **Hardware CPUID Register (RO)**: Returns core ID (acts as RAM if CPUID disabled). |
 | `0x000E` | 1 word | **MMIO UART RX**: Read bit 15 = valid; bits [7:0] = byte; read pops FIFO. |
 | `0x000F` | 1 word | **MMIO UART TX**: Read 0 = idle; write bits [7:0] transmits byte. |
 | `0x0010` – `0x001F` | 16 words | **Hardware Vectors** | Exception and Trap Vector Table (`0x0010` = Reset Vector, `0x001F` = Trap 15 Alignment Fault). |

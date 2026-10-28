@@ -393,6 +393,8 @@ class Assembler:
         self.symbols['MEM_TOP'] = self.mem_words - 1
         self.trap_base = 0x0010
         self.symbols['TRAP_BASE'] = self.trap_base
+        self.symbols['CPUID_ADDR'] = 0x000D
+        self.symbols['CPUID'] = 0x000D
         self.assembled_items: List[AssembledItem] = []
         self.memory: Dict[int, int] = {}
 

@@ -103,6 +103,9 @@ class MiniRISC4Sim:
         self.shadow_r = [0] * 4
         self.pc = 0
         self.trap_base = 0x0010
+        self.core_id = 0
+        self.enable_cpuid = True
+        self.enable_uart = True
         self.slot = 0          # 0 = Slot 0 [7:0], 1 = Slot 1 [15:8]
         self.trace = trace
         self.running = True
@@ -166,6 +169,8 @@ class MiniRISC4Sim:
             return 0x0000
         elif addr == ADDR_UART_TX:
             return 0x0000  # UART TX status: 0x0000 = idle / ready
+        if addr == 0x000D and getattr(self, 'enable_cpuid', True):
+            return getattr(self, 'core_id', 0) & 0xFFFF
         return self.mem[addr]
 
     def write_mem(self, addr: int, val: int):
@@ -562,6 +567,9 @@ def main():
     parser = argparse.ArgumentParser(description="MiniRISC4 Instruction-Level Python Simulator (mr4sim)")
     parser.add_argument("binary", help="Path to binary file (.bin)")
     parser.add_argument("--memwords", type=lambda x: int(x, 0), default=65536, help="Physical memory capacity in words (default: 65536)")
+    parser.add_argument("--core-id", type=lambda x: int(x, 0), default=0, help="Hardware Core ID (default: 0)")
+    parser.add_argument("--disable-cpuid", action="store_true", help="Disable CPUID at 0x000D (treat as RAM)")
+    parser.add_argument("--disable-uart", action="store_true", help="Disable UART MMIO at 0x000E/0x000F (treat as RAM)")
     parser.add_argument("--trapbase", type=lambda x: int(x, 0), default=0x0010, help="Vector table base address (default: 0x0010)")
     parser.add_argument("--startaddr", type=lambda x: int(x, 0), default=None,
                         help="Starting word address (hex e.g. 0x0100). Default: reset vector at mem[0xFFF0]")

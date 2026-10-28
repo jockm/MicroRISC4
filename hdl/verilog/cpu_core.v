@@ -117,7 +117,14 @@ module cpu_core (
     wire ram_b_we   = port_b_en && port_b_we && !is_mmio;
 
     // Port A (Instruction Fetch)
-    always @(posedge clk) begin
+    
+    // Modular MMIO Address Decodes (0x000D = CPUID, 0x000E = RX, 0x000F = TX)
+    wire is_mmio_cpuid = ENABLE_CPUID && (port_b_addr == 16'h000D);
+    wire is_mmio_rx    = ENABLE_UART  && (port_b_addr == 16'h000E);
+    wire is_mmio_tx    = ENABLE_UART  && (port_b_addr == 16'h000F);
+    wire is_mmio       = is_mmio_cpuid | is_mmio_rx | is_mmio_tx;
+
+always @(posedge clk) begin
         if (port_a_en) begin
             port_a_rdata <= mem[port_a_addr];
         end
@@ -135,6 +142,9 @@ module cpu_core (
             end else if (is_mmio_tx) begin
                 port_b_rdata <= mmio_tx_status;
             end else begin
+                if (is_mmio_cpuid)
+                port_b_rdata <= {12'h000, CORE_ID[3:0]};
+            else
                 port_b_rdata <= mem[port_b_addr];
             end
         end

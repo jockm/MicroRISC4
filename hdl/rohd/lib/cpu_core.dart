@@ -101,6 +101,9 @@ class CpuCore extends Module {
     final trapAlignFaultConst = Const(config.trapTableBase + 15, width: 16);
 
     // MMIO Address Decoding (Gated by config.enableUart)
+    final isMmioCpuid = config.enableCpuid
+        ? portBAddr.eq(Const(0x000D, width: 16))
+        : Const(0, width: 1);
     final isMmioRx = config.enableUart
         ? portBAddr.eq(MiniRISC4Constants.addrUartRx)
         : Const(0);

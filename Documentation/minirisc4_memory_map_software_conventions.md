@@ -130,3 +130,33 @@ trap_handler:
     XCHG    R0              ; Restore R0
     JMP     R0              ; Return to interrupted thread
 ```
+
+### 32-Bit Math & Barrel Shift Hardware Accelerator (0x0010–0x0016)
+
+When `ENABLE_MATH_ACCEL` is enabled on a core, addresses `0x0010`–`0x0016` decode to a hardware coprocessor backed by FPGA DSP blocks (e.g., Lattice ECP5 18x18 MULT slices) and an iterative restoring divider:
+
+| Address | Symbolic Identifier | Access | Description |
+| :---: | :--- | :---: | :--- |
+| `0x0010` | `MATH_A_LO` | W | Operand A Low Word (`A[15:0]`) |
+| `0x0011` | `MATH_A_HI` | W | Operand A High Word (`A[31:16]`) |
+| `0x0012` | `MATH_B_LO` | W | Operand B Low Word (`B[15:0]`) |
+| `0x0013` | `MATH_B_HI` | W | Operand B High Word (`B[31:16]`) / Shift Amount (`B[4:0]`) |
+| `0x0014` | `MATH_CMD_STAT` | R/W | **Write**: Opcode trigger (see table below)<br>**Read**: Status (`bit 0`: Busy, `bit 1`: Div-by-Zero) |
+| `0x0015` | `MATH_RES_LO` | R | Result Low Word (`RES[15:0]`) |
+| `0x0016` | `MATH_RES_HI` | R | Result High Word (`RES[31:16]`) |
+
+#### Opcode Definitions (`MATH_CMD_STAT` @ `0x0014`)
+
+| Opcode | Mnemonic | Operation | Description | Latency |
+| :---: | :---: | :--- | :--- | :---: |
+| `0x0` | `MUL` | $A \times B \pmod{2^{32}}$ | Lower 32 bits of product (Unsigned/Signed identical) | 1 cycle |
+| `0x1` | `MULH` | $\lfloor (A_{\text{signed}} \times B_{\text{signed}}) / 2^{32} \rfloor$ | Upper 32 bits of signed product | 1 cycle |
+| `0x2` | `MULHU` | $\lfloor (A_{\text{unsigned}} \times B_{\text{unsigned}}) / 2^{32} \rfloor$ | Upper 32 bits of unsigned product | 1 cycle |
+| `0x3` | `MULHSU` | $\lfloor (A_{\text{signed}} \times B_{\text{unsigned}}) / 2^{32} \rfloor$ | Upper 32 bits of signed $\times$ unsigned | 1 cycle |
+| `0x4` | `DIVU` | $\lfloor A_{\text{unsigned}} / B_{\text{unsigned}} \rfloor$ | 32-bit unsigned quotient | 32 cycles |
+| `0x5` | `REMU` | $A_{\text{unsigned}} \pmod{B_{\text{unsigned}}}$ | 32-bit unsigned remainder | 32 cycles |
+| `0x6` | `DIV` | $\lfloor A_{\text{signed}} / B_{\text{signed}} \rfloor$ | 32-bit signed quotient (handles two's-complement signs) | 34 cycles |
+| `0x7` | `REM` | $A_{\text{signed}} \pmod{B_{\text{signed}}}$ | 32-bit signed remainder (sign matches dividend $A$) | 34 cycles |
+| `0x8` | `SLL` | $A \ll (B \ \& \ \text{0x1F})$ | 32-bit Logical Shift Left by $0\dots31$ bits | 1 cycle |
+| `0x9` | `SRL` | $A \gg (B \ \& \ \text{0x1F})$ | 32-bit Logical Shift Right by $0\dots31$ bits | 1 cycle |
+| `0xA` | `SRA` | $A \ggg (B \ \& \ \text{0x1F})$ | 32-bit Arithmetic Shift Right by $0\dots31$ bits | 1 cycle |

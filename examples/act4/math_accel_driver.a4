@@ -1,0 +1,62 @@
+// ==============================================================================
+// FILE: examples/act4/math_accel_driver.a4
+// Description: Memory-Mapped Hardware Math Engine Driver in ACT4
+// ==============================================================================
+
+// Hardware MMIO Port Bindings (0x0010 - 0x0016)
+u16 math_a_lo    @ 0x0010;
+u16 math_a_hi    @ 0x0011;
+u16 math_b_lo    @ 0x0012;
+u16 math_b_hi    @ 0x0013;
+u16 math_cmd     @ 0x0014;
+u16 math_res_lo  @ 0x0015;
+u16 math_res_hi  @ 0x0016;
+
+// Command Opcodes
+const u16 OP_MUL  = 0;
+const u16 OP_DIVU = 4;
+const u16 OP_DIV  = 6;
+const u16 OP_SLL  = 8;
+const u16 OP_SRL  = 9;
+
+// Performs a 32-bit unsigned division: res = num / den
+void div32(u16 num_hi, u16 num_lo, u16 den_hi, u16 den_lo) {
+    math_a_lo = num_lo;
+    math_a_hi = num_hi;
+    math_b_lo = den_lo;
+    math_b_hi = den_hi;
+    math_cmd  = OP_DIVU;
+
+    // Poll until busy bit (bit 0) clears
+    while ((math_cmd & 1) != 0) {
+        // Wait for restoring division steps to conclude
+    }
+}
+
+// 32-bit Multi-Bit Left Shift: val << shamt
+void sll32(u16 hi, u16 lo, u16 shamt) {
+    math_a_lo = lo;
+    math_a_hi = hi;
+    math_b_lo = shamt;
+    math_b_hi = 0;
+    math_cmd  = OP_SLL;
+}
+
+void main() {
+    // Multiply 500 * 300 = 150,000 (0x000249F0)
+    math_a_lo = 500;
+    math_a_hi = 0;
+    math_b_lo = 300;
+    math_b_hi = 0;
+    math_cmd  = OP_MUL;
+
+    u16 product_lo;
+    u16 product_hi;
+    product_lo = math_res_lo; // 0x49F0
+    product_hi = math_res_hi; // 0x0002
+
+    // Shift 0x0001 left by 7 bits
+    sll32(0, 1, 7);
+    u16 shifted_val;
+    shifted_val = math_res_lo; // 128 (0x0080)
+}

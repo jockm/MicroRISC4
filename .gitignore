@@ -13,3 +13,9 @@ __pycache__/
 **/__pycache__/
 *.py[cod]
 *$py.class
+
+# The contents of the build directories should be ignored, but not the directory itself
+mr4src/act4/build/*
+!mr4src/act4/build/.gitkeep
+mr4src/asm/build/*
+!mr4src/asm/build/.gitkeep

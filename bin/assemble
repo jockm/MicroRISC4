@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROG_NAME="$(basename "$0")"
+
+# Resolve the directory where this script resides (dereferencing symlinks if any)
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ "$SCRIPT_SOURCE" != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+BIN_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+
+# Repository root is the parent directory of bin/
+REPO_ROOT="$(cd "$BIN_DIR/.." && pwd)"
+ASSEMBLER="$REPO_ROOT/tools/mr4asm.py"
+
+show_help() {
+    cat <<EOF
+Usage: $PROG_NAME [OPTIONS] <source_file.asm>
+
+Assembles a MiniRISC4 source file, automatically placing the resulting binary
+and listing (.lst) into a 'build' directory adjacent to the source file.
+
+Positional Arguments:
+  <source_file.asm>     Path to the MiniRISC4 assembly file to assemble
+
+Supported mr4asm.py Options:
+  -I, -i <dir>          Add directory to search path for .include files
+                        (may be specified multiple times)
+  --bin                 Emit binary from address 0 up to highest written address
+                        (default format)
+  --fullbin             Emit full 64K-word (128 KB) raw binary
+  --sparsebin           Emit binary starting from lowest .org address
+  --hex                 Emit Verilog \$readmemh 64K-word hex output
+  --trap-base <addr>    Trap table base address (default: 0x0100)
+  -h, --help            Show this help message and exit
+
+Note:
+  -o and -l are automatically handled by this script and directed to
+  <source_dir>/build/<basename>.[bin|hex] and <source_dir>/build/<basename>.lst.
+EOF
+}
+
+# Parse options
+FORWARD_ARGS=()
+SOURCE_FILE=""
+IS_HEX=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -I|-i|--include|--include-dir)
+            if [ -z "${2:-}" ]; then
+                echo "Error: Option '$1' requires a directory path." >&2
+                exit 1
+            fi
+            FORWARD_ARGS+=("$1" "$2")
+            shift 2
+            ;;
+        -I*|-i*)
+            FORWARD_ARGS+=("$1")
+            shift
+            ;;
+        --bin|--fullbin|--sparsebin)
+            FORWARD_ARGS+=("$1")
+            shift
+            ;;
+        --hex)
+            IS_HEX=1
+            FORWARD_ARGS+=("$1")
+            shift
+            ;;
+        --trap-base)
+            if [ -z "${2:-}" ]; then
+                echo "Error: Option '--trap-base' requires an address argument." >&2
+                exit 1
+            fi
+            FORWARD_ARGS+=("$1" "$2")
+            shift 2
+            ;;
+        --trap-base=*)
+            FORWARD_ARGS+=("$1")
+            shift
+            ;;
+        -o|--output|-l|--listing)
+            echo "Error: Option '$1' is managed automatically by $PROG_NAME and cannot be overridden." >&2
+            exit 1
+            ;;
+        -*)
+            echo "Error: Unrecognized option '$1'." >&2
+            echo "Run '$PROG_NAME --help' for available options." >&2
+            exit 1
+            ;;
+        *)
+            if [ -n "$SOURCE_FILE" ]; then
+                echo "Error: Multiple input files specified ('$SOURCE_FILE' and '$1')." >&2
+                exit 1
+            fi
+            SOURCE_FILE="$1"
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$SOURCE_FILE" ]; then
+    echo "Error: Missing source file." >&2
+    echo "Run '$PROG_NAME --help' for usage." >&2
+    exit 1
+fi
+
+if [ ! -f "$SOURCE_FILE" ]; then
+    echo "Error: Source file '$SOURCE_FILE' not found." >&2
+    exit 1
+fi
+
+if [ ! -f "$ASSEMBLER" ]; then
+    echo "Error: Assembler not found at '$ASSEMBLER'." >&2
+    exit 1
+fi
+
+# Locate directory and base filename stem
+SRC_DIR="$(dirname "$SOURCE_FILE")"
+BASE_NAME="$(basename "$SOURCE_FILE")"
+STEM="${BASE_NAME%.*}"
+
+# Ensure the build directory exists at the same level as the source file
+BUILD_DIR="$SRC_DIR/build"
+mkdir -p "$BUILD_DIR"
+
+# Choose output extension based on --hex flag
+if [ "$IS_HEX" -eq 1 ]; then
+    OUT_FILE="$BUILD_DIR/${STEM}.hex"
+else
+    OUT_FILE="$BUILD_DIR/${STEM}.bin"
+fi
+LST_FILE="$BUILD_DIR/${STEM}.lst"
+
+# Invoke mr4asm.py via its absolute path derived from the script location
+exec python3 "$ASSEMBLER" "$SOURCE_FILE" \
+    -o "$OUT_FILE" \
+    -l "$LST_FILE" \
+    "${FORWARD_ARGS[@]}"

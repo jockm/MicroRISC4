@@ -1,5 +1,3 @@
-TRAP_BASE = 0x0100
-TRAP_STRIDE = 16
 #!/usr/bin/env python3
 """
 act4c.py - Self-contained compiler for the ACT4 systems programming language
@@ -162,6 +160,14 @@ class TypeDesc:
             return sz * self.array_size
         return sz
 
+    def __repr__(self):
+        s = self.base_type
+        if self.is_pointer:
+            s += "*"
+        if self.array_size is not None:
+            s += f"[{self.array_size}]"
+        return s
+
 class StructDef:
     def __init__(self, name: str, fields: List[Tuple[str, TypeDesc, int]]):
         self.name = name
@@ -187,7 +193,7 @@ class FunctionDef(ASTNode):
         self.params = params
         self.locals_decls = locals_decls
         self.body = body
-        self.trap_vector = trap_vector
+        self.trap_vector = trap_vector  # 0..15 if bound via @ trap(N)
 
 class AsmBlock(ASTNode):
     def __init__(self, asm_text: str):
@@ -245,6 +251,8 @@ class IncDecStmt(ASTNode):
         self.op = op
         self.is_postfix = is_postfix
 
+# --- Expression Nodes ---
+
 class Expr(ASTNode):
     pass
 
@@ -294,7 +302,7 @@ class GetByteExpr(Expr):
         self.index_expr = index_expr
 
 # ==============================================================================
-# Parser
+# Recursive Descent Parser
 # ==============================================================================
 
 class Parser:
@@ -577,7 +585,6 @@ class Parser:
         if self.match("SETBYTE"):
             return self.parse_setbyte()
 
-        # Handle prefix ++ / --
         if self.match("INC", "DEC"):
             op_tok = self.consume(self.cur().type)
             target = self.parse_unary_or_postfix()
@@ -586,7 +593,6 @@ class Parser:
 
         expr = self.parse_unary_or_postfix()
 
-        # Handle postfix ++ / --
         if self.match("INC", "DEC"):
             op_tok = self.consume(self.cur().type)
             self.consume("SEMI")
@@ -887,12 +893,12 @@ class Parser:
         raise CompilerError(f"Expression is not a constant: {node}")
 
 # ==============================================================================
-# Code Generator
+# Assembly Code Generator
 # ==============================================================================
 
 class CodeGen:
     def __init__(self, ast: List[ASTNode], structs: Dict[str, StructDef], constants: Dict[str, int],
-                 string_literals: List[Tuple[str, str]], org: int = 0x0100, no_preamble: bool = False):
+                 string_literals: List[Tuple[str, str]], org: int = 0x0200, no_preamble: bool = False):
         self.ast = ast
         self.structs = structs
         self.constants = constants
@@ -941,22 +947,41 @@ class CodeGen:
             self.emit_raw(f".define {name} 0x{val:04X}")
         self.emit_raw("")
 
+        # Direct Stride Vector Table (0x0100 - 0x01FF)
+        if not self.no_preamble:
+            self.emit_raw("; ==============================================================================")
+            self.emit_raw("; Hardware Direct Stride Vector Table (0x0100 - 0x01FF)")
+            self.emit_raw("; Fixed 16-word (32-byte) stride per vector slot")
+            self.emit_raw("; ==============================================================================")
+            self.emit_raw(".org 0x0100")
+            self.emit_raw("_reset_slot:")
+            self.emit("START_PROGRAM")
+
+            for vec in range(1, 16):
+                slot_addr = 0x0100 + (vec * 16)
+                self.emit_raw(f"\n.org 0x{slot_addr:04X}")
+                self.emit_raw(f"_trap_{vec}_slot:")
+                if vec in self.trap_bindings:
+                    fn_name = self.trap_bindings[vec]
+                    self.emit(f"LOAD16  R0, _{fn_name}")
+                    self.emit("JMP     R0")
+                else:
+                    self.emit("JMP     R0")
+            self.emit_raw("")
+
+        # Application Code & Global Data (0x0200)
+        self.emit_raw("; ==============================================================================")
+        self.emit_raw(f"; Application Code & Global Storage (Origin 0x{self.org:04X})")
+        self.emit_raw("; ==============================================================================")
         self.emit_raw(f".org 0x{self.org:04X}")
         self.emit_raw("")
 
-        if not self.no_preamble:
-            self.emit_raw("; --- Entry Point ---")
-            self.emit_raw("_start:")
-            self.emit("START_PROGRAM")
-            self.emit_raw("_halt:")
-            self.emit("LOAD16  R0, _halt")
-            self.emit("JMP     R0")
-            self.emit_raw("")
-
+        # Generate Functions
         for node in self.ast:
             if isinstance(node, FunctionDef):
                 self.gen_function(node)
 
+        # Global Variables & Static Memory Allocations
         self.emit_raw("; ==============================================================================")
         self.emit_raw("; Global Data & Static Storage")
         self.emit_raw("; ==============================================================================")
@@ -985,23 +1010,13 @@ class CodeGen:
                 zeros = ", ".join(["0"] * sz)
                 self.emit_raw(f"{lbl}: .word {zeros}")
 
+        # String Literals
         if self.string_literals:
             self.emit_raw("")
             self.emit_raw("; --- String Literals ---")
             for lbl, s in self.string_literals:
                 clean_s = s.replace('"', '\\"')
                 self.emit_raw(f'{lbl}: .asciz "{clean_s}"')
-
-        if self.trap_bindings:
-            self.emit_raw("")
-            self.emit_raw("; ==============================================================================")
-            self.emit_raw("; Trap Vector Table Bindings (0xFFF0 - 0xFFFF)")
-            self.emit_raw("; ==============================================================================")
-            for vec in sorted(self.trap_bindings.keys()):
-                fn_name = self.trap_bindings[vec]
-                trap_addr = 0xFFF0 + vec
-                self.emit_raw(f".org 0x{trap_addr:04X}")
-                self.emit_raw(f"    .word _{fn_name}")
 
         return "\n".join(self.asm) + "\n"
 
@@ -1016,7 +1031,7 @@ class CodeGen:
         self.current_func = fn
         self.emit_raw(f"; --- Function: {fn.name} ---")
         if fn.trap_vector is not None:
-            self.emit_raw(f"; Bound to hardware Trap Vector {fn.trap_vector} (0x{0xFFF0 + fn.trap_vector:04X})")
+            self.emit_raw(f"; Bound to hardware Trap Vector {fn.trap_vector} (0x{0x0100 + fn.trap_vector * 16:04X})")
         self.emit_raw(f"_{fn.name}:")
         self.emit("RPUSH   R0")
 
@@ -1034,7 +1049,7 @@ class CodeGen:
             zeros = ", ".join(["0"] * sz)
             self.emit_raw(f"{lbl}: .word {zeros}")
 
-        for pname, _ in fn.params:
+        for pname, ptype in fn.params:
             self.emit_raw(f"_{fn.name}_{pname}: .word 0")
         self.emit_raw("")
 
@@ -1048,7 +1063,7 @@ class CodeGen:
             self.emit_raw(f"; // {text}")
 
         elif isinstance(stmt, AsmBlock):
-            self.emit_raw("    ; --- Inline Assembly ---")
+            self.emit_raw(f"    ; --- Inline Assembly ---")
             for line in stmt.asm_text.splitlines():
                 self.emit_raw(f"    {line.strip()}")
 
@@ -1062,14 +1077,14 @@ class CodeGen:
                 raise CompilerError("break statement outside of loop")
             lbl_break, _ = self.loop_stack[-1]
             self.emit(f"LOAD16  R0, {lbl_break}")
-            self.emit("JMP     R0")
+            self.emit(f"JMP     R0")
 
         elif isinstance(stmt, ContinueStmt):
             if not self.loop_stack:
                 raise CompilerError("continue statement outside of loop")
             _, lbl_cont = self.loop_stack[-1]
             self.emit(f"LOAD16  R0, {lbl_cont}")
-            self.emit("JMP     R0")
+            self.emit(f"JMP     R0")
 
         elif isinstance(stmt, IfStmt):
             lbl_else = self.new_label("else")
@@ -1079,7 +1094,7 @@ class CodeGen:
                 self.gen_stmt(s)
             if stmt.else_block:
                 self.emit(f"LOAD16  R0, {lbl_end}")
-                self.emit("JMP     R0")
+                self.emit(f"JMP     R0")
                 self.emit_raw(f"{lbl_else}:")
                 for s in stmt.else_block:
                     self.gen_stmt(s)
@@ -1096,7 +1111,7 @@ class CodeGen:
             for s in stmt.body:
                 self.gen_stmt(s)
             self.emit(f"LOAD16  R0, {lbl_loop}")
-            self.emit("JMP     R0")
+            self.emit(f"JMP     R0")
             self.emit_raw(f"{lbl_exit}:")
             self.loop_stack.pop()
 
@@ -1139,16 +1154,16 @@ class CodeGen:
             self.emit("LD      (R0), R1")
         else:
             self.gen_lvalue_addr(stmt.target)
-            self.emit("LOAD16  R1, _act4_t4")
+            self.emit("LOAD16  R1, _act4_t1")
             self.emit("LD      (R1), R0")
 
             self.emit("LD      R1, (R0)")
-            self.emit("LOAD16  R0, _act4_t5")
+            self.emit("LOAD16  R0, _act4_t0")
             self.emit("LD      (R0), R1")
 
             self.gen_expr(stmt.value)
             self.emit("LD      R2, R1")
-            self.emit("LOAD16  R0, _act4_t5")
+            self.emit("LOAD16  R0, _act4_t0")
             self.emit("LD      R1, (R0)")
 
             base_op = stmt.op[:-1]
@@ -1178,7 +1193,7 @@ class CodeGen:
                 self.emit("RCALL   MOD")
                 self.emit("APOP    R1")
 
-            self.emit("LOAD16  R0, _act4_t4")
+            self.emit("LOAD16  R0, _act4_t1")
             self.emit("LD      R0, (R0)")
             self.emit("LD      (R0), R1")
 
@@ -1220,11 +1235,11 @@ class CodeGen:
         lbl_done = self.new_label("set_done")
 
         self.emit(f"LOAD16  R0, {lbl_hi}")
-        self.emit("JMP.Z   R0, R3")
+        self.emit(f"JMP.Z   R0, R3")
 
         self.emit("BYTE_SET_HI R1, R2")
         self.emit(f"LOAD16  R0, {lbl_done}")
-        self.emit("JMP     R0")
+        self.emit(f"JMP     R0")
 
         self.emit_raw(f"{lbl_hi}:")
         self.emit("BYTE_SET_LO R1, R2")
@@ -1244,7 +1259,7 @@ class CodeGen:
                 self.emit(f"LOAD16  R0, {lbl}")
 
         elif isinstance(expr, UnaryOp) and expr.op == "*":
-            self.gen_expr(expr.operand)
+            self.gen_expr(expr.operand)  # R1 = pointer address
             self.emit("LD      R0, R1")
 
         elif isinstance(expr, IndexAccess):
@@ -1267,7 +1282,7 @@ class CodeGen:
                 self.emit("LD      R1, R0")
             if offset != 0:
                 self.emit(f"LOAD16  R2, {offset}")
-                self.emit("ADD     R1, R2")
+                self.emit(f"ADD     R1, R2")
             self.emit("LD      R0, R1")
         else:
             raise CompilerError(f"Cannot take address of non-lvalue expression: {expr}")
@@ -1323,42 +1338,42 @@ class CodeGen:
             if op == "==":
                 self.emit("SUB     R1, R2")
                 self.emit(f"LOAD16  R0, {target_label}")
-                self.emit("JMP.Z   R0, R1")
+                self.emit(f"JMP.Z   R0, R1")
             elif op == "!=":
                 lbl_skip = self.new_label("eq_skip")
                 self.emit("SUB     R1, R2")
                 self.emit(f"LOAD16  R0, {lbl_skip}")
-                self.emit("JMP.Z   R0, R1")
+                self.emit(f"JMP.Z   R0, R1")
                 self.emit(f"LOAD16  R0, {target_label}")
-                self.emit("JMP     R0")
+                self.emit(f"JMP     R0")
                 self.emit_raw(f"{lbl_skip}:")
             elif op == "<":
                 self.emit("RCALL   _CMP_LT")
                 self.emit(f"LOAD16  R2, {target_label}")
-                self.emit("JMP.Z   R2, R0")
+                self.emit(f"JMP.Z   R2, R0")
             elif op == ">":
                 self.emit("RCALL   _CMP_GT")
                 self.emit(f"LOAD16  R2, {target_label}")
-                self.emit("JMP.Z   R2, R0")
+                self.emit(f"JMP.Z   R2, R0")
             elif op == "<=":
                 self.emit("RCALL   _CMP_LE")
                 self.emit(f"LOAD16  R2, {target_label}")
-                self.emit("JMP.Z   R2, R0")
+                self.emit(f"JMP.Z   R2, R0")
             elif op == ">=":
                 self.emit("RCALL   _CMP_GE")
                 self.emit(f"LOAD16  R2, {target_label}")
-                self.emit("JMP.Z   R2, R0")
+                self.emit(f"JMP.Z   R2, R0")
         else:
             self.gen_expr(cond)
             if invert:
                 self.emit(f"LOAD16  R0, {target_label}")
-                self.emit("JMP.Z   R0, R1")
+                self.emit(f"JMP.Z   R0, R1")
             else:
                 lbl_skip = self.new_label("skip")
                 self.emit(f"LOAD16  R0, {lbl_skip}")
-                self.emit("JMP.Z   R0, R1")
+                self.emit(f"JMP.Z   R0, R1")
                 self.emit(f"LOAD16  R0, {target_label}")
-                self.emit("JMP     R0")
+                self.emit(f"JMP     R0")
                 self.emit_raw(f"{lbl_skip}:")
 
     def gen_expr(self, expr: Expr):
@@ -1373,10 +1388,10 @@ class CodeGen:
             if expr.name in self.global_vars and self.global_vars[expr.name].address is not None:
                 addr = self.global_vars[expr.name].address
                 self.emit(f"LOAD16  R0, 0x{addr:04X}")
-                self.emit("LD      R1, (R0)")
+                self.emit(f"LD      R1, (R0)")
             else:
                 self.emit(f"LOAD16  R0, {lbl}")
-                self.emit("LD      R1, (R0)")
+                self.emit(f"LD      R1, (R0)")
 
         elif isinstance(expr, UnaryOp):
             if expr.op == "&":
@@ -1399,10 +1414,10 @@ class CodeGen:
                 lbl_true = self.new_label("not_true")
                 lbl_done = self.new_label("not_done")
                 self.emit(f"LOAD16  R0, {lbl_true}")
-                self.emit("JMP.Z   R0, R1")
+                self.emit(f"JMP.Z   R0, R1")
                 self.emit("LD0     R1")
                 self.emit(f"LOAD16  R0, {lbl_done}")
-                self.emit("JMP     R0")
+                self.emit(f"JMP     R0")
                 self.emit_raw(f"{lbl_true}:")
                 self.emit("LD0     R1")
                 self.emit("INC     R1")
@@ -1447,11 +1462,11 @@ class CodeGen:
             lbl_hi = self.new_label("get_hi")
             lbl_done = self.new_label("get_done")
             self.emit(f"LOAD16  R0, {lbl_hi}")
-            self.emit("JMP.Z   R0, R2")
+            self.emit(f"JMP.Z   R0, R2")
 
             self.emit("BYTE_GET_HI R1, R1")
             self.emit(f"LOAD16  R0, {lbl_done}")
-            self.emit("JMP     R0")
+            self.emit(f"JMP     R0")
 
             self.emit_raw(f"{lbl_hi}:")
             self.emit("BYTE_GET_LO R1, R1")
@@ -1501,11 +1516,11 @@ class CodeGen:
                 lbl_end = self.new_label("shr_done")
                 self.emit_raw(f"{lbl_lp}:")
                 self.emit(f"LOAD16  R0, {lbl_end}")
-                self.emit("JMP.Z   R0, R2")
+                self.emit(f"JMP.Z   R0, R2")
                 self.emit("SHIFT.R R1")
                 self.emit("DEC     R2")
                 self.emit(f"LOAD16  R0, {lbl_lp}")
-                self.emit("JMP     R0")
+                self.emit(f"JMP     R0")
                 self.emit_raw(f"{lbl_end}:")
         elif expr.op == "<<":
             if isinstance(expr.rhs, IntLit):
@@ -1516,11 +1531,11 @@ class CodeGen:
                 lbl_end = self.new_label("shl_done")
                 self.emit_raw(f"{lbl_lp}:")
                 self.emit(f"LOAD16  R0, {lbl_end}")
-                self.emit("JMP.Z   R0, R2")
+                self.emit(f"JMP.Z   R0, R2")
                 self.emit("SHIFT.L R1")
                 self.emit("DEC     R2")
                 self.emit(f"LOAD16  R0, {lbl_lp}")
-                self.emit("JMP     R0")
+                self.emit(f"JMP     R0")
                 self.emit_raw(f"{lbl_end}:")
 
     def gen_call(self, call: CallExpr):
@@ -1530,16 +1545,14 @@ class CodeGen:
                 pname = fn.params[idx][0]
                 self.gen_expr(arg_expr)
                 self.emit(f"LOAD16  R0, _{fn.name}_{pname}")
-                self.emit("LD      (R0), R1")
+                self.emit(f"LD      (R0), R1")
             self.emit(f"RCALL   _{fn.name}")
         else:
-            # Indirect call via function pointer
             for idx, arg_expr in enumerate(call.args):
                 self.gen_expr(arg_expr)
                 self.emit(f"LOAD16  R0, _act4_arg{idx}")
-                self.emit("LD      (R0), R1")
+                self.emit(f"LD      (R0), R1")
             self.gen_expr(call.callee)
-            # Use R2 to branch to avoid clobbering link return address in R0
             self.emit("LD      R2, R1")
             self.emit("LINK    R2, R0")
 
@@ -1550,18 +1563,14 @@ class CodeGen:
 def main():
     parser = argparse.ArgumentParser(description="ACT4 Compiler for MiniRISC4 Architecture (act4c)")
     parser.add_argument("input", help="ACT4 source file (.a4)")
-    parser.add_argument("-o", "--output", default=None, help="Output assembly file (.asm) (default: a_out.asm)")
+    parser.add_argument("-o", "--output", default=None, help="Output assembly file (.asm)")
     parser.add_argument("--org", type=lambda x: int(x, 0), default=0x0200,
-                        help="Code origin address (default: 0x0100)")
+                        help="Code origin address (default: 0x0200)")
     parser.add_argument("--nopreamble", action="store_true",
                         help="Omit startup vector and stack initialization preamble")
-    parser.add_argument("-I", "--include", action="append", default=[],
+    parser.add_argument("-I", "-i", "--include", action="append", default=[],
                         help="Add directory to import search path")
     args = parser.parse_args()
-
-    if not os.path.exists(args.input):
-        print(f"error: Source file not found: {args.input}", file=sys.stderr)
-        sys.exit(1)
 
     if not os.path.exists(args.input):
         print(f"error: Source file not found: {args.input}", file=sys.stderr)
@@ -1586,7 +1595,11 @@ def main():
                       org=args.org, no_preamble=args.nopreamble)
     asm_output = codegen.generate()
 
-    out_file = args.output if args.output else "a_out.asm"
+    out_file = args.output
+    if not out_file:
+        base, _ = os.path.splitext(args.input)
+        out_file = base + ".asm"
+
     with open(out_file, "w", encoding="utf-8") as f:
         f.write(asm_output)
 

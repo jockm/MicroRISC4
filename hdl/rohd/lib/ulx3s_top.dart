@@ -1,24 +1,52 @@
 // ==============================================================================
-// ULX3S Board Top-Level Module Wrapper
-// Intel ROHD Implementation
+// FILE: hdl/rohd/lib/ulx3s_top.dart
+// ULX3S-85F Board Top-Level Module Wrapper (Intel ROHD)
 // ==============================================================================
+
 import 'package:rohd/rohd.dart';
+import 'cpu_config.dart';
 import 'cpu_core.dart';
+import 'ecp5_pll.dart';
 import 'uart.dart';
 
 class Ulx3sTop extends Module {
+  late final CpuCore cpu;
+
   Ulx3sTop({
-    required Logic clk24mhz,
-    required Logic rstN,
+    required Logic clk25mhz,
+    required Logic btnPwrN,
     required Logic ftdiTxd,
+    CpuConfig config = const CpuConfig(
+      coreId: 0,
+      enableCpuid: false,
+      enableUart: true,
+      enableCrossTraps: false,
+      enableMathAccel: false,
+      trapTableBase: 0x0100,
+      memWords: 65536,
+    ),
+    String? initHexFile = 'system_image.hex',
+    Map<int, int>? initialMemory,
     super.name = 'ulx3s_top',
   }) {
-    clk24mhz = addInput('clk_24mhz', clk24mhz);
-    rstN = addInput('rst_n', rstN);
+    clk25mhz = addInput('clk_25mhz', clk25mhz);
+    btnPwrN = addInput('btn_pwr_n', btnPwrN);
     ftdiTxd = addInput('ftdi_txd', ftdiTxd);
 
     final ftdiRxd = addOutput('ftdi_rxd');
+    final wifiGpio0 = addOutput('wifi_gpio0');
+    final led = addOutput('led', width: 8);
 
+    // Keep onboard ESP32 out of bootloader/reset interference
+    wifiGpio0 <= Const(1);
+
+    // 25 MHz -> 24 MHz PLL for exact 3 Mbaud UART
+    final pll = Ecp5Pll25To24(clkIn: clk25mhz);
+    final clk24mhz = pll.clkOut;
+    final sysRstN = btnPwrN & pll.locked;
+    final uartReset = ~sysRstN;
+
+    // UART MMIO Registers
     final uartRxdLatch = Logic(name: 'uart_rxd_latch', width: 8);
     final uartRxValid = Logic(name: 'uart_rx_valid');
     final txBusyLatch = Logic(name: 'tx_busy_latch');
@@ -29,14 +57,16 @@ class Ulx3sTop extends Module {
     cpuRxData <= [uartRxValid, Const(0, width: 7), uartRxdLatch].swizzle();
     cpuTxStatus <= mux(txBusyLatch, Const(1, width: 16), Const(0, width: 16));
 
-    final cpu = CpuCore(
+    cpu = CpuCore(
       clk: clk24mhz,
-      rstN: rstN,
+      rstN: sysRstN,
       mmioRxData: cpuRxData,
       mmioTxStatus: cpuTxStatus,
+      config: config,
+      initHexFile: initHexFile,
+      initialMemory: initialMemory,
     );
 
-    final uartReset = ~rstN;
     final uart = Uart(
       clk: clk24mhz,
       reset: uartReset,
@@ -47,8 +77,12 @@ class Ulx3sTop extends Module {
     );
 
     ftdiRxd <= uart.serialTxd;
+    led <= cpu.debugPc.slice(7, 0);
 
-    Sequential(clk24mhz, reset: uartReset, resetValues: {uartRxValid: 0, uartRxdLatch: 0}, [
+    Sequential(clk24mhz, reset: uartReset, resetValues: {
+      uartRxValid: 0,
+      uartRxdLatch: 0,
+    }, [
       If(uart.rxdStrobe, then: [
         uartRxdLatch < uart.rxd,
         uartRxValid < 1,
@@ -59,7 +93,9 @@ class Ulx3sTop extends Module {
       ]),
     ]);
 
-    Sequential(clk24mhz, reset: uartReset, resetValues: {txBusyLatch: 0}, [
+    Sequential(clk24mhz, reset: uartReset, resetValues: {
+      txBusyLatch: 0,
+    }, [
       If(cpu.txStrobe, then: [
         txBusyLatch < 1,
       ], orElse: [
@@ -71,4 +107,6 @@ class Ulx3sTop extends Module {
   }
 
   Logic get ftdiRxd => output('ftdi_rxd');
+  Logic get wifiGpio0 => output('wifi_gpio0');
+  Logic get led => output('led');
 }

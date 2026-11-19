@@ -88,6 +88,16 @@ class CpuCore extends Module {
     final portBEn = Logic(name: 'port_b_en');
     final portBRdata = Logic(name: 'port_b_rdata', width: 16);
 
+    // Expose Port B bus for external peripherals / multi-core glue
+    final portBAddrOut = addOutput('port_b_addr_out', width: 16);
+    final portBWdataOut = addOutput('port_b_wdata_out', width: 16);
+    final portBWeOut = addOutput('port_b_we_out');
+    final portBEnOut = addOutput('port_b_en_out');
+    portBAddrOut <= portBAddr;
+    portBWdataOut <= portBWdata;
+    portBWeOut <= portBWe;
+    portBEnOut <= portBEn;
+
     // Low MMIO Decodes
     final isMmioCpuid =
         config.enableCpuid ? portBAddr.eq(Const(0x000D, width: 16)) : Const(0);
@@ -588,4 +598,8 @@ class CpuCore extends Module {
   Logic get txData => output('mmio_tx_data');
   Logic get txStrobe => output('mmio_tx_strobe');
   Logic get debugPc => output('debug_pc');
+  Logic get portBAddr => output('port_b_addr_out');
+  Logic get portBWdata => output('port_b_wdata_out');
+  Logic get portBWe => output('port_b_we_out');
+  Logic get portBEn => output('port_b_en_out');
 }

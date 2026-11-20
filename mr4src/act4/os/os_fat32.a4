@@ -257,3 +257,104 @@ u16 fat32_readdir(u16 fd, DirEntry *out) {
     }
     return 1;
 }
+
+// Find an 8.3 file (case-insensitive) in root dir and read up to max_words
+// packed 16-bit words into dst_buf. Returns word count (>0) or 0 on error.
+u16 fat32_read_file_root(u16 *filename, u16 *dst_buf, u16 max_words) {
+    u16 off        = 0;
+    u16 first      = 0;
+    u16 attr       = 0;
+    u16 clus_lo    = 0;
+    u16 clus_hi    = 0;
+    u16 size_lo    = 0;
+    u16 size_hi    = 0;
+    u16 total_wds  = 0;
+    u16 words_read = 0;
+    u16 sec_idx    = 0;
+    u16 w_idx      = 0;
+    u16 found      = 0;
+    u16 scan_clus_lo = root_clus_lo;
+    u16 scan_clus_hi = root_clus_hi;
+    u16 entry_name[8];
+
+    if (fat_mounted == 0) {
+        return 0;
+    }
+
+    while (found == 0) {
+        sec_idx = 0;
+        while (sec_idx < sec_per_clus && found == 0) {
+            cluster_to_lba(scan_clus_hi, scan_clus_lo);
+            add32(tmp32_hi, tmp32_lo, 0, sec_idx);
+            if (sd_read_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
+                return 0;
+            }
+            off = 0;
+            while (off < 512 && found == 0) {
+                first = getbyte(sec_buf, off);
+                attr  = getbyte(sec_buf, off + 11);
+                if (first == 0x00) {
+                    return 0;
+                }
+                if (first != 0xE5 && attr != 0x0F && (attr & 0x08) == 0 && (attr & 0x10) == 0) {
+                    format_83_name(off, entry_name);
+                    if (str_eq(entry_name, filename) == 1) {
+                        clus_lo = rd_u16(sec_buf, off + 26);
+                        clus_hi = rd_u16(sec_buf, off + 20);
+                        size_lo = rd_u16(sec_buf, off + 28);
+                        size_hi = rd_u16(sec_buf, off + 30);
+                        found = 1;
+                    }
+                }
+                off = off + 32;
+            }
+            sec_idx++;
+        }
+        if (found == 0) {
+            if (fat32_next_cluster(scan_clus_hi, scan_clus_lo) != 0) {
+                return 0;
+            }
+            scan_clus_hi = tmp32_hi;
+            scan_clus_lo = tmp32_lo;
+        }
+    }
+
+    if (size_hi != 0) {
+        total_wds = max_words;
+    } else {
+        total_wds = (size_lo + 1) >> 1;
+        if (total_wds > max_words) {
+            total_wds = max_words;
+        }
+    }
+
+    while (words_read < total_wds) {
+        if (clus_hi == 0 && clus_lo < 2) {
+            break;
+        }
+        sec_idx = 0;
+        while (sec_idx < sec_per_clus && words_read < total_wds) {
+            cluster_to_lba(clus_hi, clus_lo);
+            add32(tmp32_hi, tmp32_lo, 0, sec_idx);
+            if (sd_read_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
+                return 0;
+            }
+            w_idx = 0;
+            while (w_idx < 256 && words_read < total_wds) {
+                dst_buf[words_read] = sec_buf[w_idx];
+                words_read++;
+                w_idx++;
+            }
+            sec_idx++;
+        }
+        if (words_read < total_wds) {
+            if (fat32_next_cluster(clus_hi, clus_lo) != 0) {
+                break;
+            }
+            clus_hi = tmp32_hi;
+            clus_lo = tmp32_lo;
+        }
+    }
+
+    return words_read;
+}

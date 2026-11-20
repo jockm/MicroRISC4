@@ -104,9 +104,27 @@ void shell_exec(void) {
     } else if (str_eq(sh_cmd, "ls") == 1) {
         shell_cmd_ls();
     } else if (str_eq(sh_cmd, "run") == 1) {
-        uart_puts("TODO: stream FAT32 binary to worker: ");
-        uart_puts(sh_arg);
-        uart_nl();
+        if (getbyte(sh_arg, 0) == 0) {
+            uart_puts("Usage: run <file>\r\n");
+        } else {
+            err = fat32_read_file_root(sh_arg, run_img_buf, RUN_BUF_MAX);
+            if (err == 0) {
+                uart_puts("Failed to load file: ");
+                uart_puts(sh_arg);
+                uart_nl();
+            } else {
+                pid = proc_spawn_from_buf(sh_arg, run_img_buf, err);
+                if (pid == 0) {
+                    uart_puts("No free worker core\r\n");
+                } else {
+                    uart_puts("Spawned PID ");
+                    uart_putc(pid + 48);
+                    uart_puts(" (");
+                    uart_put_hex16(err);
+                    uart_puts(" words)\r\n");
+                }
+            }
+        }
     } else if (str_eq(sh_cmd, "cat") == 1) {
         uart_puts("TODO: cat ");
         uart_puts(sh_arg);

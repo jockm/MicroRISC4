@@ -14,21 +14,30 @@
 
 ## 2. Complete Opcode Map
 
-| Opcode [7:4] | Mnemonic | Operands | Description |
-| :---: | :--- | :--- | :--- |
-| `0x0` | `LD` | `Rr, Rl` | Copy register `Rl` to `Rr` |
-| `0x1` | `LD` | `R0, imm4` | Load 4-bit unsigned immediate into `R0` |
-| `0x2` | `LD` | `Rr, (Rl)` | Memory peek: read `mem[Rl]` into `Rr` |
-| `0x3` | `LD` | `(Rr), Rl` | Memory poke: write `Rl` into `mem[Rr]` |
-| `0x4` | `LD` | `Rr, (Rl++)` | Pop: read `mem[Rl]` into `Rr`, increment `Rl` |
-| `0x5` | `LD` | `(--Rr), Rl` | Push: decrement `Rr`, write `Rl` into `mem[Rr]` |
-| `0x6` | `ADD` | `Rr, Rl` | `Rr = Rr + Rl` |
-| `0x7` | `SUB` | `Rr, Rl` | `Rr = Rr - Rl` |
-| `0x8` | `OR` | `Rr, Rl` | `Rr = Rr \| Rl` |
-| `0x9` | `XOR` | `Rr, Rl` | `Rr = Rr ^ Rl` |
-| `0xA` | `AND` | `Rr, Rl` | `Rr = Rr & Rl` (Native single-cycle AND) |
-| `0xB` | `SHIFT` / `XCHG` | sub, `Rr` | Sub 0: `SHIFT.L`, Sub 1: `SHIFT.R`, Sub 2: `SHIFT.AR`, Sub 3: `XCHG Rr` |
-| `0xC` | `ROT` / `STEP` | sub, `Rr` | Sub 0: `ROT.L`, Sub 1: `ROT.R`, Sub 2: `INC Rr`, Sub 3: `DEC Rr` |
-| `0xD` | `JMP.Z` | `Rr, Rl` | Branch to `Rr` if `Rl == 0` |
-| `0xE` | `JMP.M` | `Rr, Rl` | Branch to `Rr` if `Rl[15] == 1` |
-| `0xF` | `SPECIAL` | sub, `Rr` | Sub 0: `JMP Rr`, Sub 1: `LINK Rr, R0`, Sub 2: `PUSH8 Rr, imm8`, Sub 3: `TRAP Rr, byte8` |
+| Opcode [7:4] | Sub [3:2] | Mnemonic | Operands | Description |
+| :---: | :---: | :--- | :--- | :--- |
+| `0x0` | — | `LD` | `Rr, Rl` | Copy register `Rl` to `Rr` |
+| `0x1` | — | `LD` | `R0, imm4` | Load 4-bit unsigned immediate into `R0` |
+| `0x2` | — | `LD` | `Rr, (Rl)` | Memory peek: read `mem[Rl]` into `Rr` |
+| `0x3` | — | `LD` | `(Rr), Rl` | Memory poke: write `Rl` into `mem[Rr]` |
+| `0x4` | — | `LD` | `Rr, (Rl++)` | Pop: read `mem[Rl]` into `Rr`, increment `Rl` |
+| `0x5` | — | `LD` | `(--Rr), Rl` | Push: decrement `Rr`, write `Rl` into `mem[Rr]` |
+| `0x6` | — | `ADD` | `Rr, Rl` | `Rr = Rr + Rl` |
+| `0x7` | — | `SUB` | `Rr, Rl` | `Rr = Rr - Rl` |
+| `0x8` | — | `OR` | `Rr, Rl` | `Rr = Rr \| Rl` |
+| `0x9` | — | `XOR` | `Rr, Rl` | `Rr = Rr ^ Rl` |
+| `0xA` | — | `AND` | `Rr, Rl` | `Rr = Rr & Rl` (Native single-cycle AND) |
+| `0xB` | `0` | `SHIFT.L` | `Rr` | Logical shift left by 1 bit |
+| `0xB` | `1` | `SHIFT.R` | `Rr` | Logical shift right by 1 bit |
+| `0xB` | `2` | `SHIFT.AR` | `Rr` | Arithmetic shift right by 1 bit |
+| `0xB` | `3` | `XCHG` | `Rr` | Exchange `Rr` with hardware shadow register `shadow_r[Rr]` |
+| `0xC` | `0` | `ROT.L` | `Rr` | Rotate left by 1 bit |
+| `0xC` | `1` | `ROT.R` | `Rr` | Rotate right by 1 bit |
+| `0xC` | `2` | `INC` | `Rr` | Increment `Rr` by 1 |
+| `0xC` | `3` | `DEC` | `Rr` | Decrement `Rr` by 1 |
+| `0xD` | — | `JMP.Z` | `Rr, Rl` | Branch to `Rr` if `Rl == 0` |
+| `0xE` | — | `JMP.M` | `Rr, Rl` | Branch to `Rr` if `Rl[15] == 1` |
+| `0xF` | `0` | `JMP` | `Rr` | Unconditional branch to `Rr` |
+| `0xF` | `1` | `LINK` | `Rr, R0` | Save the return address in `R0`, then branch to `Rr` |
+| `0xF` | `2` | `PUSH8` | `Rr, imm8` | Shift `Rr` left by 8 bits and insert `imm8` |
+| `0xF` | `3` | `TRAP` | `Rr, byte8` | Software trap using `Rr` and `byte8` |

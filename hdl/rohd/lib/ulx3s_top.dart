@@ -73,7 +73,7 @@ class Ulx3sTop extends Module {
       serialRxd: ftdiTxd,
       txd: cpu.txData,
       txdStrobe: cpu.txStrobe,
-      divisor: 12,
+      divisor: 16,
     );
 
     ftdiRxd <= uart.serialTxd;

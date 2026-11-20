@@ -47,12 +47,12 @@ module $definitionType (
     .CLKI_DIV(5),
     .CLKFB_DIV(2),
     .CLKOP_ENABLE("ENABLED"),
-    .CLKOP_DIV(54),
-    .CLKOP_CPHASE(27),
+    .CLKOP_DIV(48),
+    .CLKOP_CPHASE(24),
     .CLKOP_FPHASE(0),
     .CLKOS_ENABLE("ENABLED"),
-    .CLKOS_DIV(15),
-    .CLKOS_CPHASE(7),
+    .CLKOS_DIV(10),
+    .CLKOS_CPHASE(5),
     .CLKOS_FPHASE(0),
     .FEEDBK_PATH("CLKOP")
   ) pll_inst (

@@ -19,6 +19,9 @@ class CpuCore extends Module {
   static const int _stExec = 2;
   static const int _stMemWait = 3;
   static const int _stMemRd = 4;
+  static const int _stFetchLatch = 5;
+  static const int _stFetchWait = 6;
+  static const int _stMemWait2 = 7;
 
   CpuCore({
     required Logic clk,
@@ -152,7 +155,7 @@ class CpuCore extends Module {
 
     // Instruction Decode Logic
     final curInst = mux(slot.eq(MiniRISC4Constants.slotByte0),
-        portARdata.slice(7, 0), instReg.slice(7, 0));
+        instReg.slice(7, 0), instReg.slice(15, 8));
     final op = curInst.slice(7, 4);
     final rr = curInst.slice(3, 2);
     final rl = curInst.slice(1, 0);
@@ -256,8 +259,28 @@ class CpuCore extends Module {
                 state < Const(_stFetch, width: 3),
               ]),
 
-              // ST_FETCH: Wait 1 cycle for synchronous Port A BRAM read
+              // ST_FETCH: Cycle 1 of 2-cycle BRAM read; prefetch pc+1 in pipeline
               CaseItem(Const(_stFetch, width: 3), [
+                portAAddr < pc + 1,
+                portAEn < 1,
+                portBEn < 0,
+                portBWe < 0,
+                slot < MiniRISC4Constants.slotByte0,
+                state < Const(_stFetchWait, width: 3),
+              ]),
+
+              // ST_FETCH_WAIT: Cycle 2 of 2-cycle BRAM read (OUTREG settles)
+              CaseItem(Const(_stFetchWait, width: 3), [
+                portAEn < 0,
+                portBEn < 0,
+                portBWe < 0,
+                slot < MiniRISC4Constants.slotByte0,
+                state < Const(_stFetchLatch, width: 3),
+              ]),
+
+              // ST_FETCH_LATCH: Register fetched word into instReg (pc+1 already in flight)
+              CaseItem(Const(_stFetchLatch, width: 3), [
+                instReg < portARdata,
                 portAEn < 0,
                 portBEn < 0,
                 portBWe < 0,
@@ -292,7 +315,7 @@ class CpuCore extends Module {
 
                     // 0x2: LD Rr, (Rl) - Peek
                     CaseItem(Const(MiniRISC4Constants.opLdPeek, width: 4), [
-                      If(slot.eq(MiniRISC4Constants.slotByte0), then: [
+                      If(slot.eq(MiniRISC4Constants.slotByte1), then: [
                         instReg < portARdata,
                       ]),
                       portAEn < 0,
@@ -320,7 +343,7 @@ class CpuCore extends Module {
 
                     // 0x4: LD Rr, (Rl++) - Pop (Full Descending)
                     CaseItem(Const(MiniRISC4Constants.opLdPostinc, width: 4), [
-                      If(slot.eq(MiniRISC4Constants.slotByte0), then: [
+                      If(slot.eq(MiniRISC4Constants.slotByte1), then: [
                         instReg < portARdata,
                       ]),
                       portAEn < 0,
@@ -495,11 +518,14 @@ class CpuCore extends Module {
                           for (int i = 0; i < 4; i++)
                             If(rl.eq(i), then: [
                               r[i] <
-                                  [r[i].slice(7, 0), portARdata.slice(15, 8)]
+                                  [r[i].slice(7, 0), instReg.slice(15, 8)]
                                       .swizzle(),
                             ]),
-                          _branchTo(
-                              pc + 1, pc, portAAddr, portAEn, slot, state),
+                          pc < pc + 1,
+                          portAAddr < pc + 2,
+                          portAEn < 1,
+                          slot < MiniRISC4Constants.slotByte0,
+                          state < Const(_stFetchLatch, width: 3),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subTrap, width: 2), [
                           r[0] < pc + 1,
@@ -523,8 +549,16 @@ class CpuCore extends Module {
                 ]),
               ]),
 
-              // ST_MEM_WAIT: 1 cycle for synchronous Port B BRAM read to settle
+              // ST_MEM_WAIT: Cycle 1 of 2-cycle Port B BRAM read
               CaseItem(Const(_stMemWait, width: 3), [
+                portAEn < 0,
+                portBEn < 0,
+                portBWe < 0,
+                state < Const(_stMemWait2, width: 3),
+              ]),
+
+              // ST_MEM_WAIT2: Cycle 2 of 2-cycle Port B BRAM read (OUTREG settles)
+              CaseItem(Const(_stMemWait2, width: 3), [
                 portAEn < 0,
                 portBEn < 0,
                 portBWe < 0,
@@ -537,7 +571,7 @@ class CpuCore extends Module {
                 portBWe < 0,
                 for (int i = 0; i < 4; i++)
                   If(destReg.eq(i), then: [r[i] < effectivePortBData]),
-                _advanceFromMemRd(slot, instReg, portAAddr, portAEn, state, pc),
+                _advanceFromMemRd(slot, instReg, portARdata, portAAddr, portAEn, state, pc),
               ]),
             ], defaultItem: [
               state < Const(_stReset, width: 3),
@@ -552,26 +586,25 @@ class CpuCore extends Module {
       Logic portARdata, Logic portAAddr, Logic portAEn, Logic state, Logic pc) {
     return If(slot.eq(MiniRISC4Constants.slotByte0), then: [
       slot < MiniRISC4Constants.slotByte1,
-      instReg < [Const(0, width: 8), portARdata.slice(15, 8)].swizzle(),
-      portAAddr < pc + 1,
+      portAAddr < pc + 2,
       portAEn < 1,
       state < Const(_stExec, width: 3),
     ], orElse: [
       pc < pc + 1,
       slot < MiniRISC4Constants.slotByte0,
+      instReg < portARdata,
       portAEn < 0,
       state < Const(_stExec, width: 3),
     ]);
   }
 
-  /// Advance from ST_MEM_RD: Slot 0 shifts the previously saved instReg[15:8]
-  /// into instReg[7:0] and prefetches pc+1; Slot 1 already prefetched pc+1.
+  /// Advance from ST_MEM_RD: Slot 0 prefetches pc+2 and advances to Slot 1;
+  /// Slot 1 already latched pc+1 into instReg when entering ST_MEM_WAIT.
   static Conditional _advanceFromMemRd(Logic slot, Logic instReg,
-      Logic portAAddr, Logic portAEn, Logic state, Logic pc) {
+      Logic portARdata, Logic portAAddr, Logic portAEn, Logic state, Logic pc) {
     return If(slot.eq(MiniRISC4Constants.slotByte0), then: [
       slot < MiniRISC4Constants.slotByte1,
-      instReg < [Const(0, width: 8), instReg.slice(15, 8)].swizzle(),
-      portAAddr < pc + 1,
+      portAAddr < pc + 2,
       portAEn < 1,
       state < Const(_stExec, width: 3),
     ], orElse: [

@@ -68,8 +68,10 @@ class TdpBram extends Module with SystemVerilog {
     // Initialize outputs to 0 for clean simulation startup
     portARdata.put(0);
     portBRdata.put(0);
+    var portARdataRaw = 0;
+    var portBRdataRaw = 0;
 
-    // 1-cycle synchronous TDP RAM behavioral model for ROHD Simulator
+    // 2-cycle pipelined synchronous TDP RAM behavioral model (OUTREG)
     clk.posedge.listen((_) {
       final aEn = portAEn.value.isValid && portAEn.value.toBool();
       final bEn = portBEn.value.isValid && portBEn.value.toBool();
@@ -79,18 +81,23 @@ class TdpBram extends Module with SystemVerilog {
       final bAddr = portBAddr.value.isValid ? portBAddr.value.toInt() : 0;
       final bWdata = portBWdata.value.isValid ? portBWdata.value.toInt() : 0;
 
+      final prevARaw = portARdataRaw;
+      final prevBRaw = portBRdataRaw;
+
       if (aEn && aAddr < depth) {
-        portARdata.put(mem[aAddr]);
+        portARdataRaw = mem[aAddr];
       }
+      portARdata.put(prevARaw);
 
       if (bEn && bAddr < depth) {
         if (bWe) {
           mem[bAddr] = bWdata & 0xFFFF;
-          portBRdata.put(bWdata & 0xFFFF);
+          portBRdataRaw = bWdata & 0xFFFF;
         } else {
-          portBRdata.put(mem[bAddr]);
+          portBRdataRaw = mem[bAddr];
         }
       }
+      portBRdata.put(prevBRaw);
     });
   }
 
@@ -122,21 +129,26 @@ module $definitionType (
   (* ram_style = "block" *)
   logic [${dataWidth - 1}:0] mem [0:${depth - 1}];
 $initBlock
+  logic [${dataWidth - 1}:0] port_a_rdata_raw;
+  logic [${dataWidth - 1}:0] port_b_rdata_raw;
+
   always_ff @(posedge clk) begin
     if (port_a_en) begin
-      port_a_rdata <= mem[port_a_addr];
+      port_a_rdata_raw <= mem[port_a_addr];
     end
+    port_a_rdata <= port_a_rdata_raw;
   end
 
   always_ff @(posedge clk) begin
     if (port_b_en) begin
       if (port_b_we) begin
         mem[port_b_addr] <= port_b_wdata;
-        port_b_rdata <= port_b_wdata;
+        port_b_rdata_raw <= port_b_wdata;
       end else begin
-        port_b_rdata <= mem[port_b_addr];
+        port_b_rdata_raw <= mem[port_b_addr];
       end
     end
+    port_b_rdata <= port_b_rdata_raw;
   end
 endmodule
 ''';

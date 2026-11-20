@@ -1,0 +1,259 @@
+// ==============================================================================
+// FILE: mr4src/act4/os/os_fat32.a4
+// Core 0 FAT32 Filesystem Driver (8.3 Names)
+// ==============================================================================
+
+u16 sec_buf[256];               // Shared 512-byte (256-word) sector buffer
+
+// Mounted volume geometry (32-bit LBAs stored as hi/lo u16 pairs)
+u16 fat_lba_lo     = 0;
+u16 fat_lba_hi     = 0;
+u16 data_lba_lo    = 0;
+u16 data_lba_hi    = 0;
+u16 root_clus_lo   = 0;
+u16 root_clus_hi   = 0;
+u16 sec_per_clus   = 0;
+u16 fat_mounted    = 0;
+
+type DirEntry {
+    u16 attr;
+    u16 size_lo;
+    u16 size_hi;
+    u16 name[8];                // Null-terminated "FILENAME.EXT"
+};
+
+type FileHandle {
+    u16 in_use;
+    u16 is_dir;
+    u16 owner_core;
+    u16 cur_clus_lo;
+    u16 cur_clus_hi;
+    u16 sec_in_clus;            // 0 .. (sec_per_clus - 1)
+    u16 byte_in_sec;            // 0 .. 511
+    u16 size_lo;
+    u16 size_hi;
+    u16 pos_lo;
+    u16 pos_hi;
+};
+
+type FileHandle fds[8];
+
+// --- Little-Endian Unaligned Helpers (using ACT4 getbyte) ---
+u16 rd_u16(u16 *buf, u16 off) {
+    return getbyte(buf, off) | (getbyte(buf, off + 1) << 8);
+}
+
+// 32-bit add: (tmp32_hi:tmp32_lo) = (a_hi:a_lo) + (b_hi:b_lo)
+u16 tmp32_lo = 0;
+u16 tmp32_hi = 0;
+
+void add32(u16 a_hi, u16 a_lo, u16 b_hi, u16 b_lo) {
+    tmp32_lo = a_lo + b_lo;
+    tmp32_hi = a_hi + b_hi;
+    if (tmp32_lo < a_lo) {
+        tmp32_hi++;             // Carry into high word
+    }
+}
+
+// Convert cluster number to starting LBA in (tmp32_hi:tmp32_lo)
+void cluster_to_lba(u16 clus_hi, u16 clus_lo) {
+    u16 c_lo = clus_lo - 2;
+    u16 c_hi = clus_hi;
+    u16 s = sec_per_clus;
+    if (clus_lo < 2) {
+        c_hi--;
+    }
+    // Multiply (c_hi:c_lo) by sec_per_clus (always a power of 2 in FAT32)
+    while (s > 1) {
+        c_hi = (c_hi << 1) | (c_lo >> 15);
+        c_lo = c_lo << 1;
+        s = s >> 1;
+    }
+    add32(data_lba_hi, data_lba_lo, c_hi, c_lo);
+}
+
+// Look up next cluster in FAT32 table -> result in (tmp32_hi:tmp32_lo)
+// Returns 1 if end-of-chain (>= 0x0FFFFFF8), else 0
+u16 fat32_next_cluster(u16 clus_hi, u16 clus_lo) {
+    // 128 FAT32 entries per 512-byte sector
+    u16 fat_sec_lo = (clus_lo >> 7) | (clus_hi << 9);
+    u16 fat_sec_hi = clus_hi >> 7;
+    u16 ent_off    = (clus_lo & 0x007F) << 2;
+
+    add32(fat_lba_hi, fat_lba_lo, fat_sec_hi, fat_sec_lo);
+    if (sd_read_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
+        return 1;
+    }
+
+    tmp32_lo = rd_u16(sec_buf, ent_off);
+    tmp32_hi = rd_u16(sec_buf, ent_off + 2) & 0x0FFF;
+
+    if (tmp32_hi >= 0x0FFF && tmp32_lo >= 0xFFF8) {
+        return 1;               // End of cluster chain
+    }
+    return 0;
+}
+
+// Mount FAT32 volume from MBR Partition 0 (returns 0 = OK)
+u16 fat32_mount(void) {
+    u16 part_lba_lo = 0;
+    u16 part_lba_hi = 0;
+    u16 rsvd_secs   = 0;
+    u16 num_fats    = 0;
+    u16 fsz_lo      = 0;
+    u16 fsz_hi      = 0;
+    u16 i           = 0;
+
+    if (sd_init() != 0) {
+        return 1;
+    }
+    // Read Sector 0 (MBR)
+    if (sd_read_sector(0, 0, sec_buf) != 0) {
+        return 2;
+    }
+    part_lba_lo = rd_u16(sec_buf, 454);
+    part_lba_hi = rd_u16(sec_buf, 456);
+
+    // Read FAT32 Volume Boot Record (BPB)
+    if (sd_read_sector(part_lba_hi, part_lba_lo, sec_buf) != 0) {
+        return 3;
+    }
+
+    sec_per_clus = getbyte(sec_buf, 13);
+    rsvd_secs    = rd_u16(sec_buf, 14);
+    num_fats     = getbyte(sec_buf, 16);
+    fsz_lo       = rd_u16(sec_buf, 36);
+    fsz_hi       = rd_u16(sec_buf, 38);
+    root_clus_lo = rd_u16(sec_buf, 44);
+    root_clus_hi = rd_u16(sec_buf, 46);
+
+    // fat_lba = part_lba + rsvd_secs
+    add32(part_lba_hi, part_lba_lo, 0, rsvd_secs);
+    fat_lba_hi = tmp32_hi;
+    fat_lba_lo = tmp32_lo;
+
+    // data_lba = fat_lba + (num_fats * fat_size_32)
+    data_lba_hi = fat_lba_hi;
+    data_lba_lo = fat_lba_lo;
+    while (i < num_fats) {
+        add32(data_lba_hi, data_lba_lo, fsz_hi, fsz_lo);
+        data_lba_hi = tmp32_hi;
+        data_lba_lo = tmp32_lo;
+        i++;
+    }
+
+    fat_mounted = 1;
+    return 0;
+}
+
+// Format 11-byte FAT 8.3 name at sec_buf[off] into "NAME.EXT\0"
+void format_83_name(u16 off, u16 *dst) {
+    u16 i = 0;
+    u16 o = 0;
+    u16 ch = 0;
+
+    // 8-char base name (trim trailing spaces)
+    while (i < 8) {
+        ch = getbyte(sec_buf, off + i);
+        if (ch != 32) {
+            setbyte(dst, o, ch);
+            o++;
+        }
+        i++;
+    }
+    // 3-char extension (only add '.' if non-blank)
+    if (getbyte(sec_buf, off + 8) != 32) {
+        setbyte(dst, o, 46);    // '.'
+        o++;
+        i = 8;
+        while (i < 11) {
+            ch = getbyte(sec_buf, off + i);
+            if (ch != 32) {
+                setbyte(dst, o, ch);
+                o++;
+            }
+            i++;
+        }
+    }
+    setbyte(dst, o, 0);
+}
+
+// Open root directory ("/") into a FileHandle slot (returns fd or 0xFFFF)
+u16 fat32_opendir_root(u16 owner_core) {
+    u16 fd = 0;
+    if (fat_mounted == 0) {
+        return 0xFFFF;
+    }
+    while (fd < 8) {
+        if (fds[fd].in_use == 0) {
+            fds[fd].in_use      = 1;
+            fds[fd].is_dir      = 1;
+            fds[fd].owner_core  = owner_core;
+            fds[fd].cur_clus_lo = root_clus_lo;
+            fds[fd].cur_clus_hi = root_clus_hi;
+            fds[fd].sec_in_clus = 0;
+            fds[fd].byte_in_sec = 0;
+            return fd;
+        }
+        fd++;
+    }
+    return 0xFFFF;
+}
+
+void fat32_close(u16 fd) {
+    if (fd < 8) {
+        fds[fd].in_use = 0;
+    }
+}
+
+// Read next valid 8.3 directory entry into *out (0 = OK, 1 = EOF)
+u16 fat32_readdir(u16 fd, type DirEntry *out) {
+    u16 off   = 0;
+    u16 first = 0;
+    u16 attr  = 0;
+
+    if (fd >= 8 || fds[fd].in_use == 0) {
+        return 1;
+    }
+
+    while (true) {
+        cluster_to_lba(fds[fd].cur_clus_hi, fds[fd].cur_clus_lo);
+        add32(tmp32_hi, tmp32_lo, 0, fds[fd].sec_in_clus);
+        if (sd_read_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
+            return 1;
+        }
+
+        off = fds[fd].byte_in_sec;
+        while (off < 512) {
+            first = getbyte(sec_buf, off);
+            attr  = getbyte(sec_buf, off + 11);
+            off = off + 32;
+
+            if (first == 0x00) {
+                return 1;       // End of directory
+            }
+            // Skip deleted (0xE5), LFN (0x0F), and volume labels (0x08)
+            if (first != 0xE5 && attr != 0x0F && (attr & 0x08) == 0) {
+                fds[fd].byte_in_sec = off;
+                out->attr    = attr;
+                out->size_lo = rd_u16(sec_buf, off - 4);
+                out->size_hi = rd_u16(sec_buf, off - 2);
+                format_83_name(off - 32, out->name);
+                return 0;
+            }
+        }
+
+        // Advance to next sector / cluster
+        fds[fd].byte_in_sec = 0;
+        fds[fd].sec_in_clus++;
+        if (fds[fd].sec_in_clus >= sec_per_clus) {
+            fds[fd].sec_in_clus = 0;
+            if (fat32_next_cluster(fds[fd].cur_clus_hi, fds[fd].cur_clus_lo) != 0) {
+                return 1;
+            }
+            fds[fd].cur_clus_hi = tmp32_hi;
+            fds[fd].cur_clus_lo = tmp32_lo;
+        }
+    }
+    return 1;
+}

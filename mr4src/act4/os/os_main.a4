@@ -1,0 +1,206 @@
+// ==============================================================================
+// FILE: mr4src/act4/os/os_main.a4
+// Core 0 OS Kernel Entry, Trap 1 Handler & Syscall Dispatcher
+// ==============================================================================
+
+import "os_uart.a4";
+import "os_sd.a4";
+import "os_fat32.a4";
+import "os_proc.a4";
+import "os_shell.a4";
+
+// Syscall IDs matching worker_stub.asm 3-class wire framing
+// Class A: Scalar (0x00..0x0F)
+const u16 SYS_EXIT      = 0x01;
+const u16 SYS_PUTC      = 0x02;
+const u16 SYS_GETC      = 0x03;
+const u16 SYS_KILL      = 0x04;
+const u16 SYS_CLOSE     = 0x05;
+
+// Class B: Buffer Out (0x10..0x1F)
+const u16 SYS_WRITE_CON = 0x10;
+const u16 SYS_SPAWN     = 0x11;
+const u16 SYS_OPEN      = 0x12;
+const u16 SYS_WRITE     = 0x13;
+const u16 SYS_OPENDIR   = 0x14;
+const u16 SYS_UNLINK    = 0x15;
+
+// Class C: Buffer In (0x20..0x2F)
+const u16 SYS_READ      = 0x20;
+const u16 SYS_READDIR   = 0x21;
+const u16 SYS_PS        = 0x22;
+
+// Error Codes
+const u16 ERR_OK        = 0x0000;
+const u16 ERR_EMPTY     = 0x0001;
+const u16 ERR_IO        = 0x0002;
+const u16 ERR_EOF       = 0x0003;
+const u16 ERR_UNKNOWN   = 0xFFFF;
+
+u16 msg_pending = 0;
+u16 sys_buf[64];
+type DirEntry sys_ent;
+
+// -----------------------------------------------------------------------------
+// Trap 1 ISR (0x0110): Zero-spill flag setter
+// Preserves R1 & R2 via hardware shadow registers so main/shell is undisturbed.
+// -----------------------------------------------------------------------------
+void on_msg_ready(void) @ trap(1) {
+    asm {
+        XCHG    R1
+        XCHG    R2
+        LOAD16  R1, 1
+        LOAD16  R2, _msg_pending
+        LD      (R2), R1
+        XCHG    R2
+        XCHG    R1
+    }
+}
+
+// Drain remaining words of an unhandled syscall so FIFO stays aligned
+void drain_fifo(u16 count) {
+    u16 dummy = 0;
+    while (count > 0) {
+        dummy = fifo_in;
+        count--;
+    }
+}
+
+void handle_syscall(void) {
+    u16 hdr   = fifo_in;
+    u16 len   = fifo_in;
+    u16 pid   = hdr >> 8;
+    u16 id    = hdr & 0x00FF;
+    u16 arg1  = 0;
+    u16 arg2  = 0;
+    u16 extra = 0;
+    u16 wlen  = 0;
+    u16 i     = 0;
+    u16 ch    = 0;
+    u16 fd    = 0;
+
+    if (id == SYS_EXIT) {
+        arg1 = fifo_in;
+        proc_mark_exited(pid, arg1);
+        return;                         // No reply expected
+    }
+
+    if (id == SYS_PUTC) {
+        arg1 = fifo_in;
+        arg2 = fifo_in;
+        uart_putc(arg1);
+        fifo_out = ERR_OK;
+        fifo_out = 0;
+        return;
+    }
+
+    if (id == SYS_GETC) {
+        arg1 = fifo_in;
+        arg2 = fifo_in;
+        ch = uart_poll_getc();
+        if (ch == 0xFFFF) {
+            fifo_out = ERR_EMPTY;
+            fifo_out = 0;
+        } else {
+            fifo_out = ERR_OK;
+            fifo_out = ch;
+        }
+        return;
+    }
+
+    if (id == SYS_KILL) {
+        arg1 = fifo_in;
+        arg2 = fifo_in;
+        fifo_out = proc_kill(arg1);
+        fifo_out = 0;
+        return;
+    }
+
+    if (id == SYS_CLOSE) {
+        arg1 = fifo_in;
+        arg2 = fifo_in;
+        fat32_close(arg1);
+        fifo_out = ERR_OK;
+        fifo_out = 0;
+        return;
+    }
+
+    if (id == SYS_WRITE_CON) {
+        extra = fifo_in;
+        wlen  = fifo_in;
+        i = 0;
+        while (i < wlen) {
+            arg1 = fifo_in;
+            if (i < 63) {
+                sys_buf[i] = arg1;
+            }
+            i++;
+        }
+        sys_buf[63] = 0;
+        uart_puts(sys_buf);
+        fifo_out = ERR_OK;
+        fifo_out = wlen;
+        return;
+    }
+
+    if (id == SYS_OPENDIR) {
+        extra = fifo_in;
+        wlen  = fifo_in;
+        drain_fifo(wlen);               // v1: opens root "/"
+        fd = fat32_opendir_root(pid);
+        if (fd == 0xFFFF) {
+            fifo_out = ERR_IO;
+            fifo_out = 0;
+        } else {
+            fifo_out = ERR_OK;
+            fifo_out = fd;
+        }
+        return;
+    }
+
+    if (id == SYS_READDIR) {
+        extra = fifo_in;                // dir_fd
+        wlen  = fifo_in;                // max_words (11)
+        if (fat32_readdir(extra, &sys_ent) != 0) {
+            fifo_out = ERR_EOF;
+            fifo_out = 0;
+        } else {
+            fifo_out = ERR_OK;
+            fifo_out = 11;
+            fifo_out = sys_ent.attr;
+            fifo_out = sys_ent.size_lo;
+            fifo_out = sys_ent.size_hi;
+            i = 0;
+            while (i < 8) {
+                fifo_out = sys_ent.name[i];
+                i++;
+            }
+        }
+        return;
+    }
+
+    // Unknown syscall: drain payload and return error
+    drain_fifo(len);
+    fifo_out = ERR_UNKNOWN;
+    fifo_out = 0;
+}
+
+void main(void) {
+    proc_init();
+
+    uart_puts("\r\nMiniRISC4 OS v0.1 (Core 0)\r\n");
+    if (fat32_mount() == 0) {
+        uart_puts("FAT32 mounted OK\r\n");
+    } else {
+        uart_puts("FAT32 mount skipped/failed\r\n");
+    }
+    shell_prompt();
+
+    while (true) {
+        if (msg_pending != 0) {
+            msg_pending = 0;
+            handle_syscall();
+        }
+        shell_poll();
+    }
+}

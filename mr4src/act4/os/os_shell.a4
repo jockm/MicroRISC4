@@ -1,0 +1,149 @@
+// ==============================================================================
+// FILE: mr4src/act4/os/os_shell.a4
+// Non-Blocking Line Editor & Shell Commands
+// ==============================================================================
+
+const u16 LINE_MAX = 64;
+u16 sh_line[32];        // 64 bytes packed
+u16 sh_len = 0;
+
+u16 sh_cmd[8];          // 16-byte command token
+u16 sh_arg[16];         // 32-byte first argument token
+type DirEntry sh_ent;
+
+void shell_prompt(void) {
+    uart_puts("mr4> ");
+}
+
+// Split sh_line into sh_cmd and sh_arg (separated by space)
+void shell_tokenize(void) {
+    u16 i = 0;
+    u16 j = 0;
+    u16 ch = 0;
+
+    setbyte(sh_cmd, 0, 0);
+    setbyte(sh_arg, 0, 0);
+
+    // Skip leading spaces
+    while (getbyte(sh_line, i) == 32) {
+        i++;
+    }
+
+    // Copy command token
+    while (j < 15) {
+        ch = getbyte(sh_line, i);
+        if (ch == 0 || ch == 32) {
+            break;
+        }
+        setbyte(sh_cmd, j, ch);
+        i++;
+        j++;
+    }
+    setbyte(sh_cmd, j, 0);
+
+    // Skip spaces before arg
+    while (getbyte(sh_line, i) == 32) {
+        i++;
+    }
+
+    // Copy argument token
+    j = 0;
+    while (j < 31) {
+        ch = getbyte(sh_line, i);
+        if (ch == 0 || ch == 32) {
+            break;
+        }
+        setbyte(sh_arg, j, ch);
+        i++;
+        j++;
+    }
+    setbyte(sh_arg, j, 0);
+}
+
+void shell_cmd_ls(void) {
+    u16 fd = fat32_opendir_root(0);
+    if (fd == 0xFFFF) {
+        uart_puts("SD/FAT32 not mounted\r\n");
+        return;
+    }
+    while (fat32_readdir(fd, &sh_ent) == 0) {
+        if ((sh_ent.attr & 0x0010) != 0) {
+            uart_puts("<DIR>  ");
+        } else {
+            uart_puts("       ");
+        }
+        uart_puts(sh_ent.name);
+        uart_nl();
+    }
+    fat32_close(fd);
+}
+
+void shell_exec(void) {
+    u16 pid = 0;
+    u16 err = 0;
+
+    shell_tokenize();
+    if (getbyte(sh_cmd, 0) == 0) {
+        return;
+    }
+
+    if (str_eq(sh_cmd, "help") == 1) {
+        uart_puts("Commands: ps, run <file>, kill <pid>, ls, cat <file>, rm <file>\r\n");
+    } else if (str_eq(sh_cmd, "ps") == 1) {
+        proc_print_ps();
+    } else if (str_eq(sh_cmd, "kill") == 1) {
+        pid = parse_u16(sh_arg);
+        err = proc_kill(pid);
+        if (err == 0) {
+            uart_puts("Killed PID ");
+            uart_putc(pid + 48);
+            uart_nl();
+        } else {
+            uart_puts("kill failed\r\n");
+        }
+    } else if (str_eq(sh_cmd, "ls") == 1) {
+        shell_cmd_ls();
+    } else if (str_eq(sh_cmd, "run") == 1) {
+        uart_puts("TODO: stream FAT32 binary to worker: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else if (str_eq(sh_cmd, "cat") == 1) {
+        uart_puts("TODO: cat ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else if (str_eq(sh_cmd, "rm") == 1) {
+        uart_puts("TODO: rm ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else {
+        uart_puts("Unknown command: ");
+        uart_puts(sh_cmd);
+        uart_nl();
+    }
+}
+
+void shell_poll(void) {
+    u16 ch = uart_poll_getc();
+    if (ch == 0xFFFF) {
+        return;
+    }
+
+    if (ch == 13 || ch == 10) {
+        setbyte(sh_line, sh_len, 0);
+        uart_nl();
+        shell_exec();
+        sh_len = 0;
+        shell_prompt();
+    } else if (ch == 8 || ch == 127) {
+        if (sh_len > 0) {
+            sh_len--;
+            uart_putc(8);
+            uart_putc(32);
+            uart_putc(8);
+        }
+    } else if (sh_len < (LINE_MAX - 1)) {
+        setbyte(sh_line, sh_len, ch);
+        sh_len++;
+        uart_putc(ch);
+    }
+}

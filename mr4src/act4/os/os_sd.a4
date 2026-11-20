@@ -1,0 +1,139 @@
+// ==============================================================================
+// FILE: mr4src/act4/os/os_sd.a4
+// Core 0 SPI SDHC (SDv2) Block Driver (MMIO 0x0018 - 0x001A)
+// ==============================================================================
+
+u16 spi_ctrl @ 0x0018;
+u16 spi_stat @ 0x0019;
+u16 spi_data @ 0x001A;
+
+u16 sd_xfer(u16 tx) {
+    spi_data = tx & 0x00FF;
+    while ((spi_stat & 0x0001) != 0) {
+    }
+    return spi_data & 0x00FF;
+}
+
+void sd_select(void) {
+    spi_ctrl = spi_ctrl & 0xFFFE;   // CS_N = 0
+}
+
+void sd_deselect(void) {
+    spi_ctrl = spi_ctrl | 0x0001;   // CS_N = 1
+    sd_xfer(0xFF);                  // 8 trailing clocks
+}
+
+// Send 6-byte SD command, return R1 response byte
+u16 sd_cmd(u16 cmd, u16 arg_hi, u16 arg_lo, u16 crc) {
+    u16 i = 0;
+    u16 r1 = 0xFF;
+
+    sd_xfer(0xFF);
+    sd_xfer(0x40 | (cmd & 0x3F));
+    sd_xfer(arg_hi >> 8);
+    sd_xfer(arg_hi & 0x00FF);
+    sd_xfer(arg_lo >> 8);
+    sd_xfer(arg_lo & 0x00FF);
+    sd_xfer(crc);
+
+    // Wait up to 16 bytes for R1 (bit 7 == 0)
+    while (i < 16) {
+        r1 = sd_xfer(0xFF);
+        if ((r1 & 0x0080) == 0) {
+            return r1;
+        }
+        i++;
+    }
+    return 0xFF;
+}
+
+// Initialize SDv2 / SDHC card (returns 0 = OK, non-zero = error)
+u16 sd_init(void) {
+    u16 i = 0;
+    u16 r1 = 0;
+
+    // 1. Slow clock (~400 kHz), CS high, >= 80 dummy clocks
+    spi_ctrl = 0x0001;
+    while (i < 10) {
+        sd_xfer(0xFF);
+        i++;
+    }
+
+    // 2. CMD0: Enter SPI Idle state
+    sd_select();
+    r1 = sd_cmd(0, 0, 0, 0x95);
+    sd_deselect();
+    if (r1 != 0x01) {
+        return 1;
+    }
+
+    // 3. CMD8: Check SDv2 voltage range (0x000001AA)
+    sd_select();
+    r1 = sd_cmd(8, 0x0000, 0x01AA, 0x87);
+    sd_xfer(0xFF); sd_xfer(0xFF); sd_xfer(0xFF); sd_xfer(0xFF);
+    sd_deselect();
+    if (r1 != 0x01) {
+        return 2;
+    }
+
+    // 4. Loop CMD55 + ACMD41 (HCS=1) until card leaves idle
+    i = 0;
+    while (i < 2000) {
+        sd_select();
+        sd_cmd(55, 0, 0, 0x65);
+        sd_deselect();
+
+        sd_select();
+        r1 = sd_cmd(41, 0x4000, 0x0000, 0x77);
+        sd_deselect();
+
+        if (r1 == 0x00) {
+            spi_ctrl = 0x0003;      // CS_N = 1, FAST_CLK = 1 (~12 MHz)
+            return 0;
+        }
+        i++;
+    }
+    return 3;
+}
+
+// Read 512-byte sector at 32-bit LBA into 256-word buffer (0 = OK)
+u16 sd_read_sector(u16 lba_hi, u16 lba_lo, u16 *buf) {
+    u16 i = 0;
+    u16 tok = 0xFF;
+    u16 lo = 0;
+    u16 hi = 0;
+
+    sd_select();
+    if (sd_cmd(17, lba_hi, lba_lo, 0xFF) != 0x00) {
+        sd_deselect();
+        return 1;
+    }
+
+    // Wait for 0xFE data start token
+    while (i < 10000) {
+        tok = sd_xfer(0xFF);
+        if (tok == 0xFE) {
+            break;
+        }
+        i++;
+    }
+    if (tok != 0xFE) {
+        sd_deselect();
+        return 2;
+    }
+
+    // Read 512 bytes packed into 256 little-endian u16 words
+    i = 0;
+    while (i < 256) {
+        lo = sd_xfer(0xFF);
+        hi = sd_xfer(0xFF);
+        buf[i] = lo | (hi << 8);
+        i++;
+    }
+
+    // Discard 16-bit CRC
+    sd_xfer(0xFF);
+    sd_xfer(0xFF);
+    sd_deselect();
+    return 0;
+}

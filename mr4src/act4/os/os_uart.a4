@@ -1,0 +1,106 @@
+// ==============================================================================
+// FILE: mr4src/act4/os/os_uart.a4
+// Core 0 UART & Packed String Utilities
+// ==============================================================================
+
+u16 uart_rx @ 0x000E;
+u16 uart_tx @ 0x000F;
+
+void uart_putc(u16 ch) {
+    while (uart_tx != 0) {
+    }
+    uart_tx = ch;
+}
+
+void uart_puts(u16 *s) {
+    u16 i = 0;
+    u16 ch = 0;
+    while (true) {
+        ch = getbyte(s, i);
+        if (ch == 0) {
+            return;
+        }
+        uart_putc(ch);
+        i++;
+    }
+}
+
+void uart_nl(void) {
+    uart_putc(13);
+    uart_putc(10);
+}
+
+// Non-blocking RX: returns 0xFFFF if no key is waiting, else 0x0000..0x00FF
+u16 uart_poll_getc(void) {
+    u16 v = uart_rx;
+    if ((v & 0x8000) != 0) {
+        return v & 0x00FF;
+    }
+    return 0xFFFF;
+}
+
+void uart_put_hex_digit(u16 d) {
+    d = d & 0x000F;
+    if (d < 10) {
+        uart_putc(d + 48);
+    } else {
+        uart_putc(d + 55);
+    }
+}
+
+void uart_put_hex16(u16 w) {
+    uart_put_hex_digit(w >> 12);
+    uart_put_hex_digit(w >> 8);
+    uart_put_hex_digit(w >> 4);
+    uart_put_hex_digit(w);
+}
+
+// Compare two null-terminated packed strings (1 = equal, 0 = not equal)
+u16 str_eq(u16 *a, u16 *b) {
+    u16 i = 0;
+    u16 ca = 0;
+    u16 cb = 0;
+    while (true) {
+        ca = getbyte(a, i);
+        cb = getbyte(b, i);
+        if (ca != cb) {
+            return 0;
+        }
+        if (ca == 0) {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
+// Copy up to max_bytes-1 chars from src to dst and null-terminate
+void str_copy(u16 *dst, u16 *src, u16 max_bytes) {
+    u16 i = 0;
+    u16 ch = 0;
+    while (i < (max_bytes - 1)) {
+        ch = getbyte(src, i);
+        setbyte(dst, i, ch);
+        if (ch == 0) {
+            return;
+        }
+        i++;
+    }
+    setbyte(dst, max_bytes - 1, 0);
+}
+
+// Parse simple decimal u16 (e.g. for "kill 2")
+u16 parse_u16(u16 *s) {
+    u16 i = 0;
+    u16 acc = 0;
+    u16 ch = 0;
+    while (true) {
+        ch = getbyte(s, i);
+        if (ch < 48 || ch > 57) {
+            return acc;
+        }
+        acc = (acc * 10) + (ch - 48);
+        i++;
+    }
+    return acc;
+}

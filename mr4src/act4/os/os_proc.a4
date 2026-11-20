@@ -1,0 +1,123 @@
+// ==============================================================================
+// FILE: mr4src/act4/os/os_proc.a4
+// Core 0 Process Table & Worker Core Control
+// ==============================================================================
+
+u16 fifo_in  @ 0x000A;
+u16 fifo_out @ 0x000B;
+u16 mailbox  @ 0x000C;
+
+const u16 MAX_CORES      = 4;       // Core 0 = OS, Cores 1..3 = Workers
+const u16 PROC_FREE      = 0;
+const u16 PROC_LOAD      = 1;
+const u16 PROC_RUN       = 2;
+
+const u16 CMD_LOAD_MAGIC = 0x4C44;  // "LD" header expected by worker_stub.asm
+const u16 APP_LOAD_ADDR  = 0x0400;
+const u16 TRAP_KILL      = 14;      // TRAP_CORE_FAULT -> worker_stub reset
+
+type ProcEntry {
+    u16 state;
+    u16 exit_code;
+    u16 name[8];                    // 16-byte packed .asciz name
+};
+
+type ProcEntry procs[4];
+
+void proc_init(void) {
+    u16 i = 0;
+    procs[0].state = PROC_RUN;
+    str_copy(procs[0].name, "os_kernel", 16);
+
+    i = 1;
+    while (i < MAX_CORES) {
+        procs[i].state = PROC_FREE;
+        procs[i].exit_code = 0;
+        setbyte(procs[i].name, 0, 0);
+        i++;
+    }
+}
+
+// Find first FREE worker core (returns 0 if none available)
+u16 proc_alloc_core(void) {
+    u16 i = 1;
+    while (i < MAX_CORES) {
+        if (procs[i].state == PROC_FREE) {
+            return i;
+        }
+        i++;
+    }
+    return 0;
+}
+
+// Reclaim a worker core after SYS_EXIT or crash
+void proc_mark_exited(u16 pid, u16 code) {
+    if (pid == 0 || pid >= MAX_CORES) {
+        return;
+    }
+    procs[pid].state = PROC_FREE;
+    procs[pid].exit_code = code;
+    // TODO: close any open FileHandles owned by pid
+}
+
+// Force-kill a running worker core via Mailbox Trap 14
+u16 proc_kill(u16 pid) {
+    if (pid == 0 || pid >= MAX_CORES) {
+        return 1;                   // ERR_INVALID_PID
+    }
+    if (procs[pid].state == PROC_FREE) {
+        return 2;                   // ERR_NOT_RUNNING
+    }
+    mailbox = (pid << 8) | TRAP_KILL;
+    procs[pid].state = PROC_FREE;
+    procs[pid].exit_code = 0xFFFF;
+    // TODO: close any open FileHandles owned by pid
+    return 0;
+}
+
+// Stream a binary image into a free worker core and launch it
+u16 proc_spawn_from_buf(u16 *name, u16 *img, u16 word_count) {
+    u16 pid = proc_alloc_core();
+    u16 i = 0;
+    if (pid == 0) {
+        return 0;                   // No free cores
+    }
+
+    procs[pid].state = PROC_LOAD;
+    str_copy(procs[pid].name, name, 16);
+
+    // Send Load Packet matching worker_stub.asm
+    fifo_out = CMD_LOAD_MAGIC;
+    fifo_out = APP_LOAD_ADDR;
+    fifo_out = word_count;
+    fifo_out = APP_LOAD_ADDR;
+
+    while (i < word_count) {
+        fifo_out = img[i];
+        i++;
+    }
+
+    procs[pid].state = PROC_RUN;
+    return pid;
+}
+
+void proc_print_ps(void) {
+    u16 i = 0;
+    uart_puts("PID  STATE  NAME\r\n");
+    while (i < MAX_CORES) {
+        uart_putc(i + 48);
+        uart_puts("    ");
+        if (procs[i].state == PROC_FREE) {
+            uart_puts("FREE   -\r\n");
+        } else if (procs[i].state == PROC_LOAD) {
+            uart_puts("LOAD   ");
+            uart_puts(procs[i].name);
+            uart_nl();
+        } else {
+            uart_puts("RUN    ");
+            uart_puts(procs[i].name);
+            uart_nl();
+        }
+        i++;
+    }
+}

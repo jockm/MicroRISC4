@@ -1,0 +1,124 @@
+// ==============================================================================
+// FILE: lib/sys.a4
+// MiniRISC4 OS User-Space Syscall Client Library
+// Matches worker_stub.asm 3-class Trap 1 ABI
+// ==============================================================================
+
+// Class A: Scalar (0x00..0x0F)
+const u16 SYS_EXIT      = 0x01;
+const u16 SYS_PUTC      = 0x02;
+const u16 SYS_GETC      = 0x03;
+const u16 SYS_KILL      = 0x04;
+const u16 SYS_CLOSE     = 0x05;
+
+// Class B: Buffer Out (0x10..0x1F)
+const u16 SYS_WRITE_CON = 0x10;
+const u16 SYS_SPAWN     = 0x11;
+const u16 SYS_OPEN      = 0x12;
+const u16 SYS_WRITE     = 0x13;
+const u16 SYS_OPENDIR   = 0x14;
+const u16 SYS_UNLINK    = 0x15;
+
+// Class C: Buffer In (0x20..0x2F)
+const u16 SYS_READ      = 0x20;
+const u16 SYS_READDIR   = 0x21;
+const u16 SYS_PS        = 0x22;
+
+type DirEntry {
+    u16 attr;       // Bit 0: READ_ONLY, Bit 4: SUBDIR
+    u16 size_lo;
+    u16 size_hi;
+    u16 name[8];    // Null-terminated packed .asciz "FILENAME.EXT"
+};
+
+// Shared scratch for returning R2 from inline asm
+u16 _sys_r2 = 0;
+
+// Helper: count 16-bit words in a null-terminated packed .asciz string
+u16 str_word_len(u16 *s) {
+    u16 i = 0;
+    while (getbyte(s, i) != 0) {
+        i++;
+    }
+    return (i >> 1) + 1;    // Include terminating null byte
+}
+
+void sys_exit(u16 code) {
+    asm {
+        LOAD16  R0, _sys_exit_code
+        LD      R1, (R0)
+        LD0     R0
+        INC     R0          ; R0 = Trap vector 1
+        TRAP    R0, 0x01    ; SYS_EXIT
+    }
+}
+
+u16 sys_putc(u16 ch) {
+    asm {
+        LOAD16  R0, _sys_putc_ch
+        LD      R1, (R0)
+        LD0     R2
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x02    ; SYS_PUTC -> R1 = status
+    }
+}
+
+u16 sys_puts(u16 *s) {
+    u16 wlen = str_word_len(s);
+    asm {
+        LOAD16  R0, _sys_puts_s
+        LD      R1, (R0)    ; R1 = src_ptr
+        LOAD16  R0, _sys_puts_wlen
+        LD      R2, (R0)    ; R2 = word_len
+        LD0     R3          ; R3 = 0
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x10    ; SYS_WRITE_CON -> R1 = status
+    }
+}
+
+u16 sys_close(u16 fd) {
+    asm {
+        LOAD16  R0, _sys_close_fd
+        LD      R1, (R0)
+        LD0     R2
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x05    ; SYS_CLOSE -> R1 = status
+    }
+}
+
+u16 sys_opendir(u16 *path, u16 *out_fd) {
+    u16 wlen = str_word_len(path);
+    u16 st = 0;
+    asm {
+        LOAD16  R0, _sys_opendir_path
+        LD      R1, (R0)    ; R1 = path_ptr
+        LOAD16  R0, _sys_opendir_wlen
+        LD      R2, (R0)    ; R2 = word_len
+        LD0     R3          ; R3 = 0
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x14    ; SYS_OPENDIR -> R1 = status, R2 = dir_fd
+        LOAD16  R0, _sys_opendir_st
+        LD      (R0), R1
+        LOAD16  R0, __sys_r2
+        LD      (R0), R2
+    }
+    *out_fd = _sys_r2;
+    return st;
+}
+
+u16 sys_readdir(u16 dir_fd, type DirEntry *ent) {
+    asm {
+        LOAD16  R0, _sys_readdir_ent
+        LD      R1, (R0)    ; R1 = dst_ptr (&DirEntry)
+        LOAD16  R2, 11      ; R2 = sizeof(DirEntry) = 11 words
+        LOAD16  R0, _sys_readdir_dir_fd
+        LD      R3, (R0)    ; R3 = dir_fd
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x21    ; SYS_READDIR -> R1 = status, R2 = words_read
+    }
+}

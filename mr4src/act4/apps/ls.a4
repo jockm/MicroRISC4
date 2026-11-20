@@ -1,0 +1,31 @@
+// ==============================================================================
+// FILE: mr4src/act4/apps/ls.a4
+// Standalone User-Space Directory Listing App (loads at 0x0400)
+// ==============================================================================
+
+import "sys.a4";
+
+type DirEntry ent;
+
+void main(void) {
+    u16 dir_fd = 0;
+    u16 status = sys_opendir("/", &dir_fd);
+
+    if (status != 0) {
+        sys_puts("ls: failed to open /\r\n");
+        sys_exit(1);
+    }
+
+    while (sys_readdir(dir_fd, &ent) == 0) {
+        if ((ent.attr & 0x0010) != 0) {
+            sys_puts("<DIR>  ");
+        } else {
+            sys_puts("       ");
+        }
+        sys_puts(ent.name);
+        sys_puts("\r\n");
+    }
+
+    sys_close(dir_fd);
+    sys_exit(0);
+}

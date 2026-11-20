@@ -1,6 +1,8 @@
 // ==============================================================================
 // FILE: hdl/rohd/lib/tdp_bram.dart
-// Synthesizable 1-Cycle Synchronous True Dual-Port Block RAM (ECP5 DP16KD)
+// Banked 2-Cycle Pipelined True Dual-Port Block RAM (ECP5 DP16KD)
+// Splits 65,536 x 16-bit space into 4 x 16K banks (128 DP16KD total) with
+// registered bank select so the read mux doesn't span all 128 blocks at once.
 // ==============================================================================
 
 import 'dart:io';
@@ -29,7 +31,6 @@ class TdpBram extends Module with SystemVerilog {
     super.name = 'tdp_bram',
   })  : addrWidth = (depth - 1).bitLength,
         mem = Uint16List(depth) {
-    // Preload simulation RAM from hex file (if provided and present)
     if (initHexFile != null && File(initHexFile!).existsSync()) {
       final lines = File(initHexFile!).readAsLinesSync();
       var idx = 0;
@@ -45,7 +46,6 @@ class TdpBram extends Module with SystemVerilog {
         }
       }
     }
-    // Apply any programmatic overrides (for dart test)
     if (initialMemory != null) {
       initialMemory.forEach((addr, val) {
         if (addr >= 0 && addr < depth) {
@@ -65,13 +65,11 @@ class TdpBram extends Module with SystemVerilog {
     final portARdata = addOutput('port_a_rdata', width: dataWidth);
     final portBRdata = addOutput('port_b_rdata', width: dataWidth);
 
-    // Initialize outputs to 0 for clean simulation startup
     portARdata.put(0);
     portBRdata.put(0);
     var portARdataRaw = 0;
     var portBRdataRaw = 0;
 
-    // 2-cycle pipelined synchronous TDP RAM behavioral model (OUTREG)
     clk.posedge.listen((_) {
       final aEn = portAEn.value.isValid && portAEn.value.toBool();
       final bEn = portBEn.value.isValid && portBEn.value.toBool();
@@ -107,14 +105,115 @@ class TdpBram extends Module with SystemVerilog {
   @override
   String definitionVerilog(String definitionType) {
     final initBlock = (initHexFile != null && initHexFile!.isNotEmpty)
-        ? '''
+        ? """
   initial begin
     \$readmemh("$initHexFile", mem);
   end
-'''
+"""
         : '';
 
-    return '''
+    if (depth > 16384 && addrWidth >= 14) {
+      final bankCount = depth ~/ 16384;
+      final bankSelWidth = (bankCount - 1).bitLength;
+      final bankDecls = List.generate(
+        bankCount,
+        (b) => """
+  (* ram_style = "block" *)
+  logic [${dataWidth - 1}:0] bank${b}_mem [0:16383];
+  logic [${dataWidth - 1}:0] bank${b}_a_raw;
+  logic [${dataWidth - 1}:0] bank${b}_b_raw;""",
+      ).join('\n');
+
+      final bankCases = List.generate(
+        bankCount,
+        (b) => "        2'd$b: bank${b}_mem[_init_i[13:0]] = _flat_init_mem[_init_i];",
+      ).join('\n');
+
+      final bankInit = (initHexFile != null && initHexFile!.isNotEmpty)
+          ? """
+  integer _init_i;
+  initial begin
+    \$readmemh("$initHexFile", _flat_init_mem);
+    for (_init_i = 0; _init_i < $depth; _init_i = _init_i + 1) begin
+      case (_init_i[15:14])
+$bankCases
+      endcase
+    end
+  end"""
+          : '';
+
+      final flatInitDecl = (initHexFile != null && initHexFile!.isNotEmpty)
+          ? '  logic [${dataWidth - 1}:0] _flat_init_mem [0:${depth - 1}];'
+          : '';
+
+      final bankAlways = List.generate(
+        bankCount,
+        (b) => """
+  always_ff @(posedge clk) begin
+    if (port_a_en && (port_a_addr[${addrWidth - 1}:14] == ${bankSelWidth}'d$b)) begin
+      bank${b}_a_raw <= bank${b}_mem[port_a_addr[13:0]];
+    end
+    if (port_b_en && (port_b_addr[${addrWidth - 1}:14] == ${bankSelWidth}'d$b)) begin
+      if (port_b_we) begin
+        bank${b}_mem[port_b_addr[13:0]] <= port_b_wdata;
+        bank${b}_b_raw <= port_b_wdata;
+      end else begin
+        bank${b}_b_raw <= bank${b}_mem[port_b_addr[13:0]];
+      end
+    end
+  end""",
+      ).join('\n');
+
+      final aMuxExpr = List.generate(
+        bankCount,
+        (b) => "((a_bank_q == ${bankSelWidth}'d$b) ? bank${b}_a_raw : 16'h0)",
+      ).join(' | ');
+
+      final bMuxExpr = List.generate(
+        bankCount,
+        (b) => "((b_bank_q == ${bankSelWidth}'d$b) ? bank${b}_b_raw : 16'h0)",
+      ).join(' | ');
+
+      return """
+module $definitionType (
+  input  logic clk,
+  input  logic [${addrWidth - 1}:0] port_a_addr,
+  input  logic port_a_en,
+  output logic [${dataWidth - 1}:0] port_a_rdata,
+  input  logic [${addrWidth - 1}:0] port_b_addr,
+  input  logic [${dataWidth - 1}:0] port_b_wdata,
+  input  logic port_b_we,
+  input  logic port_b_en,
+  output logic [${dataWidth - 1}:0] port_b_rdata
+);
+$flatInitDecl
+$bankDecls
+  logic [${bankSelWidth - 1}:0] a_bank_d, a_bank_q;
+  logic [${bankSelWidth - 1}:0] b_bank_d, b_bank_q;
+$bankInit
+
+  assign a_bank_d = port_a_addr[${addrWidth - 1}:14];
+  assign b_bank_d = port_b_addr[${addrWidth - 1}:14];
+
+  always_ff @(posedge clk) begin
+    if (port_a_en) begin
+      a_bank_q <= a_bank_d;
+    end
+    if (port_b_en) begin
+      b_bank_q <= b_bank_d;
+    end
+  end
+$bankAlways
+
+  always_ff @(posedge clk) begin
+    port_a_rdata <= ($aMuxExpr);
+    port_b_rdata <= ($bMuxExpr);
+  end
+endmodule
+""";
+    }
+
+    return """
 module $definitionType (
   input  logic clk,
   input  logic [${addrWidth - 1}:0] port_a_addr,
@@ -151,6 +250,6 @@ $initBlock
     port_b_rdata <= port_b_rdata_raw;
   end
 endmodule
-''';
+""";
   }
 }

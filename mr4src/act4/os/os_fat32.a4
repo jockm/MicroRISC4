@@ -36,7 +36,7 @@ type FileHandle {
     u16 pos_hi;
 };
 
-type FileHandle fds[8];
+FileHandle fds[8];
 
 // --- Little-Endian Unaligned Helpers (using ACT4 getbyte) ---
 u16 rd_u16(u16 *buf, u16 off) {
@@ -207,7 +207,7 @@ void fat32_close(u16 fd) {
 }
 
 // Read next valid 8.3 directory entry into *out (0 = OK, 1 = EOF)
-u16 fat32_readdir(u16 fd, type DirEntry *out) {
+u16 fat32_readdir(u16 fd, DirEntry *out) {
     u16 off   = 0;
     u16 first = 0;
     u16 attr  = 0;

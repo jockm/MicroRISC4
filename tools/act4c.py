@@ -342,7 +342,7 @@ class Parser:
                 self.parse_type_def()
             elif self.match("CONST"):
                 nodes.append(self.parse_const_decl())
-            elif self.match("U16", "VOID") or (self.match("IDENT") and self.cur().value in self.structs) or self.match("FUNC"):
+            elif self.match("U16", "VOID") or (self.match("IDENT") and (self.cur().value in self.structs or self.peek(1).type in ("IDENT", "STAR"))) or self.match("FUNC"):
                 node = self.parse_top_level_decl()
                 if node:
                     nodes.append(node)
@@ -417,7 +417,7 @@ class Parser:
         elif self.match("VOID"):
             self.consume("VOID")
             base = "void"
-        elif self.match("IDENT") and self.cur().value in self.structs:
+        elif self.match("IDENT") and (self.cur().value in self.structs or self.peek(1).type in ("IDENT", "STAR")):
             base = self.consume("IDENT").value
         else:
             raise CompilerError(f"Expected type specifier, got {self.cur().value}", self.cur())
@@ -557,7 +557,7 @@ class Parser:
     def is_decl_start(self) -> bool:
         if self.match("U16", "VOID", "FUNC"):
             return True
-        if self.match("IDENT") and self.cur().value in self.structs:
+        if self.match("IDENT") and (self.cur().value in self.structs or self.peek(1).type in ("IDENT", "STAR")):
             return True
         return False
 
@@ -659,14 +659,36 @@ class Parser:
     def parse_asm(self) -> AsmBlock:
         self.consume("ASM")
         self.consume("LBRACE")
-        lines = []
+        stmts = []
+        cur_parts = []
+        line_starters = {
+            "NOP", "LD", "ADD", "SUB", "OR", "XOR", "AND",
+            "SHIFT.L", "SHIFT.R", "SHIFT.AR", "XCHG", "XCHGALL",
+            "ROT.L", "ROT.R", "INC", "DEC",
+            "JMP.Z", "JMP.M", "JMP", "LINK", "PUSH8", "TRAP",
+            "APUSH", "APOP", "RPUSH", "RPOP", "RCALL", "RRET",
+            "PUSHALL", "POPALL", "SWAP", "LD0", "NOT", "NEG",
+            "BYTE_GET_LO", "BYTE_GET_HI", "PUTC", "GETC",
+            "START_PROGRAM", "LOAD16",
+            ".ORG", ".DEFINE", ".WORD", ".BYTE", ".ASCIZ", ".ALIGN"
+        }
         while not self.match("RBRACE"):
             tok = self.tokens[self.pos]
             self.pos += 1
-            lines.append(tok.value)
+            if tok.type == "COMMENT":
+                continue
+            u = tok.value.upper()
+            if u in line_starters and cur_parts:
+                stmts.append(" ".join(cur_parts).replace("( ", "(").replace(" )", ")"))
+                cur_parts = [tok.value]
+            elif tok.type == "COMMA" and cur_parts:
+                cur_parts[-1] = cur_parts[-1] + ","
+            else:
+                cur_parts.append(tok.value)
+        if cur_parts:
+            stmts.append(" ".join(cur_parts).replace("( ", "(").replace(" )", ")"))
         self.consume("RBRACE")
-        return AsmBlock(" ".join(lines))
-
+        return AsmBlock("\n".join(stmts))
     def parse_trap(self) -> TrapStmt:
         self.consume("TRAP")
         self.consume("LPAREN")
@@ -1630,8 +1652,43 @@ def main():
     constants: Dict[str, int] = {}
     parser_obj = Parser(tokens, structs, constants)
 
+    imported_files = {os.path.abspath(args.input)}
+    search_dirs = [os.path.dirname(os.path.abspath(args.input))] + list(args.include)
+
+    def resolve_import(rel_name: str, base_file: str) -> str:
+        local_candidate = os.path.join(os.path.dirname(os.path.abspath(base_file)), rel_name)
+        if os.path.exists(local_candidate):
+            return os.path.abspath(local_candidate)
+        for d in search_dirs:
+            cand = os.path.join(d, rel_name)
+            if os.path.exists(cand):
+                return os.path.abspath(cand)
+        raise CompilerError(f"Imported file not found: '{rel_name}'", filename=base_file, line=1)
+
+    def parse_file_with_imports(filepath: str) -> List[ASTNode]:
+        with open(filepath, "r", encoding="utf-8") as fh:
+            fsrc = fh.read()
+        ftoks = tokenize(fsrc, filepath)
+        fparser = Parser(ftoks, structs, constants)
+        fparser.str_count = parser_obj.str_count
+        raw_nodes = fparser.parse_program()
+        parser_obj.str_count = fparser.str_count
+        parser_obj.string_literals.extend(fparser.string_literals)
+
+        out_nodes: List[ASTNode] = []
+        # Re-scan import strings in order
+        for idx, t in enumerate(ftoks):
+            if t.type == "IMPORT" and idx + 1 < len(ftoks) and ftoks[idx + 1].type == "STR_LIT":
+                imp_rel = ftoks[idx + 1].value[1:-1]
+                imp_abs = resolve_import(imp_rel, filepath)
+                if imp_abs not in imported_files:
+                    imported_files.add(imp_abs)
+                    out_nodes.extend(parse_file_with_imports(imp_abs))
+        out_nodes.extend(raw_nodes)
+        return out_nodes
+
     try:
-        ast = parser_obj.parse_program()
+        ast = parse_file_with_imports(os.path.abspath(args.input))
     except CompilerError as e:
         print(e, file=sys.stderr)
         sys.exit(1)

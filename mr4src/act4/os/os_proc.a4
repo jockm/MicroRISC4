@@ -22,7 +22,7 @@ type ProcEntry {
     u16 name[8];                    // 16-byte packed .asciz name
 };
 
-type ProcEntry procs[4];
+ProcEntry procs[4];
 
 void proc_init(void) {
     u16 i = 0;

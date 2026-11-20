@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# mbuild - MiniRISC4 Unified Build & Driver Script
+# ==============================================================================
+set -euo pipefail
+
+SELF_SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SELF_SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SELF_SOURCE")" >/dev/null 2>&1 && pwd)"
+    SELF_SOURCE="$(readlink "$SELF_SOURCE")"
+    [[ "$SELF_SOURCE" != /* ]] && SELF_SOURCE="$DIR/$SELF_SOURCE"
+done
+PROJECT_ROOT="$(cd -P "$(dirname "$SELF_SOURCE")" >/dev/null 2>&1 && pwd)"
+
+# macOS writes ._ metadata files on non-Apple file systems (such as exFAT).
+# When mbuild is run directly (not from make) and dot_clean exists, remove them
+# on the way out without changing the exit status.
+if [ -z "${MAKELEVEL:-}" ] && command -v dot_clean > /dev/null 2>&1; then
+    trap 'dot_clean "$PROJECT_ROOT" > /dev/null 2>&1 || true' EXIT
+fi
+
+# Toolchain paths
+TOOL_DIR="${PROJECT_ROOT}/tools"
+ACT4C="${TOOL_DIR}/act4c.py"
+MR4ASM="${TOOL_DIR}/mr4asm.py"
+MR4SIM="${TOOL_DIR}/mr4sim.py"
+LIB_DIR="${PROJECT_ROOT}/lib"
+
+require_tool() {
+    if [ ! -f "$1" ]; then
+        echo "Error: $(basename "$1") not found at '$1'." >&2
+        exit 1
+    fi
+}
+
+print_usage() {
+    cat << "HELP_TEXT"
+Usage: mbuild [options] <source-file> [source-files...]
+
+A unified build driver for MiniRISC4 assembly (.asm) and ACT4 (.a4) programs.
+
+Positional Arguments:
+  source-file            One or more source files (.a4 and/or .asm)
+
+Options:
+  -o, --output <file>    Output binary path (default: build/<name>.<ext>)
+  -l, --listing <file>   Output listing path (default: build/<name>.lst)
+      --no-listing       Do not generate an assembly listing file
+  -I, --include <dir>    Additional include search directory (repeatable)
+      --format <fmt>     Output format: bin, fullbin, sparsebin, or hex
+                         (default: bin)
+      --org <addr>       Code origin address for ACT4 (default: 0x0200)
+      --nopreamble       Omit ACT4 startup vector and stack preamble
+      --trap-base <addr> Pass --trap-base <addr> to mr4asm.py
+      --sim              Run tools/mr4sim.py after successful build
+      --trace            Pass --trace to mr4sim.py when running with --sim
+      --startaddr <addr> Pass --startaddr <addr> to mr4sim.py (default: 0x0100)
+  -v, --verbose          Verbose output
+  -h, --help             Show this help message and exit
+
+Workflow:
+  - If input is .a4:  Compiles with act4c.py to .asm, then assembles with mr4asm.py.
+  - If input is .asm: Assembles directly with mr4asm.py.
+  - If --sim is set:  Runs tools/mr4sim.py on the built binary.
+
+Tools: tools/act4c.py, tools/mr4asm.py, tools/mr4sim.py.
+HELP_TEXT
+}
+
+SOURCES=()
+OUTPUT=""
+LISTING=""
+NO_LISTING=0
+FORMAT="bin"
+VERBOSE=0
+RUN_SIM=0
+SIM_TRACE=0
+SIM_STARTADDR=""
+INCLUDES=()
+ACT4_FLAGS=()
+ASM_FLAGS=()
+
+if [ -d "$LIB_DIR" ]; then
+    INCLUDES+=("-I" "$LIB_DIR")
+fi
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            print_usage
+            exit 0
+            ;;
+        -v|--verbose)
+            VERBOSE=1
+            shift
+            ;;
+        -o|--output)
+            if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
+                echo "Error: Option $1 requires an argument." >&2
+                exit 1
+            fi
+            OUTPUT="$2"
+            shift 2
+            ;;
+        -l|--listing)
+            if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
+                echo "Error: Option $1 requires an argument." >&2
+                exit 1
+            fi
+            LISTING="$2"
+            shift 2
+            ;;
+        --no-listing)
+            NO_LISTING=1
+            shift
+            ;;
+        -I|--include)
+            if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
+                echo "Error: Option $1 requires an argument." >&2
+                exit 1
+            fi
+            INCLUDES+=("-I" "$2")
+            shift 2
+            ;;
+        --format)
+            if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
+                echo "Error: Option --format requires an argument." >&2
+                exit 1
+            fi
+            case "$2" in
+                bin|fullbin|sparsebin|hex)
+                    FORMAT="$2"
+                    ;;
+                *)
+                    echo "Error: Invalid format '$2'. Allowed: bin, fullbin, sparsebin, hex." >&2
+                    exit 1
+                    ;;
+            esac
+            shift 2
+            ;;
+        --org)
+            if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
+                echo "Error: Option --org requires an argument." >&2
+                exit 1
+            fi
+            ACT4_FLAGS+=("--org" "$2")
+            shift 2
+            ;;
+        --nopreamble)
+            ACT4_FLAGS+=("--nopreamble")
+            shift
+            ;;
+        --trap-base)
+            if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
+                echo "Error: Option --trap-base requires an argument." >&2
+                exit 1
+            fi
+            ASM_FLAGS+=("--trap-base" "$2")
+            shift 2
+            ;;
+        --sim)
+            RUN_SIM=1
+            shift
+            ;;
+        --trace)
+            SIM_TRACE=1
+            shift
+            ;;
+        --startaddr)
+            if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
+                echo "Error: Option --startaddr requires an argument." >&2
+                exit 1
+            fi
+            SIM_STARTADDR="$2"
+            shift 2
+            ;;
+        -*)
+            echo "Error: Unrecognized option '$1'." >&2
+            echo "Run 'mbuild --help' for usage." >&2
+            exit 1
+            ;;
+        *)
+            SOURCES+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [ "${#SOURCES[@]}" -eq 0 ]; then
+    echo "Error: No source file specified." >&2
+    print_usage >&2
+    exit 1
+fi
+
+ACT4_INPUTS=()
+ASM_INPUTS=()
+
+for s in "${SOURCES[@]}"; do
+    if [ ! -f "$s" ]; then
+        echo "Error: Source file not found: '$s'" >&2
+        exit 1
+    fi
+    ext="${s##*.}"
+    if [ "$ext" = "a4" ]; then
+        ACT4_INPUTS+=("$s")
+    elif [ "$ext" = "asm" ]; then
+        ASM_INPUTS+=("$s")
+    else
+        echo "Error: Unsupported file type '.$ext' for '$s'. mbuild expects .a4 or .asm files." >&2
+        exit 1
+    fi
+done
+
+if [ "${#ACT4_INPUTS[@]}" -gt 1 ]; then
+    echo "Error: act4c.py accepts one .a4 entry file at a time (use 'import' for modules)." >&2
+    exit 1
+fi
+
+# Verify required tools exist
+if [ "${#ACT4_INPUTS[@]}" -gt 0 ]; then
+    require_tool "$ACT4C"
+fi
+require_tool "$MR4ASM"
+if [ "$RUN_SIM" -eq 1 ]; then
+    require_tool "$MR4SIM"
+fi
+
+PRIMARY_SOURCE="${SOURCES[0]}"
+PRIMARY_DIR="$(cd -P "$(dirname "$PRIMARY_SOURCE")" >/dev/null 2>&1 && pwd)"
+BASE_NAME="$(basename "$PRIMARY_SOURCE")"
+STEM="${BASE_NAME%.*}"
+
+# Add primary source directory to include path for local imports/.includes
+INCLUDES+=("-I" "$PRIMARY_DIR")
+
+OUT_EXT="bin"
+if [ "$FORMAT" = "hex" ]; then
+    OUT_EXT="hex"
+fi
+
+if [ -z "$OUTPUT" ]; then
+    OUTPUT="build/${STEM}.${OUT_EXT}"
+fi
+
+OUTPUT_DIR="$(dirname "$OUTPUT")"
+if [ -n "$OUTPUT_DIR" ]; then
+    mkdir -p "$OUTPUT_DIR"
+fi
+
+if [ "$NO_LISTING" -eq 0 ] && [ -z "$LISTING" ]; then
+    LISTING="${OUTPUT_DIR}/${STEM}.lst"
+fi
+
+# Run a command quietly, printing its output only on failure or warning
+run_step() {
+    local label="$1"
+    shift
+    if [ "$VERBOSE" -eq 1 ]; then
+        echo "==> [mbuild] $label"
+        "$@"
+    else
+        local tmp
+        local status=0
+        tmp=$(mktemp)
+        "$@" > "$tmp" 2>&1 || status=$?
+        if [ "$status" -ne 0 ]; then
+            echo "==> [mbuild] FAILED: $label" >&2
+            cat "$tmp" >&2
+            rm -f "$tmp"
+            exit "$status"
+        fi
+        if grep -qiE "warning|info:" "$tmp"; then
+            cat "$tmp"
+        fi
+        rm -f "$tmp"
+    fi
+}
+
+# 1. ACT4 compilation step (if a .a4 file is present)
+ASM_SOURCES=()
+if [ "${#ACT4_INPUTS[@]}" -gt 0 ]; then
+    ACT4_ASM="${OUTPUT_DIR}/${STEM}.asm"
+    run_step "Compiling ACT4: ${ACT4_INPUTS[0]} -> $ACT4_ASM" \
+        python3 "$ACT4C" "${ACT4_INPUTS[0]}" -o "$ACT4_ASM" \
+        ${INCLUDES[@]+"${INCLUDES[@]}"} \
+        ${ACT4_FLAGS[@]+"${ACT4_FLAGS[@]}"}
+    ASM_SOURCES+=("$ACT4_ASM")
+fi
+
+# Append any standalone .asm inputs
+if [ "${#ASM_INPUTS[@]}" -gt 0 ]; then
+    ASM_SOURCES+=("${ASM_INPUTS[@]}")
+fi
+
+# 2. Assemble step
+ASM_CMD=(python3 "$MR4ASM" "${ASM_SOURCES[@]}" ${INCLUDES[@]+"${INCLUDES[@]}"} "--${FORMAT}" -o "$OUTPUT")
+if [ "$NO_LISTING" -eq 0 ]; then
+    ASM_CMD+=("-l" "$LISTING")
+fi
+if [ "${#ASM_FLAGS[@]}" -gt 0 ]; then
+    ASM_CMD+=("${ASM_FLAGS[@]}")
+fi
+
+run_step "Assembling: ${ASM_SOURCES[*]} -> $OUTPUT" "${ASM_CMD[@]}"
+
+if [ "$VERBOSE" -eq 1 ]; then
+    echo "==> [mbuild] Successfully built $OUTPUT"
+fi
+
+# ------------------------------------------------------------------------------
+# Simulator Invocation
+# ------------------------------------------------------------------------------
+if [ "$RUN_SIM" -eq 1 ]; then
+    SIM_ARGS=()
+    if [ "$SIM_TRACE" -eq 1 ]; then
+        SIM_ARGS+=("--trace")
+    fi
+    if [ -n "$SIM_STARTADDR" ]; then
+        SIM_ARGS+=("--startaddr" "$SIM_STARTADDR")
+    fi
+
+    if [ "$VERBOSE" -eq 1 ]; then
+        echo "==> [mbuild] Running simulator: python3 $MR4SIM $OUTPUT ${SIM_ARGS[*]:-}"
+    fi
+
+    sim_status=0
+    python3 "$MR4SIM" "$OUTPUT" ${SIM_ARGS[@]+"${SIM_ARGS[@]}"} || sim_status=$?
+    exit "$sim_status"
+fi

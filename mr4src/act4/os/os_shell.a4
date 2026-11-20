@@ -9,7 +9,7 @@ u16 sh_len = 0;
 
 u16 sh_cmd[8];          // 16-byte command token
 u16 sh_arg[16];         // 32-byte first argument token
-type DirEntry sh_ent;
+DirEntry sh_ent;
 
 void shell_prompt(void) {
     uart_puts("mr4> ");

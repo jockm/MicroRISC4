@@ -89,9 +89,10 @@ _loader_idle:
     LD      R1, (R0)                ; Poll inbound FIFO (0 = empty)
     LOAD16  R2, CMD_LOAD_MAGIC
     SUB     R1, R2
-    LOAD16  R3, _loader_idle
-    JMP.Z   _loader_start_rx, R1    ; Magic matched -> begin load
-    JMP     R3
+    LOAD16  R0, _loader_start_rx
+    JMP.Z   R0, R1                  ; Magic matched -> begin load
+    LOAD16  R0, _loader_idle
+    JMP     R0
 
 _loader_start_rx:
     ; Pop load header: [load_addr, word_count, entry_addr]
@@ -140,7 +141,7 @@ _send_exit_and_idle:
     LOAD16  R0, _push_hdr_helper
     LINK    R0, R0                  ; Push [(CPUID << 8) | SYS_EXIT_ID]
     LD      R0, 11                  ; FIFO_OUT
-    LD      R1, 1                   ; Payload len = 1
+    LOAD16  R1, 1                   ; Payload len = 1
     LD      (R0), R1
     LOAD16  R2, STUB_ARG1
     LD      R1, (R2)                ; Exit code
@@ -210,7 +211,7 @@ _sys_dispatch:
 ; Sends: [len=2, ARG1, ARG2]  |  Receives: [status -> R1, result -> R2]
 _sys_class_scalar:
     LD      R0, 11                  ; FIFO_OUT
-    LD      R1, 2                   ; payload_len = 2
+    LOAD16  R1, 2                   ; payload_len = 2
     LD      (R0), R1
     LOAD16  R2, STUB_ARG1
     LD      R1, (R2)
@@ -257,7 +258,7 @@ _buf_out_loop:
 ; Receives: [status -> R1, words_read -> R2, w0..wN-1 -> mem[dst_ptr++]]
 _sys_class_buf_in:
     LD      R0, 11                  ; FIFO_OUT
-    LD      R1, 2                   ; payload_len = 2
+    LOAD16  R1, 2                   ; payload_len = 2
     LD      (R0), R1
     LOAD16  R2, STUB_ARG3
     LD      R1, (R2)
@@ -318,7 +319,7 @@ _sys_wait_scalar_reply:
 ;  later only requires updating this helper and the MAILBOX strobe.)
 ; ------------------------------------------------------------------------------
 _push_hdr_helper:
-    LD      R1, 13                  ; 0x000D = CPUID (RO)
+    LOAD16  R1, 13                  ; 0x000D = CPUID (RO)
     LD      R1, (R1)                ; R1 = core_id
     SHIFT.L R1
     SHIFT.L R1
@@ -331,6 +332,6 @@ _push_hdr_helper:
     LOAD16  R2, STUB_SYS_ID
     LD      R2, (R2)
     OR      R1, R2                  ; R1 = (core_id << 8) | syscall_id
-    LD      R2, 11                  ; 0x000B = FIFO_OUT
+    LOAD16  R2, 11                  ; 0x000B = FIFO_OUT
     LD      (R2), R1
     JMP     R0                      ; Return to caller

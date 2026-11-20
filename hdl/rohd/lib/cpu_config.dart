@@ -9,7 +9,8 @@ class CpuConfig {
   final bool enableUart;
   final bool enableCrossTraps;
   final bool enableShadowRegs;
-  final bool enableMathAccel; // Configurable Math Engine at 0x0010-0x0016
+  final bool enableMathAccel;
+  final bool enableSpi; // Configurable Math Engine at 0x0010-0x0016
   final int trapTableBase;
   final int memWords;
 
@@ -20,6 +21,7 @@ class CpuConfig {
     this.enableCrossTraps = false,
     this.enableShadowRegs = true,
     this.enableMathAccel = false,
+    this.enableSpi = false,
     this.trapTableBase = 0x0100,
     this.memWords = 65536,
   });

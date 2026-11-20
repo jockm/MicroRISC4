@@ -39,24 +39,15 @@ const u16 ERR_UNKNOWN   = 0xFFFF;
 
 u16 msg_pending = 0;
 u16 sys_buf[64];
-type DirEntry sys_ent;
+DirEntry sys_ent;
 
 // -----------------------------------------------------------------------------
 // Trap 1 ISR (0x0110): Zero-spill flag setter
 // Preserves R1 & R2 via hardware shadow registers so main/shell is undisturbed.
 // -----------------------------------------------------------------------------
 void on_msg_ready(void) @ trap(1) {
-    asm {
-        XCHG    R1
-        XCHG    R2
-        LOAD16  R1, 1
-        LOAD16  R2, _msg_pending
-        LD      (R2), R1
-        XCHG    R2
-        XCHG    R1
-    }
+    msg_pending = 1;
 }
-
 // Drain remaining words of an unhandled syscall so FIFO stays aligned
 void drain_fifo(u16 count) {
     u16 dummy = 0;

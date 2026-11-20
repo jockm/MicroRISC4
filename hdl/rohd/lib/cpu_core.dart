@@ -8,6 +8,7 @@ import 'package:rohd/rohd.dart';
 import 'constants.dart';
 import 'cpu_config.dart';
 import 'math_accelerator.dart';
+import 'spi_master.dart';
 import 'tdp_bram.dart';
 
 class CpuCore extends Module {
@@ -30,6 +31,7 @@ class CpuCore extends Module {
     Logic? mmioTxStatus,
     Logic? extTrapReq,
     Logic? extTrapNum,
+    Logic? spiMiso,
     this.config = const CpuConfig(),
     String? initHexFile,
     Map<int, int>? initialMemory,
@@ -61,6 +63,17 @@ class CpuCore extends Module {
       crossTrapReq = Const(0);
       crossTrapNum = Const(0, width: 4);
     }
+
+    final Logic spiMisoIn;
+    if (config.enableSpi) {
+      spiMisoIn = addInput('spi_miso', spiMiso ?? Const(1));
+    } else {
+      spiMisoIn = Const(1);
+    }
+
+    final spiSck = config.enableSpi ? addOutput('spi_sck') : null;
+    final spiMosi = config.enableSpi ? addOutput('spi_mosi') : null;
+    final spiCsN = config.enableSpi ? addOutput('spi_cs_n') : null;
 
     // Module Outputs
     final rxPop = addOutput('mmio_rx_pop');
@@ -129,7 +142,28 @@ class CpuCore extends Module {
 
     final isMathMatch =
         (config.enableMathAccel && mathMatch != null) ? mathMatch : Const(0);
-    final isMmio = isMmioCpuid | isMmioRx | isMmioTx | isMathMatch;
+    Logic? spiRdata;
+    Logic? spiMatch;
+    if (config.enableSpi) {
+      final spiUnit = SpiMaster(
+        clk: clk,
+        rstN: rstN,
+        portBAddr: portBAddr,
+        portBWdata: portBWdata,
+        portBWe: portBWe,
+        portBEn: portBEn,
+        spiMiso: spiMisoIn,
+      );
+      spiRdata = spiUnit.rdata;
+      spiMatch = spiUnit.match;
+      spiSck! <= spiUnit.spiSck;
+      spiMosi! <= spiUnit.spiMosi;
+      spiCsN! <= spiUnit.spiCsN;
+    }
+
+    final isSpiMatch =
+        (config.enableSpi && spiMatch != null) ? spiMatch : Const(0);
+    final isMmio = isMmioCpuid | isMmioRx | isMmioTx | isMathMatch | isSpiMatch;
 
     // Mask RAM writes when targeting MMIO addresses
     final ramBWe = portBEn & portBWe & ~isMmio;
@@ -175,6 +209,27 @@ class CpuCore extends Module {
     final trapAlignFaultConst =
         Const(config.trapTableBase + (15 << 4), width: 16);
 
+    // Pre-muxed peripheral/MMIO read bus (excludes wide BRAM output)
+    final mmioOnlyData = mux(
+      isMmioCpuid,
+      Const(config.coreId, width: 16),
+      mux(
+        isMmioRx,
+        rxData,
+        mux(
+          isMmioTx,
+          txStatus,
+          mux(
+            isMathMatch,
+            mathRdata ?? Const(0, width: 16),
+            spiRdata ?? Const(0, width: 16),
+          ),
+        ),
+      ),
+    );
+    final mmioRdataReg = Logic(name: 'mmio_rdata_reg', width: 16);
+    final isMmioRdReg = Logic(name: 'is_mmio_rd_reg');
+
     // Composite MMIO / RAM Read Multiplexing
     final effectivePortBData = mux(
       isMmioCpuid,
@@ -188,7 +243,11 @@ class CpuCore extends Module {
           mux(
             isMathMatch,
             mathRdata ?? Const(0, width: 16),
-            portBRdata,
+            mux(
+              isSpiMatch,
+              spiRdata ?? Const(0, width: 16),
+              portBRdata,
+            ),
           ),
         ),
       ),
@@ -223,6 +282,8 @@ class CpuCore extends Module {
       portBWdata: Const(0, width: 16),
       portBWe: Const(0, width: 1),
       portBEn: Const(0, width: 1),
+      mmioRdataReg: Const(0, width: 16),
+      isMmioRdReg: Const(0, width: 1),
       txData: Const(0, width: 8),
       txStrobe: Const(0, width: 1),
       for (final reg in r) reg: Const(0, width: 16),
@@ -259,9 +320,18 @@ class CpuCore extends Module {
                 state < Const(_stFetch, width: 3),
               ]),
 
-              // ST_FETCH: Cycle 1 of 2-cycle BRAM read; prefetch pc+1 in pipeline
+              // ST_FETCH: Cycle 1 of 2-cycle BRAM read for pc
               CaseItem(Const(_stFetch, width: 3), [
-                portAAddr < pc + 1,
+                portAAddr < pc,
+                portAEn < 1,
+                portBEn < 0,
+                portBWe < 0,
+                slot < MiniRISC4Constants.slotByte0,
+                state < Const(_stFetchWait, width: 3),
+              ]),
+
+              // ST_FETCH_WAIT: Cycle 2 of 2-cycle BRAM read (OUTREG settles)
+              CaseItem(Const(_stFetchWait, width: 3), [
                 portAEn < 1,
                 portBEn < 0,
                 portBWe < 0,
@@ -269,19 +339,11 @@ class CpuCore extends Module {
                 state < Const(_stFetchLatch, width: 3),
               ]),
 
-              // ST_FETCH_WAIT: Cycle 2 of 2-cycle BRAM read (OUTREG settles)
-              CaseItem(Const(_stFetchWait, width: 3), [
-                portAEn < 0,
-                portBEn < 0,
-                portBWe < 0,
-                slot < MiniRISC4Constants.slotByte0,
-                state < Const(_stFetchLatch, width: 3),
-              ]),
-
-              // ST_FETCH_LATCH: Register fetched word into instReg (pc+1 already in flight)
+              // ST_FETCH_LATCH: Latch settled mem[pc] into instReg and start prefetch of pc+1
               CaseItem(Const(_stFetchLatch, width: 3), [
                 instReg < portARdata,
-                portAEn < 0,
+                portAAddr < pc + 1,
+                portAEn < 1,
                 portBEn < 0,
                 portBWe < 0,
                 slot < MiniRISC4Constants.slotByte0,
@@ -521,12 +583,8 @@ class CpuCore extends Module {
                                   [r[i].slice(7, 0), instReg.slice(15, 8)]
                                       .swizzle(),
                             ]),
-                          pc < pc + 1,
-                          instReg < portARdata,
-                          portAAddr < pc + 2,
-                          portAEn < 1,
-                          slot < MiniRISC4Constants.slotByte0,
-                          state < Const(_stExec, width: 3),
+                          _branchTo(
+                              pc + 1, pc, portAAddr, portAEn, slot, state),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subTrap, width: 2), [
                           r[0] < pc + 1,
@@ -558,20 +616,24 @@ class CpuCore extends Module {
                 state < Const(_stMemWait2, width: 3),
               ]),
 
-              // ST_MEM_WAIT2: Cycle 2 of 2-cycle Port B BRAM read (OUTREG settles)
+              // ST_MEM_WAIT2: Cycle 2 of 2-cycle Port B BRAM read (stage MMIO read bus)
               CaseItem(Const(_stMemWait2, width: 3), [
                 portAEn < 0,
                 portBEn < 0,
                 portBWe < 0,
+                mmioRdataReg < mmioOnlyData,
+                isMmioRdReg < isMmio,
                 state < Const(_stMemRd, width: 3),
               ]),
 
-              // ST_MEM_RD: Latch settled Port B / MMIO read data into destReg
+              // ST_MEM_RD: Latch settled Port B / staged MMIO read data into destReg
               CaseItem(Const(_stMemRd, width: 3), [
                 portBEn < 0,
                 portBWe < 0,
                 for (int i = 0; i < 4; i++)
-                  If(destReg.eq(i), then: [r[i] < effectivePortBData]),
+                  If(destReg.eq(i), then: [
+                    r[i] < mux(isMmioRdReg, mmioRdataReg, portBRdata),
+                  ]),
                 _advanceFromMemRd(slot, instReg, portARdata, portAAddr, portAEn, state, pc),
               ]),
             ], defaultItem: [

@@ -5,7 +5,7 @@
 
 import "sys.a4";
 
-type DirEntry ent;
+DirEntry ent;
 
 void main(void) {
     u16 dir_fd = 0;

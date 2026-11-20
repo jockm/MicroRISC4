@@ -163,7 +163,7 @@ generate-ulx3s: setup | $(ULX3S_BLD)
 			$(MR4ASM) -I $(LIB_DIR) "$(ULX3S_PROGRAM)" --hex -o "$(ULX3S_BLD)/system_image.hex" -l "$(ULX3S_BLD)/program.lst" ;; \
 	esac
 	@echo "==> Generating SystemVerilog ($(ULX3S_BLD)/$(ULX3S_SV))..."
-	@cd $(ROHD_DIR) && $(DART) run bin/generate.dart --hex system_image.hex --out ../../$(ULX3S_BLD)
+	@cd $(ROHD_DIR) && $(DART) run bin/generate.dart --hex system_image.hex --out "$(CURDIR)/$(ULX3S_BLD)"
 	@$(DOT_CLEAN_CMD)
 
 ulx3s-bit: generate-ulx3s
@@ -173,7 +173,7 @@ ulx3s-bit: generate-ulx3s
 	@grep -E "DP16KD|LUT4|TRELLIS_FF" $(ULX3S_BLD)/yosys.log | tail -5 || true
 	@echo "==> Placing and routing for ECP5-$(ULX3S_DEVICE) (log: $(ULX3S_BLD)/nextpnr.log)..."
 	@cd $(ULX3S_BLD) && $(NEXTPNR_ECP5) -q --$(ULX3S_DEVICE) --package $(ULX3S_PACKAGE) \
-		--lpf ../../$(ULX3S_LPF) --json ulx3s_top_rohd.json \
+		--lpf "$(CURDIR)/$(ULX3S_LPF)" --json ulx3s_top_rohd.json \
 		--textcfg ulx3s_top_rohd.config --freq $(ULX3S_CLOCK_MHZ) -l nextpnr.log
 	@cd $(ULX3S_BLD) && $(ECPPACK) --compress ulx3s_top_rohd.config ulx3s_top_rohd.bit
 	@grep "Max frequency for clock" $(ULX3S_BLD)/nextpnr.log | tail -1

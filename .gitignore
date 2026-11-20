@@ -1,12 +1,27 @@
 # Dart package manager build cache & toolchain artifacts
 .dart_tool/
 **/.dart_tool/
+*.lock
 
 # macOS metadata, Finder state, and AppleDouble resource fork shadow files
 .DS_Store
 **/.DS_Store
 ._*
 **/._*
+
+# Build artifacts
+**/*.bin
+**/*.lst
+
+# ROHD-generated SystemVerilog top-level outputs
+hdl/particle/particle_top.sv
+hdl/particle/*.sv
+
+# Synthesis and PnR toolchain artifacts (Yosys / nextpnr)
+hdl/particle/*.synth.json
+hdl/particle/*.config
+hdl/particle/*.bit
+hdl/particle/*.bin
 
 # Python Bytecode Cache
 __pycache__/
@@ -15,7 +30,64 @@ __pycache__/
 *$py.class
 
 # The contents of the build directories should be ignored, but not the directory itself
-mr4src/act4/build/*
-!mr4src/act4/build/.gitkeep
-mr4src/asm/build/*
-!mr4src/asm/build/.gitkeep
+build/*
+!build/.gitkeep
+apps/act/build/*
+!apps/act/build/.gitkeep
+apps/asm/build/*
+!apps/asm/build/.gitkeep
+
+# Parcore generated synthesis artifacts
+hdl/parcore/parcore_top.sv
+hdl/parcore/*.synth.json
+hdl/parcore/*.config
+hdl/parcore/*.bit
+
+# Stage kernel binary builds
+build/parcore/
+
+
+######################################
+# Everything for NodeJS
+
+# Dependencies
+node_modules/
+
+# Build & compilation outputs
+dist/
+build/
+.next/
+.nuxt/
+out/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Caches & temporary files
+.npm
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+.eslintcache
+.stylelintcache
+.cache/
+.parcel-cache/
+.turbo/
+
+# Test coverage
+coverage/
+.nyc_output/

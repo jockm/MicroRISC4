@@ -344,7 +344,7 @@ class CpuCore extends Module {
                       portBWe < 1,
                       portBEn < 1,
                       if (config.enableUart)
-                        If((getReg(rr) - 1).eq(MiniRISC4Constants.addrUartTx),
+                        If(getReg(rr).eq(Const(0x0010, width: 16)),
                             then: [
                               txData < getReg(rl).slice(7, 0),
                               txStrobe < 1,

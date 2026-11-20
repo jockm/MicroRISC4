@@ -1,6 +1,6 @@
 // ==============================================================================
 // FILE: hdl/rohd/lib/ecp5_pll.dart
-// Lattice ECP5 EHXPLLL Wrapper (25 MHz -> 24 MHz)
+// Lattice ECP5 EHXPLLL Wrapper (25 MHz -> 24 MHz via 600 MHz VCO / CLKOS)
 // ==============================================================================
 
 import 'package:rohd/rohd.dart';
@@ -32,26 +32,35 @@ module $definitionType (
   output logic clk_out,
   output logic locked
 );
+  logic clkop_fb;
+
   (* ICP_CURRENT="12" *) (* LPF_RESISTOR="8" *) (* MFG_ENABLE_FILTEROPAMP="1" *) (* MFG_GMCREF_SEL="2" *)
   EHXPLLL #(
     .PLLRST_ENA("DISABLED"),
     .INTFB_WAKE("DISABLED"),
     .STDBY_ENABLE("DISABLED"),
     .DPHASE_SOURCE("DISABLED"),
-    .CLKOP_FPHASE(0),
-    .CLKOP_CPHASE(24),
     .OUTDIVIDER_MUXA("DIVA"),
+    .OUTDIVIDER_MUXB("DIVB"),
+    .OUTDIVIDER_MUXC("DIVC"),
+    .OUTDIVIDER_MUXD("DIVD"),
+    .CLKI_DIV(5),
+    .CLKFB_DIV(2),
     .CLKOP_ENABLE("ENABLED"),
-    .CLKOP_DIV(25),
-    .CLKFB_DIV(24),
-    .CLKI_DIV(25),
-    .FEEDBK_PATH("INT_OP")
+    .CLKOP_DIV(54),
+    .CLKOP_CPHASE(27),
+    .CLKOP_FPHASE(0),
+    .CLKOS_ENABLE("ENABLED"),
+    .CLKOS_DIV(15),
+    .CLKOS_CPHASE(7),
+    .CLKOS_FPHASE(0),
+    .FEEDBK_PATH("CLKOP")
   ) pll_inst (
     .CLKI(clk_in),
-    .CLKFB(clk_out),
+    .CLKFB(clkop_fb),
     .CLKINTFB(),
-    .CLKOP(clk_out),
-    .CLKOS(),
+    .CLKOP(clkop_fb),
+    .CLKOS(clk_out),
     .CLKOS2(),
     .CLKOS3(),
     .LOCK(locked),

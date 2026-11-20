@@ -940,7 +940,6 @@ class CodeGen:
         self.emit_raw("; Target: MiniRISC4 16-bit Architecture")
         self.emit_raw("; ==============================================================================")
         self.emit_raw('.include "common.inc"')
-        self.emit_raw('.include "M4R_LIB.asm"')
         self.emit_raw("")
 
         for name, val in self.constants.items():
@@ -1018,6 +1017,11 @@ class CodeGen:
                 clean_s = s.replace('"', '\\"')
                 self.emit_raw(f'{lbl}: .asciz "{clean_s}"')
 
+        self.emit_raw("")
+        self.emit_raw("; ==============================================================================")
+        self.emit_raw("; Standard Runtime Library (placed after application code & data)")
+        self.emit_raw("; ==============================================================================")
+        self.emit_raw('.include "M4R_LIB.asm"')
         return "\n".join(self.asm) + "\n"
 
     def eval_const_init(self, expr: Any) -> int:
@@ -1034,6 +1038,12 @@ class CodeGen:
             self.emit_raw(f"; Bound to hardware Trap Vector {fn.trap_vector} (0x{0x0100 + fn.trap_vector * 16:04X})")
         self.emit_raw(f"_{fn.name}:")
         self.emit("RPUSH   R0")
+
+        for decl in fn.locals_decls:
+            if decl.init_expr is not None and not decl.typ.array_size:
+                self.gen_expr(decl.init_expr)
+                self.emit(f"LOAD16  R0, _{fn.name}_{decl.name}")
+                self.emit("LD      (R0), R1")
 
         for stmt in fn.body:
             self.gen_stmt(stmt)
@@ -1320,15 +1330,35 @@ class CodeGen:
         return "u16"
 
     def gen_cond_branch(self, cond: Expr, invert: bool, target_label: str):
+        if isinstance(cond, BinaryOp) and cond.op == "||":
+            if invert:
+                lbl_true = self.new_label("or_true")
+                self.gen_cond_branch(cond.lhs, invert=False, target_label=lbl_true)
+                self.gen_cond_branch(cond.rhs, invert=True, target_label=target_label)
+                self.emit_raw(f"{lbl_true}:")
+            else:
+                self.gen_cond_branch(cond.lhs, invert=False, target_label=target_label)
+                self.gen_cond_branch(cond.rhs, invert=False, target_label=target_label)
+            return
+
+        if isinstance(cond, BinaryOp) and cond.op == "&&":
+            if invert:
+                self.gen_cond_branch(cond.lhs, invert=True, target_label=target_label)
+                self.gen_cond_branch(cond.rhs, invert=True, target_label=target_label)
+            else:
+                lbl_false = self.new_label("and_false")
+                self.gen_cond_branch(cond.lhs, invert=True, target_label=lbl_false)
+                self.gen_cond_branch(cond.rhs, invert=False, target_label=target_label)
+                self.emit_raw(f"{lbl_false}:")
+            return
+
         if isinstance(cond, BinaryOp) and cond.op in ("==", "!=", "<", ">", "<=", ">="):
             self.gen_expr(cond.lhs)
-            self.emit("LOAD16  R0, _act4_t0")
-            self.emit("LD      (R0), R1")
+            self.emit("APUSH   R1")
 
             self.gen_expr(cond.rhs)
             self.emit("LD      R2, R1")
-            self.emit("LOAD16  R0, _act4_t0")
-            self.emit("LD      R1, (R0)")
+            self.emit("APOP    R1")
 
             op = cond.op
             if invert:
@@ -1350,19 +1380,23 @@ class CodeGen:
             elif op == "<":
                 self.emit("RCALL   _CMP_LT")
                 self.emit(f"LOAD16  R2, {target_label}")
-                self.emit(f"JMP.Z   R2, R0")
+                self.emit("DEC     R1")
+                self.emit(f"JMP.Z   R2, R1")
             elif op == ">":
                 self.emit("RCALL   _CMP_GT")
                 self.emit(f"LOAD16  R2, {target_label}")
-                self.emit(f"JMP.Z   R2, R0")
+                self.emit("DEC     R1")
+                self.emit(f"JMP.Z   R2, R1")
             elif op == "<=":
                 self.emit("RCALL   _CMP_LE")
                 self.emit(f"LOAD16  R2, {target_label}")
-                self.emit(f"JMP.Z   R2, R0")
+                self.emit("DEC     R1")
+                self.emit(f"JMP.Z   R2, R1")
             elif op == ">=":
                 self.emit("RCALL   _CMP_GE")
                 self.emit(f"LOAD16  R2, {target_label}")
-                self.emit(f"JMP.Z   R2, R0")
+                self.emit("DEC     R1")
+                self.emit(f"JMP.Z   R2, R1")
         else:
             self.gen_expr(cond)
             if invert:
@@ -1385,10 +1419,23 @@ class CodeGen:
 
         elif isinstance(expr, VarRef):
             lbl = self.resolve_var_label(expr.name)
+            is_array = False
+            if self.current_func:
+                for decl in self.current_func.locals_decls:
+                    if decl.name == expr.name and decl.typ.array_size is not None:
+                        is_array = True
+            if not is_array and expr.name in self.global_vars and self.global_vars[expr.name].typ.array_size is not None:
+                is_array = True
+
             if expr.name in self.global_vars and self.global_vars[expr.name].address is not None:
                 addr = self.global_vars[expr.name].address
-                self.emit(f"LOAD16  R0, 0x{addr:04X}")
-                self.emit(f"LD      R1, (R0)")
+                if is_array:
+                    self.emit(f"LOAD16  R1, 0x{addr:04X}")
+                else:
+                    self.emit(f"LOAD16  R0, 0x{addr:04X}")
+                    self.emit(f"LD      R1, (R0)")
+            elif is_array:
+                self.emit(f"LOAD16  R1, {lbl}")
             else:
                 self.emit(f"LOAD16  R0, {lbl}")
                 self.emit(f"LD      R1, (R0)")
@@ -1474,13 +1521,11 @@ class CodeGen:
 
     def gen_binary(self, expr: BinaryOp):
         self.gen_expr(expr.lhs)
-        self.emit("LOAD16  R0, _act4_t0")
-        self.emit("LD      (R0), R1")
+        self.emit("APUSH   R1")
 
         self.gen_expr(expr.rhs)
         self.emit("LD      R2, R1")
-        self.emit("LOAD16  R0, _act4_t0")
-        self.emit("LD      R1, (R0)")
+        self.emit("APOP    R1")
 
         if expr.op == "+":
             self.emit("ADD     R1, R2")

@@ -73,8 +73,8 @@ Future<CpuCore> runProgram(
     });
   }
 
-  Simulator.registerAction(25, () => rstN.put(1));
-  Simulator.registerAction(25 + cycles * 10, () => Simulator.endSimulation());
+  Simulator.registerAction(22, () => rstN.put(1));
+  Simulator.setMaxSimTime(25 + cycles * 10);
   await Simulator.run();
   return cpu;
 }

@@ -245,7 +245,7 @@ class MiniRISC4Sim:
             self.r[rr] = self.r[rl]
 
         elif opcode == OP_LD_IMM4:
-            self.r[rr] = rl
+            self.r[0] = arg
 
         elif opcode == OP_LD_PEEK:
             self.r[rr] = self.read_mem(self.r[rl])
@@ -285,29 +285,29 @@ class MiniRISC4Sim:
             self.r[rr] = (self.r[rr] & self.r[rl]) & WORD_MASK
 
         elif opcode == OP_SHIFT:
-            if rl == SUB_SHIFT_L:
-                self.r[rr] = (self.r[rr] << 1) & WORD_MASK
-            elif rl == SUB_SHIFT_R:
-                self.r[rr] = (self.r[rr] >> 1) & WORD_MASK
-            elif rl == SUB_SHIFT_AR:
-                sign = self.r[rr] & 0x8000
-                self.r[rr] = (self.r[rr] >> 1) | sign
-            elif rl == SUB_SHIFT_XCHG:
-                tmp = self.r[rr]
-                self.r[rr] = self.shadow_r[rr]
-                self.shadow_r[rr] = tmp
+            if rr == SUB_SHIFT_L:
+                self.r[rl] = (self.r[rl] << 1) & WORD_MASK
+            elif rr == SUB_SHIFT_R:
+                self.r[rl] = (self.r[rl] >> 1) & WORD_MASK
+            elif rr == SUB_SHIFT_AR:
+                sign = self.r[rl] & 0x8000
+                self.r[rl] = (self.r[rl] >> 1) | sign
+            elif rr == SUB_SHIFT_XCHG:
+                tmp = self.r[rl]
+                self.r[rl] = self.shadow_r[rl]
+                self.shadow_r[rl] = tmp
 
         elif opcode == OP_ROT_INC_DEC:
-            if rl == SUB_ROT_L:
-                msb = (self.r[rr] >> 15) & 1
-                self.r[rr] = ((self.r[rr] << 1) | msb) & WORD_MASK
-            elif rl == SUB_ROT_R:
-                lsb = self.r[rr] & 1
-                self.r[rr] = ((self.r[rr] >> 1) | (lsb << 15)) & WORD_MASK
-            elif rl == SUB_INC:
-                self.r[rr] = (self.r[rr] + 1) & WORD_MASK
-            elif rl == SUB_DEC:
-                self.r[rr] = (self.r[rr] - 1) & WORD_MASK
+            if rr == SUB_ROT_L:
+                msb = (self.r[rl] >> 15) & 1
+                self.r[rl] = ((self.r[rl] << 1) | msb) & WORD_MASK
+            elif rr == SUB_ROT_R:
+                lsb = self.r[rl] & 1
+                self.r[rl] = ((self.r[rl] >> 1) | (lsb << 15)) & WORD_MASK
+            elif rr == SUB_INC:
+                self.r[rl] = (self.r[rl] + 1) & WORD_MASK
+            elif rr == SUB_DEC:
+                self.r[rl] = (self.r[rl] - 1) & WORD_MASK
 
         elif opcode == OP_JMP_Z:
             # JMP.Z Rr, Rl -> Branch to Rr if Rl == 0
@@ -320,7 +320,7 @@ class MiniRISC4Sim:
                 self._branch_to(self.r[rr])
 
         elif opcode == OP_JMP_SPECIAL:
-            if current_slot != 0:
+            if current_slot != 0 and rr != SUB_JMP:
                 # Word-alignment fault for PUSH8, LINK, TRAP
                 print(f"\n[FAULT] Slot 1 alignment violation at PC:0x{current_pc:04X}")
                 self.pc = self.read_mem(0xFFFF)
@@ -593,7 +593,7 @@ def main():
     if args.startaddr is not None:
         sim.pc = args.startaddr & ADDR_MASK
     else:
-        sim.pc = sim.read_mem(ADDR_RESET_VEC)
+        sim.pc = 0x0100
 
     if args.debug:
         sim.interactive_cli()

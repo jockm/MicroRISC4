@@ -73,11 +73,11 @@ class Ulx3sTop extends Module {
       serialRxd: ftdiTxd,
       txd: cpu.txData,
       txdStrobe: cpu.txStrobe,
-      divisor: 8,
+      divisor: 12,
     );
 
     ftdiRxd <= uart.serialTxd;
-    led <= cpu.debugPc.slice(7, 0);
+    led <= [pll.locked, cpu.debugPc.slice(6, 0)].swizzle();
 
     Sequential(clk24mhz, reset: uartReset, resetValues: {
       uartRxValid: 0,

@@ -385,11 +385,13 @@
     XCHG    R0
     LOAD16  R0, 0xFF00
     AND     %dest, R0
+    LD      R0, %src_byte
+    XCHG    R3
+    LOAD16  R3, 0x00FF
+    AND     R0, R3
+    XCHG    R3
+    OR      %dest, R0
     XCHG    R0
-    XCHG    R2
-    BYTE_GET_LO R2, %src_byte
-    OR      %dest, R2
-    XCHG    R2
 .endmacro
 
 .macro BYTE_SET_HI dest, src_byte

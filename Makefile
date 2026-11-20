@@ -84,6 +84,7 @@ help:
 	@echo "  make ulx3s-term       - Open 3 Mbaud FTDI serial terminal (ULX3S_PORT=..., ULX3S_BAUD=3000000)"
 	@echo "  make dot-clean        - Remove macOS ._ metadata files (where dot_clean exists)"
 	@echo "  make clean            - Remove $(BUILD_DIR)/ and generated SV/bitstream artifacts"
+	@echo "  make install-hooks    - Install the project's git hooks (tools/git-hooks) into this clone"
 
 setup:
 	@echo "==> Fetching Dart dependencies for MiniRISC4 ROHD..."
@@ -214,6 +215,26 @@ ulx3s-term:
 
 dot-clean:
 	@$(DOT_CLEAN_CMD)
+
+# Installs the git hooks in tools/git-hooks into this clone's hooks
+# directory. A different hook already there is kept as <name>.bak.
+GIT_HOOKS_DIR := tools/git-hooks
+GIT_HOOKS     := pre-commit
+
+install-hooks:
+	# Not a hook, but a handy alias
+	@git config --global alias.ac '!f() { msg="$1"; shift; git add "$@" && git commit -m "$msg"; }; f'
+	
+	# Now a hook that does a dot_clean before commit.
+	@git rev-parse --git-dir > /dev/null 2>&1 || { echo "[FAIL] Not inside a git repository."; exit 1; }
+	@hooks="$$(git rev-parse --git-path hooks)"; mkdir -p "$$hooks"; \
+	for h in $(GIT_HOOKS); do \
+		src="$(GIT_HOOKS_DIR)/$$h"; dst="$$hooks/$$h"; \
+		if [ -f "$$dst" ] && ! cmp -s "$$src" "$$dst"; then \
+			cp "$$dst" "$$dst.bak" && echo "==> Kept the existing $$h hook as $$dst.bak"; \
+		fi; \
+		cp "$$src" "$$dst" && chmod +x "$$dst" && echo "==> Installed the $$h hook ($$dst)"; \
+	done
 
 clean:
 	@echo "==> Cleaning build artifacts and generated SV files..."

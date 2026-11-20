@@ -266,7 +266,7 @@ class CpuCore extends Module {
                 portBEn < 0,
                 portBWe < 0,
                 slot < MiniRISC4Constants.slotByte0,
-                state < Const(_stFetchWait, width: 3),
+                state < Const(_stFetchLatch, width: 3),
               ]),
 
               // ST_FETCH_WAIT: Cycle 2 of 2-cycle BRAM read (OUTREG settles)
@@ -522,10 +522,11 @@ class CpuCore extends Module {
                                       .swizzle(),
                             ]),
                           pc < pc + 1,
+                          instReg < portARdata,
                           portAAddr < pc + 2,
                           portAEn < 1,
                           slot < MiniRISC4Constants.slotByte0,
-                          state < Const(_stFetchLatch, width: 3),
+                          state < Const(_stExec, width: 3),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subTrap, width: 2), [
                           r[0] < pc + 1,

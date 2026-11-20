@@ -87,7 +87,7 @@ class TdpBram extends Module with SystemVerilog {
       if (aEn && aAddr < depth) {
         portARdataRaw = mem[aAddr];
       }
-      portARdata.put(prevARaw);
+      Simulator.injectAction(() => portARdata.put(prevARaw));
 
       if (bEn && bAddr < depth) {
         if (bWe) {
@@ -97,7 +97,7 @@ class TdpBram extends Module with SystemVerilog {
           portBRdataRaw = mem[bAddr];
         }
       }
-      portBRdata.put(prevBRaw);
+      Simulator.injectAction(() => portBRdata.put(prevBRaw));
     });
   }
 

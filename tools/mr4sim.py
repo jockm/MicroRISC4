@@ -276,7 +276,12 @@ class CoreNetworkInterface:
 class NocCluster:
     """Registered ring or 2D-mesh multi-core simulator (1 cycle per registered hop)."""
     def __init__(self, num_cores: int, topology: str = "ring",
-                 mesh_cols: int | None = None, fifo_depth: int = 32, num_ch: int = 8):
+                 mesh_cols: int | None = None, fifo_depth: int = 32, num_ch: int = 8,
+                 mem_words: int = MEM_WORDS,
+                 sdram_cache: "SdramCacheSubsystem | None" = None,
+                 cache_core_id: int | None = None,
+                 cache_base_addr: int | None = 0x4000,
+                 cache_fetch: bool = False):
         assert num_cores >= 1
         self.num_cores = num_cores
         self.topology = topology
@@ -294,9 +299,18 @@ class NocCluster:
         self.completed_packets: list[NocPacket] = []
         self.cluster_cycles = 0
 
+        self.sdram_cache = sdram_cache
         for cid in range(num_cores):
             ni = CoreNetworkInterface(cid, num_ch=num_ch, fifo_depth=fifo_depth)
-            sim = MiniRISC4Sim(core_id=cid, noc_ni=ni)
+            use_cache = (sdram_cache is not None) and (cache_core_id is None or cid == cache_core_id)
+            sim = MiniRISC4Sim(
+                core_id=cid,
+                noc_ni=ni,
+                mem_words=mem_words,
+                sdram_cache=sdram_cache if use_cache else None,
+                cache_base_addr=cache_base_addr if use_cache else None,
+                cache_fetch=cache_fetch if use_cache else False,
+            )
             self.nis.append(ni)
             self.cores.append(sim)
 
@@ -379,17 +393,24 @@ class NocCluster:
                 sim._branch_to(sim.read_mem(trap_vec))
 
     def step_cycle(self):
-        """Step each active core by one slot and advance the NoC by one registered hop cycle."""
+        """Step each active core, advance background SDRAM write-behind, and tick the NoC."""
         for sim in self.cores:
             if not sim.halted:
                 sim.step()
+        if self.sdram_cache is not None:
+            self.sdram_cache.tick(1)
         self.tick_noc()
 
 
 class MiniRISC4Sim:
-    def __init__(self, trace: bool = False, core_id: int = 0, noc_ni: "CoreNetworkInterface | None" = None):
-        self.mem_words = 65536
-        self.mem = [0] * MEM_WORDS
+    def __init__(self, trace: bool = False, core_id: int = 0, noc_ni: "CoreNetworkInterface | None" = None, mem_words: int = MEM_WORDS, sdram_cache: "SdramCacheSubsystem | None" = None, cache_base_addr: int | None = None, cache_fetch: bool = False):
+        assert 1 <= mem_words <= MEM_WORDS, "Per-core memory capped at 64K words (128K bytes)"
+        self.mem_words = mem_words
+        self.mem = [0] * mem_words
+        self.sdram_cache = sdram_cache
+        self.cache_base_addr = cache_base_addr
+        self.cache_fetch = cache_fetch
+        self.cache_stall_cycles = 0
         self.r = [0] * 4
         self.shadow_r = [0] * 4
         self.pc = 0
@@ -452,6 +473,13 @@ class MiniRISC4Sim:
         except ValueError:
             return None
 
+    def _uses_sdram_cache(self, addr: int) -> bool:
+        if self.sdram_cache is None:
+            return False
+        if self.cache_base_addr is not None:
+            return (addr & ADDR_MASK) >= (self.cache_base_addr & ADDR_MASK)
+        return False
+
     def read_mem(self, addr: int) -> int:
         addr &= ADDR_MASK
         if addr == ADDR_UART_RX:
@@ -489,7 +517,13 @@ class MiniRISC4Sim:
         if addr == ADDR_NOC_CFG_CH_MAP:
             dst_c, dst_ch, _ = self.noc_ni.channel_table[self.noc_ni.cfg_ch_idx % self.noc_ni.num_ch]
             return ((dst_c & 0xFF) << 8) | (dst_ch & 0xFF)
-        return self.mem[addr]
+        if self._uses_sdram_cache(addr):
+            val, lat = self.sdram_cache.read_data_word(addr)
+            if lat > 1:
+                self.cache_stall_cycles += (lat - 1)
+                self.cycles += (lat - 1)
+            return val & WORD_MASK
+        return self.mem[addr % self.mem_words]
 
     def write_mem(self, addr: int, val: int):
         addr &= ADDR_MASK
@@ -524,8 +558,13 @@ class MiniRISC4Sim:
             dst_ch = val & 0xFF
             self.noc_ni.set_route(self.noc_ni.cfg_ch_idx, dst_c, dst_ch, valid=True)
             self.mem[addr] = val
+        elif self._uses_sdram_cache(addr):
+            _, lat = self.sdram_cache.write_data_word(addr, val)
+            if lat > 1:
+                self.cache_stall_cycles += (lat - 1)
+                self.cycles += (lat - 1)
         else:
-            self.mem[addr] = val
+            self.mem[addr % self.mem_words] = val
 
     def _poll_stdin(self):
         """Polls host terminal for incoming characters."""
@@ -551,7 +590,13 @@ class MiniRISC4Sim:
 
         current_pc = self.pc
         current_slot = self.slot
-        word = self.mem[current_pc]
+        if self.sdram_cache is not None and (self.cache_fetch or self._uses_sdram_cache(current_pc)):
+            word, flat = self.sdram_cache.fetch_inst_word(current_pc)
+            if flat > 1:
+                self.cache_stall_cycles += (flat - 1)
+                self.cycles += (flat - 1)
+        else:
+            word = self.mem[current_pc % self.mem_words]
 
         if current_slot == 0:
             instr = word & BYTE_MASK
@@ -1176,3 +1221,5 @@ class SdramCacheSubsystem:
         lat = self._single_write_cycles()
         self.tick(lat)
         return True, lat
+
+# === SdramCacheSubsystem Integration ===

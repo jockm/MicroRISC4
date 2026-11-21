@@ -1259,6 +1259,21 @@ class NocCacheServer:
         self.served_reads = 0
         self.served_writes = 0
         self._pending_write_addr: int | None = None
+        self._pending_write_offset: int = 0
+        self._pending_write_src: tuple[int, int] | None = None
+
+    def _emit_mbox_notify(self, ni: CoreNetworkInterface, req_src_core: int, req_src_ch: int, payload: int):
+        if self.notify_mbox_ch is not None:
+            m_core, m_ch, m_valid = ni.channel_table[self.notify_mbox_ch % ni.num_ch]
+            if m_valid:
+                ni.mbox_outbox.append(
+                    NocPacket(1, self.server_core_id, self.notify_mbox_ch, m_core, m_ch, payload & WORD_MASK)
+                )
+                return
+        # Fallback: send priority MBOX directly back to requesting core/ch
+        ni.mbox_outbox.append(
+            NocPacket(1, self.server_core_id, self.req_ch, req_src_core, req_src_ch, payload & WORD_MASK)
+        )
 
     def poll_once(self) -> bool:
         """Process one request from req_ch or one write data word if awaiting write payload."""
@@ -1270,8 +1285,13 @@ class NocCacheServer:
             if hasattr(ni, "_rx_meta") and ni._rx_meta[self.req_ch]:
                 ni._rx_meta[self.req_ch].popleft()
             self.sdram_cache.write_data_word(self._pending_write_addr, wdata)
+            w_offset = self._pending_write_offset
+            w_src = self._pending_write_src or (0, self.req_ch % ni.num_ch)
             self._pending_write_addr = None
+            self._pending_write_offset = 0
+            self._pending_write_src = None
             self.served_writes += 1
+            self._emit_mbox_notify(ni, w_src[0], w_src[1], 0x8000 | (w_offset & 0x3FFF))
             return True
 
         if not ni.rx_fifos[self.req_ch]:
@@ -1294,17 +1314,14 @@ class NocCacheServer:
             self.cluster.nis[self.server_core_id].tx_outbox.append(
                 NocPacket(0, self.server_core_id, self.req_ch, dst_core, dst_ch, val)
             )
-            if self.notify_mbox_ch is not None:
-                m_core, m_ch, m_valid = ni.channel_table[self.notify_mbox_ch % ni.num_ch]
-                if m_valid:
-                    self.cluster.nis[self.server_core_id].mbox_outbox.append(
-                        NocPacket(1, self.server_core_id, self.notify_mbox_ch, m_core, m_ch, val)
-                    )
             self.served_reads += 1
+            self._emit_mbox_notify(ni, req_src_core, req_src_ch, val)
             return True
 
         elif op == MEM_REQ_OP_WRITE:
             self._pending_write_addr = target_addr
+            self._pending_write_offset = offset
+            self._pending_write_src = (req_src_core, req_src_ch)
             return True
 
         return False

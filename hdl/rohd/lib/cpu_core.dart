@@ -352,9 +352,8 @@ class CpuCore extends Module {
                 () {
                   final regR = getReg(rr);
                   final regL = getReg(rl);
-                  final regRDec = regR - 1;
                   final regLInc = regL + 1;
-                  final regLDec = regL - 1;
+                  final regRDec = regR - 1;
                   return [If(Const(1, width: 1), then: [
                 portBEn < 0,
                 portBWe < 0,
@@ -425,7 +424,9 @@ class CpuCore extends Module {
                     // 0x5: LD (--Rr), Rl - Push (Full Descending)
                     CaseItem(Const(MiniRISC4Constants.opLdPredec, width: 4), [
                       for (int i = 0; i < 4; i++)
-                        If(rr.eq(i), then: [r[i] < regRDec]),
+                        If(rr.eq(i), then: [
+                          r[i] < regRDec,
+                        ]),
                       portBAddr < regRDec,
                       portBWdata < regL,
                       portBWe < 1,
@@ -537,7 +538,7 @@ class CpuCore extends Module {
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subDec, width: 2), [
                           for (int i = 0; i < 4; i++)
-                            If(rl.eq(i), then: [r[i] < regLDec]),
+                            If(rl.eq(i), then: [r[i] < r[i] - 1]),
                         ]),
                       ]),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr,

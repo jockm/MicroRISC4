@@ -243,3 +243,59 @@ clean:
 	       $(ROHD_DIR)/ulx3s_top_rohd_out.config $(ROHD_DIR)/ulx3s_top_rohd.bit \
 	       $(ROHD_DIR)/system_image.hex
 	@$(DOT_CLEAN_CMD)
+
+# --- OS & FAT32 SD Image Targets ---
+COMPILE    ?= bin/compile
+ASSEMBLE   ?= bin/assemble
+MKSDIMG    ?= tools/mksdimage.py
+SIM        ?= tools/mr4sim.py
+
+OS_SRC_DIR ?= mr4src/act4
+OS_BUILD   ?= build/os
+SD_SRC_DIR ?= build/sd_root
+SD_IMG     ?= /tmp/mr4_sd.img
+SD_SIZE_MB ?= 16
+SD_SPC     ?= 1
+
+OS_MAIN_A4  := $(OS_SRC_DIR)/os/os_main.a4
+OS_MAIN_ASM := $(OS_BUILD)/os_main.asm
+OS_MAIN_BIN := $(OS_BUILD)/os_main.bin
+OS_MAIN_LST := $(OS_BUILD)/os_main.lst
+
+LS_A4       := $(OS_SRC_DIR)/apps/ls.a4
+LS_ASM      := $(OS_BUILD)/ls.asm
+LS_BIN      := $(OS_BUILD)/ls.bin
+LS_LST      := $(OS_BUILD)/ls.lst
+
+.PHONY: os-build sd-img sim-os clean-os
+
+$(OS_BUILD):
+	mkdir -p $(OS_BUILD)
+
+$(OS_MAIN_ASM): $(OS_MAIN_A4) $(wildcard $(OS_SRC_DIR)/os/*.a4) | $(OS_BUILD)
+	$(COMPILE) $(OS_MAIN_A4) -o $(OS_MAIN_ASM) -I $(OS_SRC_DIR)/os -I lib
+
+$(OS_MAIN_BIN) $(OS_MAIN_LST): $(OS_MAIN_ASM)
+	$(ASSEMBLE) -I lib $<
+
+$(LS_ASM): $(LS_A4) | $(OS_BUILD)
+	$(COMPILE) $(LS_A4) -o $(LS_ASM) -I $(OS_SRC_DIR)/os -I lib
+
+$(LS_BIN) $(LS_LST): $(LS_ASM)
+	$(ASSEMBLE) -I lib $<
+
+os-build: $(OS_MAIN_BIN) $(LS_BIN)
+
+$(SD_SRC_DIR): $(LS_BIN)
+	mkdir -p $(SD_SRC_DIR)
+	cp $(LS_BIN) $(SD_SRC_DIR)/LS.BIN
+	printf "Hello from MiniRISC4 FAT32 SD card!\n" > $(SD_SRC_DIR)/README.TXT
+
+sd-img: $(SD_SRC_DIR)
+	python3 $(MKSDIMG) $(SD_SRC_DIR) -o $(SD_IMG) --size-mb $(SD_SIZE_MB) --spc $(SD_SPC)
+
+sim-os: os-build sd-img
+	python3 $(SIM) $(OS_MAIN_BIN) --sym $(OS_MAIN_LST) --sd-image $(SD_IMG) --startaddr 0x0100
+
+clean-os:
+	rm -rf $(OS_BUILD) $(SD_SRC_DIR)

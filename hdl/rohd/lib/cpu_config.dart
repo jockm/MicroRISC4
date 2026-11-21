@@ -11,6 +11,9 @@ class CpuConfig {
   final bool enableShadowRegs;
   final bool enableMathAccel;
   final bool enableSpi; // Configurable Math Engine at 0x0010-0x0016
+  final bool enableNoc;
+  final int nocChannels;
+  final int nocFifoDepth;
   final int trapTableBase;
   final int memWords;
 
@@ -22,6 +25,9 @@ class CpuConfig {
     this.enableShadowRegs = true,
     this.enableMathAccel = false,
     this.enableSpi = false,
+    this.enableNoc = false,
+    this.nocChannels = 8,
+    this.nocFifoDepth = 32,
     this.trapTableBase = 0x0100,
     this.memWords = 65536,
   });

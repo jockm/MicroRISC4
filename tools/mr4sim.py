@@ -1223,3 +1223,98 @@ class SdramCacheSubsystem:
         return True, lat
 
 # === SdramCacheSubsystem Integration ===
+
+
+# === Multi-Client NoC Cache/Memory Service ===
+# Simple 16-bit request encoding over DATA channel:
+#   bits [15:14]: op (0 = READ, 1 = WRITE)
+#   bits [13:0] : 14-bit word address offset (added to base_addr)
+MEM_REQ_OP_READ  = 0
+MEM_REQ_OP_WRITE = 1
+
+def encode_mem_req(op: int, addr_offset: int) -> int:
+    return ((op & 0x3) << 14) | (addr_offset & 0x3FFF)
+
+def decode_mem_req(word: int) -> tuple[int, int]:
+    return (word >> 14) & 0x3, word & 0x3FFF
+
+class NocCacheServer:
+    """Service loop/step helper on a server core that handles NoC memory/cache requests."""
+    def __init__(self, cluster: NocCluster, server_core_id: int, req_ch: int,
+                 sdram_cache: SdramCacheSubsystem, base_addr: int = 0x4000,
+                 notify_mbox_ch: int | None = None):
+        self.cluster = cluster
+        self.server_core_id = server_core_id
+        self.req_ch = req_ch
+        self.sdram_cache = sdram_cache
+        self.base_addr = base_addr & ADDR_MASK
+        self.notify_mbox_ch = notify_mbox_ch
+        self.served_reads = 0
+        self.served_writes = 0
+        self._pending_write_addr: int | None = None
+
+    def poll_once(self) -> bool:
+        """Process one request from req_ch or one write data word if awaiting write payload."""
+        ni = self.cluster.nis[self.server_core_id]
+        if self._pending_write_addr is not None:
+            if not ni.rx_fifos[self.req_ch]:
+                return False
+            wdata = ni.rx_fifos[self.req_ch].popleft()
+            self.sdram_cache.write_data_word(self._pending_write_addr, wdata)
+            self._pending_write_addr = None
+            self.served_writes += 1
+            return True
+
+        if not ni.rx_fifos[self.req_ch]:
+            return False
+
+        req_word = ni.rx_fifos[self.req_ch].popleft()
+        op, offset = decode_mem_req(req_word)
+        target_addr = (self.base_addr + offset) & ADDR_MASK
+        src_core = ni.last_mbox_src >> 8 if ni.last_mbox_src else 0
+        # Route reply back via server's channel table entry matching request channel
+        dst_core, dst_ch, valid = ni.channel_table[self.req_ch % ni.num_ch]
+        if not valid:
+            dst_core, dst_ch = src_core, self.req_ch % ni.num_ch
+
+        if op == MEM_REQ_OP_READ:
+            val, _ = self.sdram_cache.read_data_word(target_addr)
+            # Push response word into server's tx_outbox using configured route
+            self.cluster.nis[self.server_core_id].tx_outbox.append(
+                NocPacket(0, self.server_core_id, self.req_ch, dst_core, dst_ch, val)
+            )
+            if self.notify_mbox_ch is not None:
+                m_core, m_ch, m_valid = ni.channel_table[self.notify_mbox_ch % ni.num_ch]
+                if m_valid:
+                    self.cluster.nis[self.server_core_id].mbox_outbox.append(
+                        NocPacket(1, self.server_core_id, self.notify_mbox_ch, m_core, m_ch, val)
+                    )
+            self.served_reads += 1
+            return True
+
+        elif op == MEM_REQ_OP_WRITE:
+            self._pending_write_addr = target_addr
+            return True
+
+        return False
+
+class NocCacheClient:
+    """Helper for a client core issuing cached SDRAM read/write requests over the NoC."""
+    def __init__(self, cluster: NocCluster, client_core_id: int, tx_ch: int, rx_ch: int):
+        self.cluster = cluster
+        self.client_core_id = client_core_id
+        self.tx_ch = tx_ch
+        self.rx_ch = rx_ch
+
+    def issue_write(self, addr_offset: int, val: int):
+        ni = self.cluster.nis[self.client_core_id]
+        ni.send_data(encode_mem_req(MEM_REQ_OP_WRITE, addr_offset), ch=self.tx_ch)
+        ni.send_data(val & WORD_MASK, ch=self.tx_ch)
+
+    def issue_read(self, addr_offset: int):
+        ni = self.cluster.nis[self.client_core_id]
+        ni.send_data(encode_mem_req(MEM_REQ_OP_READ, addr_offset), ch=self.tx_ch)
+
+    def try_recv_read_data(self) -> int | None:
+        q = self.cluster.nis[self.client_core_id].rx_fifos[self.rx_ch]
+        return q.popleft() if q else None

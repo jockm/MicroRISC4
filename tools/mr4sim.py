@@ -980,3 +980,199 @@ def main():
 if __name__ == "__main__":
     main()
 
+
+
+# === Lean-Core I/D-Cache & SDRAM Burst/Write-Behind Model ===
+class DirectMappedCache:
+    """Direct-mapped cache line model with burst refill and write-behind support."""
+    def __init__(self, num_lines: int = 32, line_words: int = 8, write_back: bool = True):
+        assert num_lines > 0 and (num_lines & (num_lines - 1)) == 0, "num_lines must be power of 2"
+        assert line_words > 0 and (line_words & (line_words - 1)) == 0, "line_words must be power of 2"
+        self.num_lines = num_lines
+        self.line_words = line_words
+        self.write_back = write_back
+        # Each entry: dict(tag=int|None, valid=bool, dirty=bool, words=list[int])
+        self.lines = [
+            {"tag": None, "valid": False, "dirty": False, "words": [0] * line_words}
+            for _ in range(num_lines)
+        ]
+        self.hits = 0
+        self.misses = 0
+        self.writebacks = 0
+
+    def _split_addr(self, word_addr: int):
+        offset = word_addr & (self.line_words - 1)
+        idx_mask = self.num_lines - 1
+        index = (word_addr >> self.line_words.bit_length() - 1) & idx_mask
+        tag = word_addr >> ((self.line_words.bit_length() - 1) + (self.num_lines.bit_length() - 1))
+        return tag, index, offset
+
+    def lookup(self, word_addr: int):
+        tag, index, offset = self._split_addr(word_addr)
+        line = self.lines[index]
+        if line["valid"] and line["tag"] == tag:
+            self.hits += 1
+            return True, index, offset, line["words"][offset]
+        self.misses += 1
+        return False, index, offset, 0
+
+    def fill_line(self, word_addr: int, burst_words: list[int]):
+        tag, index, _ = self._split_addr(word_addr)
+        line = self.lines[index]
+        evicted = None
+        if line["valid"] and line["dirty"] and self.write_back:
+            base_addr = ((line["tag"] << ((self.line_words.bit_length() - 1) + (self.num_lines.bit_length() - 1)))
+                         | (index << (self.line_words.bit_length() - 1)))
+            evicted = (base_addr, list(line["words"]))
+            self.writebacks += 1
+        padded = list(burst_words[:self.line_words])
+        if len(padded) < self.line_words:
+            padded.extend([0] * (self.line_words - len(padded)))
+        line["tag"] = tag
+        line["valid"] = True
+        line["dirty"] = False
+        line["words"] = padded
+        return evicted
+
+    def write_word(self, word_addr: int, val: int) -> bool:
+        """Returns True if hit in cache and updated locally; False if miss."""
+        tag, index, offset = self._split_addr(word_addr)
+        line = self.lines[index]
+        if line["valid"] and line["tag"] == tag:
+            self.hits += 1
+            line["words"][offset] = val & WORD_MASK
+            line["dirty"] = True
+            return True
+        self.misses += 1
+        return False
+
+class SdramCacheSubsystem:
+    """Models lean local RAM + I/D caches + SDRAM burst reads + write-behind queue."""
+    def __init__(self, local_words: int = 2048, sdram_words: int = 16 * 1024 * 1024,
+                 line_words: int = 8, i_lines: int = 32, d_lines: int = 32,
+                 write_behind_depth: int = 16, act_cycles: int = 2,
+                 cas_cycles: int = 2, pre_cycles: int = 2, refresh_interval: int = 374):
+        assert 1 <= local_words <= 65536, "Core memory capped at 64K words (128K bytes)"
+        self.local_words = local_words
+        self.sdram = [0] * min(sdram_words, 262144)  # backing store (capped array for fast sim)
+        self._sdram_full_words = sdram_words
+        self.line_words = line_words
+        self.icache = DirectMappedCache(num_lines=i_lines, line_words=line_words, write_back=False)
+        self.dcache = DirectMappedCache(num_lines=d_lines, line_words=line_words, write_back=True)
+
+        # Write-behind queue entries: (sdram_word_addr, val16)
+        self.write_behind = deque()
+        self.write_behind_depth = write_behind_depth
+
+        # SDRAM timing parameters (in system/controller cycles)
+        self.act_cycles = act_cycles
+        self.cas_cycles = cas_cycles
+        self.pre_cycles = pre_cycles
+        self.refresh_interval = refresh_interval
+        self._refresh_countdown = refresh_interval
+        self._busy_cycles = 0
+        self.total_cycles = 0
+        self.sdram_burst_reads = 0
+        self.sdram_writes = 0
+        self.sdram_refreshes = 0
+
+    def _sdram_idx(self, addr: int) -> int:
+        return addr % len(self.sdram)
+
+    def _burst_read_cycles(self) -> int:
+        # ACT + CAS + 1 cycle/word burst streaming + PRE
+        return self.act_cycles + self.cas_cycles + self.line_words + self.pre_cycles
+
+    def _single_write_cycles(self) -> int:
+        return self.act_cycles + 1 + self.pre_cycles
+
+    def tick(self, n: int = 1):
+        for _ in range(n):
+            self.total_cycles += 1
+            if self._busy_cycles > 0:
+                self._busy_cycles -= 1
+            self._refresh_countdown -= 1
+            if self._refresh_countdown <= 0:
+                self._refresh_countdown = self.refresh_interval
+                self.sdram_refreshes += 1
+                self._busy_cycles += (self.pre_cycles + self.act_cycles)
+            # Drain one write-behind item when SDRAM is idle and no miss is active
+            if self._busy_cycles == 0 and self.write_behind:
+                w_addr, w_val = self.write_behind.popleft()
+                self.sdram[self._sdram_idx(w_addr)] = w_val & WORD_MASK
+                self.sdram_writes += 1
+                self._busy_cycles += self._single_write_cycles()
+
+    def fetch_inst_word(self, word_addr: int) -> tuple[int, int]:
+        """Returns (word16, latency_cycles) via I-Cache with SDRAM burst refill on miss."""
+        hit, _, _, val = self.icache.lookup(word_addr)
+        if hit:
+            self.tick(1)
+            return val, 1
+        base = word_addr & ~(self.line_words - 1)
+        burst = [self.sdram[self._sdram_idx(base + i)] for i in range(self.line_words)]
+        self.icache.fill_line(word_addr, burst)
+        lat = self._burst_read_cycles()
+        self.sdram_burst_reads += 1
+        self.tick(lat)
+        _, _, _, val_after = self.icache.lookup(word_addr)
+        self.icache.hits -= 1  # don't double-count fill lookup as hit
+        return val_after, lat
+
+    def read_data_word(self, word_addr: int) -> tuple[int, int]:
+        """Returns (word16, latency_cycles) via D-Cache (with write-behind forwarding)."""
+        # Check write-behind queue for matching address (RAW hazard forwarding)
+        for w_addr, w_val in reversed(self.write_behind):
+            if w_addr == word_addr:
+                self.tick(1)
+                return w_val, 1
+
+        hit, _, _, val = self.dcache.lookup(word_addr)
+        if hit:
+            self.tick(1)
+            return val, 1
+
+        base = word_addr & ~(self.line_words - 1)
+        burst = [self.sdram[self._sdram_idx(base + i)] for i in range(self.line_words)]
+        evicted = self.dcache.fill_line(word_addr, burst)
+        lat = self._burst_read_cycles()
+        self.sdram_burst_reads += 1
+        if evicted is not None:
+            ev_base, ev_words = evicted
+            for idx_w, ew in enumerate(ev_words):
+                self.write_behind.append((ev_base + idx_w, ew))
+            lat += self.pre_cycles
+        self.tick(lat)
+        _, _, _, val_after = self.dcache.lookup(word_addr)
+        self.dcache.hits -= 1
+        return val_after, lat
+
+    def write_data_word(self, word_addr: int, val: int) -> tuple[bool, int]:
+        """Writes to D-Cache if hit; enqueues write-behind if queue has room. Returns (hit, lat)."""
+        hit = self.dcache.write_word(word_addr, val)
+        if not hit:
+            # Allocate line via burst read and apply write
+            base = word_addr & ~(self.line_words - 1)
+            burst = [self.sdram[self._sdram_idx(base + i)] for i in range(self.line_words)]
+            self.dcache.fill_line(word_addr, burst)
+            self.dcache.write_word(word_addr, val)
+            self.dcache.hits -= 1
+            lat = self._burst_read_cycles()
+            self.sdram_burst_reads += 1
+            self.tick(lat)
+            return False, lat
+
+        # Queue write-behind entry if not full (keeps core moving without waiting for SDRAM write)
+        if len(self.write_behind) < self.write_behind_depth:
+            self.write_behind.append((word_addr, val & WORD_MASK))
+            self.tick(1)
+            return True, 1
+
+        # If write-behind queue is full, drain one entry first
+        w_addr, w_val = self.write_behind.popleft()
+        self.sdram[self._sdram_idx(w_addr)] = w_val
+        self.sdram_writes += 1
+        self.write_behind.append((word_addr, val & WORD_MASK))
+        lat = self._single_write_cycles()
+        self.tick(lat)
+        return True, lat

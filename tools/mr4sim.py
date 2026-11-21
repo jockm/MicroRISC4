@@ -228,6 +228,8 @@ class CoreNetworkInterface:
     def fifo_r(self, ch: int | None = None) -> int:
         idx = (self.sel_ch if ch is None else ch) % self.num_ch
         q = self.rx_fifos[idx]
+        if hasattr(self, "_rx_meta") and self._rx_meta[idx]:
+            self._rx_meta[idx].popleft()
         return q.popleft() if q else 0x0000
 
     def fifo_tryr(self, ch: int | None = None) -> int:
@@ -265,6 +267,9 @@ class CoreNetworkInterface:
         if len(q) >= self.fifo_depth:
             return False  # backpressure / hold in router
         q.append(pkt.payload)
+        if not hasattr(self, "_rx_meta"):
+            self._rx_meta = [deque() for _ in range(self.num_ch)]
+        self._rx_meta[ch].append((pkt.src_core, pkt.src_ch))
         return True
 
     def pop_mbox(self) -> int:
@@ -1196,12 +1201,14 @@ class SdramCacheSubsystem:
         """Writes to D-Cache if hit; enqueues write-behind if queue has room. Returns (hit, lat)."""
         hit = self.dcache.write_word(word_addr, val)
         if not hit:
-            # Allocate line via burst read and apply write
+            # Allocate line via burst read, apply write, and enqueue write-behind if space allows
             base = word_addr & ~(self.line_words - 1)
             burst = [self.sdram[self._sdram_idx(base + i)] for i in range(self.line_words)]
             self.dcache.fill_line(word_addr, burst)
             self.dcache.write_word(word_addr, val)
             self.dcache.hits -= 1
+            if len(self.write_behind) < self.write_behind_depth:
+                self.write_behind.append((word_addr, val & WORD_MASK))
             lat = self._burst_read_cycles()
             self.sdram_burst_reads += 1
             self.tick(lat)
@@ -1260,6 +1267,8 @@ class NocCacheServer:
             if not ni.rx_fifos[self.req_ch]:
                 return False
             wdata = ni.rx_fifos[self.req_ch].popleft()
+            if hasattr(ni, "_rx_meta") and ni._rx_meta[self.req_ch]:
+                ni._rx_meta[self.req_ch].popleft()
             self.sdram_cache.write_data_word(self._pending_write_addr, wdata)
             self._pending_write_addr = None
             self.served_writes += 1
@@ -1269,13 +1278,15 @@ class NocCacheServer:
             return False
 
         req_word = ni.rx_fifos[self.req_ch].popleft()
+        req_src_core, req_src_ch = 0, self.req_ch % ni.num_ch
+        if hasattr(ni, "_rx_meta") and ni._rx_meta[self.req_ch]:
+            req_src_core, req_src_ch = ni._rx_meta[self.req_ch].popleft()
         op, offset = decode_mem_req(req_word)
         target_addr = (self.base_addr + offset) & ADDR_MASK
-        src_core = ni.last_mbox_src >> 8 if ni.last_mbox_src else 0
-        # Route reply back via server's channel table entry matching request channel
+        # Route reply via channel_table if configured for req_ch, else back to requester's (src_core, src_ch)
         dst_core, dst_ch, valid = ni.channel_table[self.req_ch % ni.num_ch]
         if not valid:
-            dst_core, dst_ch = src_core, self.req_ch % ni.num_ch
+            dst_core, dst_ch = req_src_core, req_src_ch
 
         if op == MEM_REQ_OP_READ:
             val, _ = self.sdram_cache.read_data_word(target_addr)

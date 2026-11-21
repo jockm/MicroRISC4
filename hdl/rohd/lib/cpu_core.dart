@@ -347,7 +347,15 @@ class CpuCore extends Module {
               ]),
 
               // ST_EXEC: Instruction decode and execute
-              CaseItem(Const(_stExec, width: 3), [
+              CaseItem(
+                Const(_stExec, width: 3),
+                () {
+                  final regR = getReg(rr);
+                  final regL = getReg(rl);
+                  final regRDec = regR - 1;
+                  final regLInc = regL + 1;
+                  final regLDec = regL - 1;
+                  return [If(Const(1, width: 1), then: [
                 portBEn < 0,
                 portBWe < 0,
                 If(illegalSlot1, then: [
@@ -359,7 +367,7 @@ class CpuCore extends Module {
                     // 0x0: LD Rr, Rl
                     CaseItem(Const(MiniRISC4Constants.opLdReg, width: 4), [
                       for (int i = 0; i < 4; i++)
-                        If(rr.eq(i), then: [r[i] < getReg(rl)]),
+                        If(rr.eq(i), then: [r[i] < regL]),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr,
                           portAEn, state, pc),
                     ]),
@@ -377,7 +385,7 @@ class CpuCore extends Module {
                         instReg < portARdata,
                       ]),
                       portAEn < 0,
-                      portBAddr < getReg(rl),
+                      portBAddr < regL,
                       portBWe < 0,
                       portBEn < 1,
                       destReg < rr,
@@ -386,13 +394,13 @@ class CpuCore extends Module {
 
                     // 0x3: LD (Rr), Rl - Poke
                     CaseItem(Const(MiniRISC4Constants.opLdPoke, width: 4), [
-                      portBAddr < getReg(rr),
-                      portBWdata < getReg(rl),
+                      portBAddr < regR,
+                      portBWdata < regL,
                       portBWe < 1,
                       portBEn < 1,
                       if (config.enableUart)
-                        If(getReg(rr).eq(MiniRISC4Constants.addrUartTx), then: [
-                          txData < getReg(rl).slice(7, 0),
+                        If(regR.eq(MiniRISC4Constants.addrUartTx), then: [
+                          txData < regL.slice(7, 0),
                           txStrobe < 1,
                         ]),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr,
@@ -405,29 +413,27 @@ class CpuCore extends Module {
                         instReg < portARdata,
                       ]),
                       portAEn < 0,
-                      portBAddr < getReg(rl),
+                      portBAddr < regL,
                       portBWe < 0,
                       portBEn < 1,
                       destReg < rr,
                       for (int i = 0; i < 4; i++)
-                        If(rl.eq(i), then: [r[i] < r[i] + 1]),
+                        If(rl.eq(i), then: [r[i] < regLInc]),
                       state < Const(_stMemWait, width: 3),
                     ]),
 
                     // 0x5: LD (--Rr), Rl - Push (Full Descending)
                     CaseItem(Const(MiniRISC4Constants.opLdPredec, width: 4), [
                       for (int i = 0; i < 4; i++)
-                        If(rr.eq(i), then: [
-                          r[i] < r[i] - 1,
-                          portBAddr < r[i] - 1,
-                        ]),
-                      portBWdata < getReg(rl),
+                        If(rr.eq(i), then: [r[i] < regRDec]),
+                      portBAddr < regRDec,
+                      portBWdata < regL,
                       portBWe < 1,
                       portBEn < 1,
                       if (config.enableUart)
-                        If(getReg(rr).eq(Const(0x0010, width: 16)),
+                        If(regR.eq(Const(0x0010, width: 16)),
                             then: [
-                              txData < getReg(rl).slice(7, 0),
+                              txData < regL.slice(7, 0),
                               txStrobe < 1,
                             ]),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr,
@@ -437,7 +443,7 @@ class CpuCore extends Module {
                     // 0x6: ADD
                     CaseItem(Const(MiniRISC4Constants.opAdd, width: 4), [
                       for (int i = 0; i < 4; i++)
-                        If(rr.eq(i), then: [r[i] < r[i] + getReg(rl)]),
+                        If(rr.eq(i), then: [r[i] < regR + regL]),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr,
                           portAEn, state, pc),
                     ]),
@@ -445,7 +451,7 @@ class CpuCore extends Module {
                     // 0x7: SUB
                     CaseItem(Const(MiniRISC4Constants.opSub, width: 4), [
                       for (int i = 0; i < 4; i++)
-                        If(rr.eq(i), then: [r[i] < r[i] - getReg(rl)]),
+                        If(rr.eq(i), then: [r[i] < regR - regL]),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr,
                           portAEn, state, pc),
                     ]),
@@ -453,7 +459,7 @@ class CpuCore extends Module {
                     // 0x8: OR
                     CaseItem(Const(MiniRISC4Constants.opOr, width: 4), [
                       for (int i = 0; i < 4; i++)
-                        If(rr.eq(i), then: [r[i] < r[i] | getReg(rl)]),
+                        If(rr.eq(i), then: [r[i] < regR | regL]),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr,
                           portAEn, state, pc),
                     ]),
@@ -461,7 +467,7 @@ class CpuCore extends Module {
                     // 0x9: XOR
                     CaseItem(Const(MiniRISC4Constants.opXor, width: 4), [
                       for (int i = 0; i < 4; i++)
-                        If(rr.eq(i), then: [r[i] < r[i] ^ getReg(rl)]),
+                        If(rr.eq(i), then: [r[i] < regR ^ regL]),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr,
                           portAEn, state, pc),
                     ]),
@@ -469,7 +475,7 @@ class CpuCore extends Module {
                     // 0xA: Native AND
                     CaseItem(Const(MiniRISC4Constants.opAnd, width: 4), [
                       for (int i = 0; i < 4; i++)
-                        If(rr.eq(i), then: [r[i] < r[i] & getReg(rl)]),
+                        If(rr.eq(i), then: [r[i] < regR & regL]),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr,
                           portAEn, state, pc),
                     ]),
@@ -527,11 +533,11 @@ class CpuCore extends Module {
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subInc, width: 2), [
                           for (int i = 0; i < 4; i++)
-                            If(rl.eq(i), then: [r[i] < r[i] + 1]),
+                            If(rl.eq(i), then: [r[i] < regLInc]),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subDec, width: 2), [
                           for (int i = 0; i < 4; i++)
-                            If(rl.eq(i), then: [r[i] < r[i] - 1]),
+                            If(rl.eq(i), then: [r[i] < regLDec]),
                         ]),
                       ]),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr,
@@ -540,9 +546,9 @@ class CpuCore extends Module {
 
                     // 0xD: JMP.Z
                     CaseItem(Const(MiniRISC4Constants.opJmpZ, width: 4), [
-                      If(getReg(rl).eq(0), then: [
+                      If(regL.eq(0), then: [
                         _branchTo(
-                            getReg(rr), pc, portAAddr, portAEn, slot, state),
+                            regR, pc, portAAddr, portAEn, slot, state),
                       ], orElse: [
                         _advanceFromExec(slot, instReg, portARdata, portAAddr,
                             portAEn, state, pc),
@@ -551,9 +557,9 @@ class CpuCore extends Module {
 
                     // 0xE: JMP.M
                     CaseItem(Const(MiniRISC4Constants.opJmpM, width: 4), [
-                      If(getReg(rl)[15].eq(1), then: [
+                      If(regL[15].eq(1), then: [
                         _branchTo(
-                            getReg(rr), pc, portAAddr, portAEn, slot, state),
+                            regR, pc, portAAddr, portAEn, slot, state),
                       ], orElse: [
                         _advanceFromExec(slot, instReg, portARdata, portAAddr,
                             portAEn, state, pc),
@@ -565,12 +571,12 @@ class CpuCore extends Module {
                       Case(rr, [
                         CaseItem(Const(MiniRISC4Constants.subJmp, width: 2), [
                           _branchTo(
-                              getReg(rl), pc, portAAddr, portAEn, slot, state),
+                              regL, pc, portAAddr, portAEn, slot, state),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subLink, width: 2), [
                           r[0] < pc + 1,
                           _branchTo(
-                              getReg(rl), pc, portAAddr, portAEn, slot, state),
+                              regL, pc, portAAddr, portAEn, slot, state),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subPush8, width: 2), [
                           for (int i = 0; i < 4; i++)
@@ -588,7 +594,7 @@ class CpuCore extends Module {
                             trapTableBaseConst +
                                 [
                                   Const(0, width: 8),
-                                  getReg(rl).slice(3, 0),
+                                  regL.slice(3, 0),
                                   Const(0, width: 4)
                                 ].swizzle(),
                             pc,
@@ -602,7 +608,10 @@ class CpuCore extends Module {
                     ]),
                   ]),
                 ]),
-              ]),
+                    ]),
+                  ];
+                }(),
+              ),
 
               // ST_MEM_WAIT: Cycle 1 of Port B BRAM read (raw/bank stage)
               CaseItem(Const(_stMemWait, width: 3), [

@@ -166,6 +166,226 @@ class SpiSdCard:
 
         return 0xFF
 
+# === Multi-Core NoC & Priority MBOX Simulator ===
+ADDR_NOC_TX_DATA    = 0x0020  # W: push payload word to selected local ch (NOC_SEL_CH)
+ADDR_NOC_SEL_CH     = 0x0021  # R/W: select local channel index [0..num_ch-1]
+ADDR_NOC_RX_DATA    = 0x0022  # R: FIFO.R (pop from selected local RX channel FIFO)
+ADDR_NOC_RX_STAT    = 0x0023  # R: FIFO.STAT (b0=not_empty, b1=full, b2=tx_ready, b[15:8]=rx_count)
+ADDR_NOC_RX_TRYR    = 0x0024  # R: FIFO.TRYR (non-blocking pop; returns 0x0000 if empty)
+ADDR_NOC_MBOX_SEND  = 0x0025  # W: send priority MBOX word to mapped (dst_core, dst_ch)
+ADDR_NOC_MBOX_DATA  = 0x0026  # R: pop oldest incoming MBOX payload word (0x0000 if none)
+ADDR_NOC_MBOX_SRC   = 0x0027  # R: {src_core[7:0], src_ch[7:0]} of last/queued MBOX
+ADDR_NOC_CFG_CH_IDX = 0x0028  # W: select channel table entry local_ch to configure
+ADDR_NOC_CFG_CH_MAP = 0x0029  # R/W: {dst_core[7:0], dst_ch[7:0]} for selected local_ch
+
+class NocPacket:
+    __slots__ = ("pkt_type", "src_core", "src_ch", "dst_core", "dst_ch", "payload", "hops", "_stage_node")
+    def __init__(self, pkt_type: int, src_core: int, src_ch: int,
+                 dst_core: int, dst_ch: int, payload: int, hops: int = 0):
+        self.pkt_type = pkt_type      # 0 = DATA, 1 = MBOX (priority)
+        self.src_core = src_core & 0xFF
+        self.src_ch = src_ch & 0xFF
+        self.dst_core = dst_core & 0xFF
+        self.dst_ch = dst_ch & 0xFF
+        self.payload = payload & WORD_MASK
+        self.hops = hops
+        self._stage_node = None
+
+class CoreNetworkInterface:
+    """Per-core NI with channel table, per-channel RX FIFOs, and priority MBOX queue."""
+    def __init__(self, core_id: int, num_ch: int = 8, fifo_depth: int = 32,
+                 mbox_trap_vec_offset: int = 0x0E):
+        self.core_id = core_id
+        self.num_ch = num_ch
+        self.fifo_depth = fifo_depth
+        self.mbox_trap_vec_offset = mbox_trap_vec_offset & 0x0F
+
+        self.sel_ch = 0
+        self.cfg_ch_idx = 0
+        # channel_table[local_ch] = (dst_core, dst_ch, valid)
+        self.channel_table = [(core_id, ch % num_ch, False) for ch in range(num_ch)]
+
+        self.rx_fifos = [deque() for _ in range(num_ch)]
+        self.tx_outbox = deque()          # DATA packets waiting for local router injection
+        self.mbox_outbox = deque()        # Priority MBOX packets waiting for local router
+        self.mbox_inbox = deque()         # Delivered (src_core, src_ch, payload) tuples
+        self.last_mbox_src = 0
+        self.pending_mbox_trap = False
+
+    def set_route(self, local_ch: int, dst_core: int, dst_ch: int, valid: bool = True):
+        if 0 <= local_ch < self.num_ch:
+            self.channel_table[local_ch] = (dst_core & 0xFF, dst_ch & 0xFF, bool(valid))
+
+    def rx_stat(self, ch: int | None = None) -> int:
+        idx = (self.sel_ch if ch is None else ch) % self.num_ch
+        q = self.rx_fifos[idx]
+        not_empty = 1 if len(q) > 0 else 0
+        full = 1 if len(q) >= self.fifo_depth else 0
+        tx_ready = 1 if len(self.tx_outbox) < self.fifo_depth else 0
+        cnt = min(len(q), 0xFF) << 8
+        return cnt | (tx_ready << 2) | (full << 1) | not_empty
+
+    def fifo_r(self, ch: int | None = None) -> int:
+        idx = (self.sel_ch if ch is None else ch) % self.num_ch
+        q = self.rx_fifos[idx]
+        return q.popleft() if q else 0x0000
+
+    def fifo_tryr(self, ch: int | None = None) -> int:
+        # Per spec: non-blocking read returns 0x0000 when empty
+        return self.fifo_r(ch)
+
+    def send_data(self, payload: int, ch: int | None = None) -> bool:
+        idx = (self.sel_ch if ch is None else ch) % self.num_ch
+        if len(self.tx_outbox) >= self.fifo_depth:
+            return False
+        dst_core, dst_ch, valid = self.channel_table[idx]
+        if not valid:
+            dst_core, dst_ch = self.core_id, idx
+        self.tx_outbox.append(NocPacket(0, self.core_id, idx, dst_core, dst_ch, payload))
+        return True
+
+    def send_mbox(self, payload: int, ch: int | None = None) -> bool:
+        idx = (self.sel_ch if ch is None else ch) % self.num_ch
+        if len(self.mbox_outbox) >= self.fifo_depth:
+            return False
+        dst_core, dst_ch, valid = self.channel_table[idx]
+        if not valid:
+            dst_core, dst_ch = self.core_id, idx
+        self.mbox_outbox.append(NocPacket(1, self.core_id, idx, dst_core, dst_ch, payload))
+        return True
+
+    def accept_packet(self, pkt: NocPacket) -> bool:
+        if pkt.pkt_type == 1:
+            self.mbox_inbox.append((pkt.src_core, pkt.src_ch, pkt.payload))
+            self.last_mbox_src = ((pkt.src_core & 0xFF) << 8) | (pkt.src_ch & 0xFF)
+            self.pending_mbox_trap = True
+            return True
+        ch = pkt.dst_ch % self.num_ch
+        q = self.rx_fifos[ch]
+        if len(q) >= self.fifo_depth:
+            return False  # backpressure / hold in router
+        q.append(pkt.payload)
+        return True
+
+    def pop_mbox(self) -> int:
+        if self.mbox_inbox:
+            _, _, payload = self.mbox_inbox.popleft()
+            return payload
+        return 0x0000
+
+class NocCluster:
+    """Registered ring or 2D-mesh multi-core simulator (1 cycle per registered hop)."""
+    def __init__(self, num_cores: int, topology: str = "ring",
+                 mesh_cols: int | None = None, fifo_depth: int = 32, num_ch: int = 8):
+        assert num_cores >= 1
+        self.num_cores = num_cores
+        self.topology = topology
+        if topology == "mesh":
+            self.cols = mesh_cols if mesh_cols else math.ceil(math.sqrt(num_cores))
+            self.rows = math.ceil(num_cores / self.cols)
+        else:
+            self.cols = num_cores
+            self.rows = 1
+
+        self.cores: list[MiniRISC4Sim] = []
+        self.nis: list[CoreNetworkInterface] = []
+        # Registered link pipeline stage (1 hop per cluster tick)
+        self._in_flight: list[NocPacket] = []
+        self.completed_packets: list[NocPacket] = []
+        self.cluster_cycles = 0
+
+        for cid in range(num_cores):
+            ni = CoreNetworkInterface(cid, num_ch=num_ch, fifo_depth=fifo_depth)
+            sim = MiniRISC4Sim(core_id=cid, noc_ni=ni)
+            self.nis.append(ni)
+            self.cores.append(sim)
+
+    def configure_route(self, src_core: int, local_ch: int, dst_core: int, dst_ch: int):
+        self.nis[src_core].set_route(local_ch, dst_core, dst_ch, valid=True)
+
+    def _next_hop(self, curr_core: int, dst_core: int) -> int:
+        if curr_core == dst_core:
+            return dst_core
+        if self.topology == "ring":
+            # Shortest direction on ring (CW vs CCW)
+            cw_dist = (dst_core - curr_core) % self.num_cores
+            ccw_dist = (curr_core - dst_core) % self.num_cores
+            if cw_dist <= ccw_dist:
+                return (curr_core + 1) % self.num_cores
+            return (curr_core - 1) % self.num_cores
+        elif self.topology == "mesh":
+            # Dimension-ordered XY routing on 2D mesh
+            cx, cy = curr_core % self.cols, curr_core // self.cols
+            dx, dy = dst_core % self.cols, dst_core // self.cols
+            if cx != dx:
+                nx = cx + (1 if dx > cx else -1)
+                return cy * self.cols + nx
+            if cy != dy:
+                ny = cy + (1 if dy > cy else -1)
+                return ny * self.cols + cx
+            return dst_core
+        raise ValueError(f"Unknown NoC topology: {self.topology}")
+
+    def tick_noc(self):
+        """Advance registered router stages by 1 clock cycle (MBOX prioritized)."""
+        self.cluster_cycles += 1
+        next_flight: list[NocPacket] = []
+
+        # 1. Advance packets currently on registered inter-router links
+        for pkt in self._in_flight:
+            pkt.hops += 1
+            if pkt.dst_core == pkt._stage_node:
+                accepted = self.nis[pkt.dst_core].accept_packet(pkt)
+                if accepted:
+                    self.completed_packets.append(pkt)
+                else:
+                    next_flight.append(pkt)
+            else:
+                hop_to = self._next_hop(pkt._stage_node, pkt.dst_core)
+                pkt._stage_node = hop_to
+                next_flight.append(pkt)
+
+        # 2. Inject from each core's NI (MBOX priority ahead of DATA)
+        for cid, ni in enumerate(self.nis):
+            pkt = None
+            if ni.mbox_outbox:
+                pkt = ni.mbox_outbox.popleft()
+            elif ni.tx_outbox:
+                pkt = ni.tx_outbox.popleft()
+
+            if pkt is not None:
+                if pkt.dst_core == cid:
+                    pkt.hops += 1
+                    if not self.nis[cid].accept_packet(pkt):
+                        # Re-queue at head if full
+                        if pkt.pkt_type == 1:
+                            ni.mbox_outbox.appendleft(pkt)
+                        else:
+                            ni.tx_outbox.appendleft(pkt)
+                    else:
+                        self.completed_packets.append(pkt)
+                else:
+                    pkt._stage_node = self._next_hop(cid, pkt.dst_core)
+                    next_flight.append(pkt)
+
+        self._in_flight = next_flight
+
+        # 3. Trigger priority MBOX trap on destination cores if pending
+        for cid, (sim, ni) in enumerate(zip(self.cores, self.nis)):
+            if ni.pending_mbox_trap and not sim.halted:
+                ni.pending_mbox_trap = False
+                trap_vec = sim.trap_base + ni.mbox_trap_vec_offset
+                sim.r[0] = sim.pc & WORD_MASK
+                sim._branch_to(sim.read_mem(trap_vec))
+
+    def step_cycle(self):
+        """Step each active core by one slot and advance the NoC by one registered hop cycle."""
+        for sim in self.cores:
+            if not sim.halted:
+                sim.step()
+        self.tick_noc()
+
+
 class MiniRISC4Sim:
     def __init__(self, trace: bool = False, core_id: int = 0, noc_ni: "CoreNetworkInterface | None" = None):
         self.mem_words = 65536
@@ -760,221 +980,3 @@ def main():
 if __name__ == "__main__":
     main()
 
-# === Multi-Core NoC & Priority MBOX Simulator ===
-ADDR_NOC_TX_DATA    = 0x0020  # W: push payload word to selected local ch (NOC_SEL_CH)
-ADDR_NOC_SEL_CH     = 0x0021  # R/W: select local channel index [0..num_ch-1]
-ADDR_NOC_RX_DATA    = 0x0022  # R: FIFO.R (pop from selected local RX channel FIFO)
-ADDR_NOC_RX_STAT    = 0x0023  # R: FIFO.STAT (b0=not_empty, b1=full, b2=tx_ready, b[15:8]=rx_count)
-ADDR_NOC_RX_TRYR    = 0x0024  # R: FIFO.TRYR (non-blocking pop; returns 0x0000 if empty)
-ADDR_NOC_MBOX_SEND  = 0x0025  # W: send priority MBOX word to mapped (dst_core, dst_ch)
-ADDR_NOC_MBOX_DATA  = 0x0026  # R: pop oldest incoming MBOX payload word (0x0000 if none)
-ADDR_NOC_MBOX_SRC   = 0x0027  # R: {src_core[7:0], src_ch[7:0]} of last/queued MBOX
-ADDR_NOC_CFG_CH_IDX = 0x0028  # W: select channel table entry local_ch to configure
-ADDR_NOC_CFG_CH_MAP = 0x0029  # R/W: {dst_core[7:0], dst_ch[7:0]} for selected local_ch
-
-class NocPacket:
-    __slots__ = ("pkt_type", "src_core", "src_ch", "dst_core", "dst_ch", "payload", "hops", "_stage_node")
-    def __init__(self, pkt_type: int, src_core: int, src_ch: int,
-                 dst_core: int, dst_ch: int, payload: int, hops: int = 0):
-        self.pkt_type = pkt_type      # 0 = DATA, 1 = MBOX (priority)
-        self.src_core = src_core & 0xFF
-        self.src_ch = src_ch & 0xFF
-        self.dst_core = dst_core & 0xFF
-        self.dst_ch = dst_ch & 0xFF
-        self.payload = payload & WORD_MASK
-        self.hops = hops
-        self._stage_node = None
-
-class CoreNetworkInterface:
-    """Per-core NI with channel table, per-channel RX FIFOs, and priority MBOX queue."""
-    def __init__(self, core_id: int, num_ch: int = 8, fifo_depth: int = 32,
-                 mbox_trap_vec_offset: int = 0x0E):
-        self.core_id = core_id
-        self.num_ch = num_ch
-        self.fifo_depth = fifo_depth
-        self.mbox_trap_vec_offset = mbox_trap_vec_offset & 0x0F
-
-        self.sel_ch = 0
-        self.cfg_ch_idx = 0
-        # channel_table[local_ch] = (dst_core, dst_ch, valid)
-        self.channel_table = [(core_id, ch % num_ch, False) for ch in range(num_ch)]
-
-        self.rx_fifos = [deque() for _ in range(num_ch)]
-        self.tx_outbox = deque()          # DATA packets waiting for local router injection
-        self.mbox_outbox = deque()        # Priority MBOX packets waiting for local router
-        self.mbox_inbox = deque()         # Delivered (src_core, src_ch, payload) tuples
-        self.last_mbox_src = 0
-        self.pending_mbox_trap = False
-
-    def set_route(self, local_ch: int, dst_core: int, dst_ch: int, valid: bool = True):
-        if 0 <= local_ch < self.num_ch:
-            self.channel_table[local_ch] = (dst_core & 0xFF, dst_ch & 0xFF, bool(valid))
-
-    def rx_stat(self, ch: int | None = None) -> int:
-        idx = (self.sel_ch if ch is None else ch) % self.num_ch
-        q = self.rx_fifos[idx]
-        not_empty = 1 if len(q) > 0 else 0
-        full = 1 if len(q) >= self.fifo_depth else 0
-        tx_ready = 1 if len(self.tx_outbox) < self.fifo_depth else 0
-        cnt = min(len(q), 0xFF) << 8
-        return cnt | (tx_ready << 2) | (full << 1) | not_empty
-
-    def fifo_r(self, ch: int | None = None) -> int:
-        idx = (self.sel_ch if ch is None else ch) % self.num_ch
-        q = self.rx_fifos[idx]
-        return q.popleft() if q else 0x0000
-
-    def fifo_tryr(self, ch: int | None = None) -> int:
-        # Per spec: non-blocking read returns 0x0000 when empty
-        return self.fifo_r(ch)
-
-    def send_data(self, payload: int, ch: int | None = None) -> bool:
-        idx = (self.sel_ch if ch is None else ch) % self.num_ch
-        if len(self.tx_outbox) >= self.fifo_depth:
-            return False
-        dst_core, dst_ch, valid = self.channel_table[idx]
-        if not valid:
-            dst_core, dst_ch = self.core_id, idx
-        self.tx_outbox.append(NocPacket(0, self.core_id, idx, dst_core, dst_ch, payload))
-        return True
-
-    def send_mbox(self, payload: int, ch: int | None = None) -> bool:
-        idx = (self.sel_ch if ch is None else ch) % self.num_ch
-        if len(self.mbox_outbox) >= self.fifo_depth:
-            return False
-        dst_core, dst_ch, valid = self.channel_table[idx]
-        if not valid:
-            dst_core, dst_ch = self.core_id, idx
-        self.mbox_outbox.append(NocPacket(1, self.core_id, idx, dst_core, dst_ch, payload))
-        return True
-
-    def accept_packet(self, pkt: NocPacket) -> bool:
-        if pkt.pkt_type == 1:
-            self.mbox_inbox.append((pkt.src_core, pkt.src_ch, pkt.payload))
-            self.last_mbox_src = ((pkt.src_core & 0xFF) << 8) | (pkt.src_ch & 0xFF)
-            self.pending_mbox_trap = True
-            return True
-        ch = pkt.dst_ch % self.num_ch
-        q = self.rx_fifos[ch]
-        if len(q) >= self.fifo_depth:
-            return False  # backpressure / hold in router
-        q.append(pkt.payload)
-        return True
-
-    def pop_mbox(self) -> int:
-        if self.mbox_inbox:
-            _, _, payload = self.mbox_inbox.popleft()
-            return payload
-        return 0x0000
-
-class NocCluster:
-    """Registered ring or 2D-mesh multi-core simulator (1 cycle per registered hop)."""
-    def __init__(self, num_cores: int, topology: str = "ring",
-                 mesh_cols: int | None = None, fifo_depth: int = 32, num_ch: int = 8):
-        assert num_cores >= 1
-        self.num_cores = num_cores
-        self.topology = topology
-        if topology == "mesh":
-            self.cols = mesh_cols if mesh_cols else math.ceil(math.sqrt(num_cores))
-            self.rows = math.ceil(num_cores / self.cols)
-        else:
-            self.cols = num_cores
-            self.rows = 1
-
-        self.cores: list[MiniRISC4Sim] = []
-        self.nis: list[CoreNetworkInterface] = []
-        # Registered link pipeline stage (1 hop per cluster tick)
-        self._in_flight: list[NocPacket] = []
-        self.completed_packets: list[NocPacket] = []
-        self.cluster_cycles = 0
-
-        for cid in range(num_cores):
-            ni = CoreNetworkInterface(cid, num_ch=num_ch, fifo_depth=fifo_depth)
-            sim = MiniRISC4Sim(core_id=cid, noc_ni=ni)
-            self.nis.append(ni)
-            self.cores.append(sim)
-
-    def configure_route(self, src_core: int, local_ch: int, dst_core: int, dst_ch: int):
-        self.nis[src_core].set_route(local_ch, dst_core, dst_ch, valid=True)
-
-    def _next_hop(self, curr_core: int, dst_core: int) -> int:
-        if curr_core == dst_core:
-            return dst_core
-        if self.topology == "ring":
-            # Shortest direction on ring (CW vs CCW)
-            cw_dist = (dst_core - curr_core) % self.num_cores
-            ccw_dist = (curr_core - dst_core) % self.num_cores
-            if cw_dist <= ccw_dist:
-                return (curr_core + 1) % self.num_cores
-            return (curr_core - 1) % self.num_cores
-        elif self.topology == "mesh":
-            # Dimension-ordered XY routing on 2D mesh
-            cx, cy = curr_core % self.cols, curr_core // self.cols
-            dx, dy = dst_core % self.cols, dst_core // self.cols
-            if cx != dx:
-                nx = cx + (1 if dx > cx else -1)
-                return cy * self.cols + nx
-            if cy != dy:
-                ny = cy + (1 if dy > cy else -1)
-                return ny * self.cols + cx
-            return dst_core
-        raise ValueError(f"Unknown NoC topology: {self.topology}")
-
-    def tick_noc(self):
-        """Advance registered router stages by 1 clock cycle (MBOX prioritized)."""
-        self.cluster_cycles += 1
-        next_flight: list[NocPacket] = []
-
-        # 1. Advance packets currently on registered inter-router links
-        for pkt in self._in_flight:
-            pkt.hops += 1
-            if pkt.dst_core == pkt._stage_node:
-                accepted = self.nis[pkt.dst_core].accept_packet(pkt)
-                if accepted:
-                    self.completed_packets.append(pkt)
-                else:
-                    next_flight.append(pkt)
-            else:
-                hop_to = self._next_hop(pkt._stage_node, pkt.dst_core)
-                pkt._stage_node = hop_to
-                next_flight.append(pkt)
-
-        # 2. Inject from each core's NI (MBOX priority ahead of DATA)
-        for cid, ni in enumerate(self.nis):
-            pkt = None
-            if ni.mbox_outbox:
-                pkt = ni.mbox_outbox.popleft()
-            elif ni.tx_outbox:
-                pkt = ni.tx_outbox.popleft()
-
-            if pkt is not None:
-                if pkt.dst_core == cid:
-                    pkt.hops += 1
-                    if not self.nis[cid].accept_packet(pkt):
-                        # Re-queue at head if full
-                        if pkt.pkt_type == 1:
-                            ni.mbox_outbox.appendleft(pkt)
-                        else:
-                            ni.tx_outbox.appendleft(pkt)
-                    else:
-                        self.completed_packets.append(pkt)
-                else:
-                    pkt._stage_node = self._next_hop(cid, pkt.dst_core)
-                    next_flight.append(pkt)
-
-        self._in_flight = next_flight
-
-        # 3. Trigger priority MBOX trap on destination cores if pending
-        for cid, (sim, ni) in enumerate(zip(self.cores, self.nis)):
-            if ni.pending_mbox_trap and not sim.halted:
-                ni.pending_mbox_trap = False
-                trap_vec = sim.trap_base + ni.mbox_trap_vec_offset
-                sim.r[0] = sim.pc & WORD_MASK
-                sim._branch_to(sim.read_mem(trap_vec))
-
-    def step_cycle(self):
-        """Step each active core by one slot and advance the NoC by one registered hop cycle."""
-        for sim in self.cores:
-            if not sim.halted:
-                sim.step()
-        self.tick_noc()

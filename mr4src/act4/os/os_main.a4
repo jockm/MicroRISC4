@@ -39,6 +39,8 @@ const u16 ERR_UNKNOWN   = 0xFFFF;
 
 u16 msg_pending = 0;
 u16 sys_buf[64];
+const u16 RUN_BUF_MAX = 2048;
+u16 run_img_buf[2048];
 DirEntry sys_ent;
 
 // -----------------------------------------------------------------------------

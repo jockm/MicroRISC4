@@ -1178,11 +1178,9 @@ class CodeGen:
     def gen_assign(self, stmt: AssignStmt):
         if stmt.op == "=":
             self.gen_expr(stmt.value)
-            self.emit("LOAD16  R0, _act4_t0")
-            self.emit("LD      (R0), R1")
+            self.emit("APUSH   R1")
             self.gen_lvalue_addr(stmt.target)
-            self.emit("LOAD16  R2, _act4_t0")
-            self.emit("LD      R1, (R2)")
+            self.emit("APOP    R1")
             self.emit("LD      (R0), R1")
         else:
             self.gen_lvalue_addr(stmt.target)
@@ -1296,12 +1294,18 @@ class CodeGen:
 
         elif isinstance(expr, IndexAccess):
             self.gen_expr(expr.target)
-            self.emit("LOAD16  R0, _act4_t0")
-            self.emit("LD      (R0), R1")
+            self.emit("APUSH   R1")
 
             self.gen_expr(expr.index)
-            self.emit("LOAD16  R0, _act4_t0")
-            self.emit("LD      R2, (R0)")
+            elem_sz = self.get_index_elem_word_size(expr.target)
+            if elem_sz > 1:
+                self.emit("APUSH   R1")
+                self.emit(f"LOAD16  R1, {elem_sz}")
+                self.emit("APUSH   R1")
+                self.emit("RCALL   MULT")
+                self.emit("APOP    R1")
+
+            self.emit("APOP    R2")
             self.emit("ADD     R1, R2")
             self.emit("LD      R0, R1")
 
@@ -1328,6 +1332,43 @@ class CodeGen:
                 if decl.name == name:
                     return f"_{self.current_func.name}_{name}"
         return f"_{name}"
+
+    def get_index_elem_word_size(self, target: Expr) -> int:
+        if isinstance(target, VarRef):
+            decl = None
+            if self.current_func:
+                for pname, ptype in self.current_func.params:
+                    if pname == target.name:
+                        return 1 if ptype.is_pointer or ptype.is_func_ptr else (
+                            self.structs[ptype.base_type].word_size if ptype.base_type in self.structs else 1
+                        )
+                for d in self.current_func.locals_decls:
+                    if d.name == target.name:
+                        decl = d
+                        break
+            if decl is None and target.name in self.global_vars:
+                decl = self.global_vars[target.name]
+            if decl is not None:
+                t = decl.typ
+                if t.is_pointer or t.is_func_ptr:
+                    return 1
+                if t.base_type in self.structs:
+                    return self.structs[t.base_type].word_size
+        elif isinstance(target, MemberAccess):
+            tname = self.get_member_type_name(target.target, target.member)
+            if tname and tname in self.structs:
+                return self.structs[tname].word_size
+        return 1
+
+    def get_member_type_name(self, target: Expr, member: str) -> Optional[str]:
+        typ_name = self.infer_type(target)
+        if typ_name in self.structs:
+            for fname, ftype, _ in self.structs[typ_name].fields:
+                if fname == member:
+                    if ftype.is_pointer or ftype.is_func_ptr:
+                        return None
+                    return ftype.base_type
+        return None
 
     def get_member_offset(self, target: Expr, member: str) -> int:
         typ_name = self.infer_type(target)

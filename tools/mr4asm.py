@@ -189,6 +189,8 @@ def evaluate_expression(expr_str: str, symbols: Dict[str, int], line: SourceLine
     if not expr_str:
         raise AssemblerError("Empty expression", line)
 
+    upper_syms = {k.upper(): v for k, v in symbols.items()}
+
     def sub_numeric(match: re.Match) -> str:
         tok = match.group(0)
         u_tok = tok.upper()
@@ -211,7 +213,7 @@ def evaluate_expression(expr_str: str, symbols: Dict[str, int], line: SourceLine
             return str(int(tok, 10))
         return tok
 
-    num_pattern = re.compile(r"'(?:\\.|[^'\\\\])'|\$[0-9a-fA-F]+|%[01]+|0[xX][0-9a-fA-F]+|0[bB][01]+|\\b[0-9][0-9a-fA-F]*[hH]\\b|\b\d+\b")
+    num_pattern = re.compile(r"'(?:\\.|[^'\\\\])'|\$[0-9a-fA-F]+|%[01]+|0[xX][0-9a-fA-F]+|0[bB][01]+|\b[0-9a-fA-F]+[hH]\b|\b\d+\b")
     transformed = num_pattern.sub(sub_numeric, expr_str)
 
     def sub_high(match: re.Match) -> str:
@@ -227,12 +229,18 @@ def evaluate_expression(expr_str: str, symbols: Dict[str, int], line: SourceLine
     transformed = re.sub(r">\s*([A-Za-z0-9_.]+|\([^)]+\))", sub_high, transformed)
     transformed = re.sub(r"<\s*([A-Za-z0-9_.]+|\([^)]+\))", sub_low, transformed)
 
-    for sym in sorted(symbols.keys(), key=len, reverse=True):
-        val = symbols[sym]
-        pattern = rf"(?<![A-Za-z0-9_.])" + re.escape(sym) + rf"(?![A-Za-z0-9_.])"
-        transformed = re.sub(pattern, str(val), transformed, flags=re.IGNORECASE)
+    ident_re = re.compile(r"[A-Za-z_.][A-Za-z0-9_.]*")
 
-    allowed = re.compile(r"^[0-9+\-*/%&|^~()<>\s]+$")
+    def sub_ident(match: re.Match) -> str:
+        tok = match.group(0)
+        val = upper_syms.get(tok.upper())
+        if val is not None:
+            return str(val)
+        return tok
+
+    transformed = ident_re.sub(sub_ident, transformed)
+
+    allowed = re.compile(r"^[0-9+\-*/%&|^~()<>=!\s]+$")
     if not allowed.match(transformed):
         if pass_num == 1:
             return 0
@@ -245,7 +253,6 @@ def evaluate_expression(expr_str: str, symbols: Dict[str, int], line: SourceLine
         if pass_num == 1:
             return 0
         raise AssemblerError(f"Failed to evaluate expression '{expr_str}': {e}", line)
-
 # ==============================================================================
 # Macro Preprocessor & File Includer
 # ==============================================================================

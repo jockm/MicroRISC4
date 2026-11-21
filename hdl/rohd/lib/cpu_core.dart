@@ -103,6 +103,10 @@ class CpuCore extends Module {
     final portBWe = Logic(name: 'port_b_we');
     final portBEn = Logic(name: 'port_b_en');
     final portBRdata = Logic(name: 'port_b_rdata', width: 16);
+    final aRdataQ = Logic(name: 'a_rdata_q', width: 16);
+    final bRdataQ = Logic(name: 'b_rdata_q', width: 16);
+    final aBankStage = Logic(name: 'a_bank_stage', width: 16);
+    final bBankStage = Logic(name: 'b_bank_stage', width: 16);
 
     // Expose Port B bus for external peripherals / multi-core glue
     final portBAddrOut = addOutput('port_b_addr_out', width: 16);
@@ -209,29 +213,8 @@ class CpuCore extends Module {
     final trapAlignFaultConst =
         Const(config.trapTableBase + (15 << 4), width: 16);
 
-    // Pre-muxed peripheral/MMIO read bus (excludes wide BRAM output)
+    // Pre-muxed peripheral/MMIO read bus (strictly excludes wide BRAM output)
     final mmioOnlyData = mux(
-      isMmioCpuid,
-      Const(config.coreId, width: 16),
-      mux(
-        isMmioRx,
-        rxData,
-        mux(
-          isMmioTx,
-          txStatus,
-          mux(
-            isMathMatch,
-            mathRdata ?? Const(0, width: 16),
-            spiRdata ?? Const(0, width: 16),
-          ),
-        ),
-      ),
-    );
-    final mmioRdataReg = Logic(name: 'mmio_rdata_reg', width: 16);
-    final isMmioRdReg = Logic(name: 'is_mmio_rd_reg');
-
-    // Composite MMIO / RAM Read Multiplexing
-    final effectivePortBData = mux(
       isMmioCpuid,
       Const(config.coreId, width: 16),
       mux(
@@ -246,12 +229,17 @@ class CpuCore extends Module {
             mux(
               isSpiMatch,
               spiRdata ?? Const(0, width: 16),
-              portBRdata,
+              Const(0, width: 16),
             ),
           ),
         ),
       ),
     );
+    final mmioRdataReg = Logic(name: 'mmio_rdata_reg', width: 16);
+    final isMmioRdReg = Logic(name: 'is_mmio_rd_reg');
+
+    // Staged read-data selection: keeps wide BRAM read path out of the MMIO mux tree
+    final effectivePortBData = mux(isMmioRdReg, mmioRdataReg, portBRdata);
 
     // Pulse UART RX Pop only on the exact cycle stMemRd latches rxData
     rxPop <= (state.eq(Const(_stMemRd, width: 3)) & isMmioRx);
@@ -272,6 +260,10 @@ class CpuCore extends Module {
     // Execution FSM
     Sequential(clk, reset: resetActive, resetValues: {
       state: Const(_stReset, width: 3),
+      aRdataQ: Const(0, width: 16),
+      bRdataQ: Const(0, width: 16),
+      aBankStage: Const(0, width: 16),
+      bBankStage: Const(0, width: 16),
       pc: trapTableBaseConst,
       slot: Const(MiniRISC4Constants.slotByte0, width: 1),
       instReg: Const(0, width: 16),
@@ -308,6 +300,10 @@ class CpuCore extends Module {
             ),
           ],
           orElse: [
+            aBankStage < portARdata,
+            bBankStage < portBRdata,
+            aRdataQ < aBankStage,
+            bRdataQ < bBankStage,
             Case(state, [
               // ST_RESET: Kick off synchronous fetch of reset entry (0x0100)
               CaseItem(Const(_stReset, width: 3), [
@@ -330,18 +326,18 @@ class CpuCore extends Module {
                 state < Const(_stFetchWait, width: 3),
               ]),
 
-              // ST_FETCH_WAIT: Cycle 2 of 2-cycle BRAM read (OUTREG settles)
+              // ST_FETCH_WAIT: Cycle 2 of BRAM read (advance into staged bank/capture pipeline)
               CaseItem(Const(_stFetchWait, width: 3), [
                 portAEn < 1,
                 portBEn < 0,
                 portBWe < 0,
                 slot < MiniRISC4Constants.slotByte0,
-                state < Const(_stFetchLatch, width: 3),
+                state < Const(_stMemWait2, width: 3),
               ]),
 
               // ST_FETCH_LATCH: Latch settled mem[pc] into instReg and start prefetch of pc+1
               CaseItem(Const(_stFetchLatch, width: 3), [
-                instReg < portARdata,
+                instReg < aRdataQ,
                 portAAddr < pc + 1,
                 portAEn < 1,
                 portBEn < 0,
@@ -608,7 +604,7 @@ class CpuCore extends Module {
                 ]),
               ]),
 
-              // ST_MEM_WAIT: Cycle 1 of 2-cycle Port B BRAM read
+              // ST_MEM_WAIT: Cycle 1 of Port B BRAM read (raw/bank stage)
               CaseItem(Const(_stMemWait, width: 3), [
                 portAEn < 0,
                 portBEn < 0,
@@ -616,14 +612,17 @@ class CpuCore extends Module {
                 state < Const(_stMemWait2, width: 3),
               ]),
 
-              // ST_MEM_WAIT2: Cycle 2 of 2-cycle Port B BRAM read (stage MMIO read bus)
+              // ST_MEM_WAIT2: Stage MMIO read bus & complete 2-stage bank/capture settling
               CaseItem(Const(_stMemWait2, width: 3), [
-                portAEn < 0,
                 portBEn < 0,
                 portBWe < 0,
                 mmioRdataReg < mmioOnlyData,
                 isMmioRdReg < isMmio,
-                state < Const(_stMemRd, width: 3),
+                If(portAEn.eq(1), then: [
+                  state < Const(_stFetchLatch, width: 3),
+                ], orElse: [
+                  state < Const(_stMemRd, width: 3),
+                ]),
               ]),
 
               // ST_MEM_RD: Latch settled Port B / staged MMIO read data into destReg
@@ -643,38 +642,37 @@ class CpuCore extends Module {
     ]);
   }
 
-  /// Advance from ST_EXEC: Slot 0 shifts portARdata[15:8] into instReg[7:0]
-  /// and prefetches pc+1 so Slot 1 completes with zero fetch bubble.
+  /// Advance from ST_EXEC: Slot 0 moves to Slot 1 while preserving instReg[15:8]
+  /// for Slot 1 decode; Slot 1 advances PC and fetches the next instruction word.
   static Conditional _advanceFromExec(Logic slot, Logic instReg,
       Logic portARdata, Logic portAAddr, Logic portAEn, Logic state, Logic pc) {
     return If(slot.eq(MiniRISC4Constants.slotByte0), then: [
       slot < MiniRISC4Constants.slotByte1,
-      portAAddr < pc + 2,
-      portAEn < 1,
+      portAEn < 0,
       state < Const(_stExec, width: 3),
     ], orElse: [
       pc < pc + 1,
+      portAAddr < pc + 1,
+      portAEn < 1,
       slot < MiniRISC4Constants.slotByte0,
-      instReg < portARdata,
-      portAEn < 0,
-      state < Const(_stExec, width: 3),
+      state < Const(_stFetch, width: 3),
     ]);
   }
 
-  /// Advance from ST_MEM_RD: Slot 0 prefetches pc+2 and advances to Slot 1;
-  /// Slot 1 already latched pc+1 into instReg when entering ST_MEM_WAIT.
+  /// Advance from ST_MEM_RD: Slot 0 moves to Slot 1; Slot 1 advances PC
+  /// and fetches the next instruction word.
   static Conditional _advanceFromMemRd(Logic slot, Logic instReg,
       Logic portARdata, Logic portAAddr, Logic portAEn, Logic state, Logic pc) {
     return If(slot.eq(MiniRISC4Constants.slotByte0), then: [
       slot < MiniRISC4Constants.slotByte1,
-      portAAddr < pc + 2,
-      portAEn < 1,
+      portAEn < 0,
       state < Const(_stExec, width: 3),
     ], orElse: [
       pc < pc + 1,
+      portAAddr < pc + 1,
+      portAEn < 1,
       slot < MiniRISC4Constants.slotByte0,
-      portAEn < 0,
-      state < Const(_stExec, width: 3),
+      state < Const(_stFetch, width: 3),
     ]);
   }
 

@@ -531,6 +531,11 @@ class MiniRISC4Sim:
             elif cmd in ("q", "quit", "exit"):
                 print("Exiting simulator.")
                 self.running = False
+                if not IS_WINDOWS and sys.stdin.isatty() and hasattr(self, "_orig_term_settings") and self._orig_term_settings is not None:
+                    try:
+                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._orig_term_settings)
+                    except Exception:
+                        pass
                 sys.exit(0)
 
             else:
@@ -599,6 +604,7 @@ def main():
         sim.interactive_cli()
 
     old_settings = termios.tcgetattr(sys.stdin) if not IS_WINDOWS and sys.stdin.isatty() else None
+    sim._orig_term_settings = old_settings
     try:
         while sim.running:
             try:

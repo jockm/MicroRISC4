@@ -97,11 +97,9 @@ _while_start_1:
 _while_exit_2:
     LOAD16  R0, _putc_ch
     LD      R1, (R0)
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, 0x000F
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     RRET
 
@@ -133,11 +131,9 @@ _while_start_3:
 _eq_skip_5:
     LOAD16  R0, 0x000E
     LD      R1, (R0)
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _getc_val
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
 ; // Bit 15 indicates data ready
     LOAD16  R0, _while_start_3
@@ -190,11 +186,9 @@ _puts:
 _get_hi_6:
     BYTE_GET_LO R1, R1
 _get_done_7:
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _puts_ch
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
 _while_start_8:
     LOAD16  R0, _puts_ch
@@ -242,11 +236,9 @@ _while_start_8:
 _get_hi_10:
     BYTE_GET_LO R1, R1
 _get_done_11:
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _puts_ch
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _while_start_8
     JMP     R0
@@ -270,11 +262,9 @@ _print_nibble:
     LD      R2, R1
     APOP    R1
     AND     R1, R2
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _print_nibble_v
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _print_nibble_v
     LD      R1, (R0)
@@ -428,11 +418,9 @@ _while_start_14:
     DEC     R1
     JMP.Z   R2, R1
     RCALL   _getc
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _read_line_ch
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _read_line_ch
     LD      R1, (R0)
@@ -703,11 +691,9 @@ _skip_spaces:
 _get_hi_34:
     BYTE_GET_LO R1, R1
 _get_done_35:
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _skip_spaces_ch
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
 _while_start_36:
     LOAD16  R0, _skip_spaces_ch
@@ -762,11 +748,9 @@ _or_true_38:
 _get_hi_40:
     BYTE_GET_LO R1, R1
 _get_done_41:
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _skip_spaces_ch
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _while_start_36
     JMP     R0
@@ -811,11 +795,9 @@ _parse_hex:
 _get_hi_42:
     BYTE_GET_LO R1, R1
 _get_done_43:
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _parse_hex_ch
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
 _while_start_44:
     LOAD16  R1, 0x0001
@@ -863,11 +845,9 @@ _while_start_44:
     LD      R2, R1
     APOP    R1
     OR      R1, R2
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _parse_hex_res
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _parse_idx
     LD      R1, (R0)
@@ -918,11 +898,9 @@ _else_46:
     LD      R2, R1
     APOP    R1
     OR      R1, R2
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _parse_hex_res
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _parse_idx
     LD      R1, (R0)
@@ -973,11 +951,9 @@ _else_48:
     LD      R2, R1
     APOP    R1
     OR      R1, R2
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _parse_hex_res
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _parse_idx
     LD      R1, (R0)
@@ -1018,11 +994,9 @@ _endif_47:
 _get_hi_52:
     BYTE_GET_LO R1, R1
 _get_done_53:
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _parse_hex_ch
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _while_start_44
     JMP     R0
@@ -1084,30 +1058,24 @@ _get_done_57:
 _eq_skip_58:
     LOAD16  R0, _dump_ptr
     LD      R1, (R0)
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _do_examine_addr
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _endif_55
     JMP     R0
 _else_54:
     RCALL   _parse_hex
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _do_examine_addr
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
 _endif_55:
     LOAD16  R0, _do_examine_addr
     LD      R1, (R0)
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _do_examine_ptr
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _do_examine_addr
     LD      R1, (R0)
@@ -1152,11 +1120,9 @@ _while_exit_60:
 ; // Advance dump_ptr for subsequent consecutive 'e' commands
     LOAD16  R0, _do_examine_ptr
     LD      R1, (R0)
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _dump_ptr
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     RRET
 
@@ -1174,36 +1140,28 @@ _do_change:
     LOAD16  R0, _do_change_val
     LD      (R0), R1
     RCALL   _parse_hex
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _do_change_addr
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     RCALL   _parse_hex
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _do_change_val
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _do_change_addr
     LD      R1, (R0)
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _do_change_ptr
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _do_change_val
     LD      R1, (R0)
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _do_change_ptr
     LD      R1, (R0)
     LD      R0, R1
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R1, _str_lit_1
     LOAD16  R0, _puts_str
@@ -1241,19 +1199,15 @@ _do_go:
     LOAD16  R0, _do_go_addr
     LD      (R0), R1
     RCALL   _parse_hex
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _do_go_addr
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _do_go_addr
     LD      R1, (R0)
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _do_go_target
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R1, _str_lit_4
     LOAD16  R0, _puts_str
@@ -1325,11 +1279,9 @@ _while_start_61:
     RCALL   _puts
     RCALL   _read_line
     LOAD16  R1, 0x0000
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _parse_idx
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     RCALL   _skip_spaces
     LOAD16  R1, _line_buf
@@ -1358,11 +1310,9 @@ _while_start_61:
 _get_hi_63:
     BYTE_GET_LO R1, R1
 _get_done_64:
-    LOAD16  R0, _act4_t0
-    LD      (R0), R1
+    APUSH   R1
     LOAD16  R0, _main_cmd
-    LOAD16  R2, _act4_t0
-    LD      R1, (R2)
+    APOP    R1
     LD      (R0), R1
     LOAD16  R0, _main_cmd
     LD      R1, (R0)

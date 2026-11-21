@@ -146,18 +146,18 @@ Removed 0 unused modules.
 2.4. Executing PROC pass (convert processes to netlists).
 
 2.4.1. Executing PROC_CLEAN pass (remove empty switches from decision trees).
-Found and cleaned up 7 empty switches in `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Found and cleaned up 7 empty switches in `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
 Removing empty process `TdpBram.$ulx3s_top_rohd.sv:82$proc$22'.
 Cleaned up 7 empty switches.
 
 2.4.2. Executing PROC_RMDEAD pass (remove dead branches from decision trees).
-Marked 2 switch rules as full_case in process $ulx3s_top_rohd.sv:1426$proc$527 in module Ulx3sTop.
-Marked 2 switch rules as full_case in process $ulx3s_top_rohd.sv:1399$proc$524 in module Ulx3sTop.
-Removed 1 dead cases from process $ulx3s_top_rohd.sv:392$proc$51 in module CpuCore.
-Marked 25 switch rules as full_case in process $ulx3s_top_rohd.sv:392$proc$51 in module CpuCore.
-Marked 4 switch rules as full_case in process $ulx3s_top_rohd.sv:195$proc$45 in module UartTx.
-Marked 3 switch rules as full_case in process $ulx3s_top_rohd.sv:133$proc$23 in module UartRx.
-Marked 2 switch rules as full_case in process $ulx3s_top_rohd.sv:96$proc$10 in module TdpBram.
+Marked 2 switch rules as full_case in process $ulx3s_top_rohd.sv:1427$proc$527 in module Ulx3sTop.
+Marked 2 switch rules as full_case in process $ulx3s_top_rohd.sv:1400$proc$524 in module Ulx3sTop.
+Removed 1 dead cases from process $ulx3s_top_rohd.sv:393$proc$51 in module CpuCore.
+Marked 25 switch rules as full_case in process $ulx3s_top_rohd.sv:393$proc$51 in module CpuCore.
+Marked 4 switch rules as full_case in process $ulx3s_top_rohd.sv:196$proc$45 in module UartTx.
+Marked 3 switch rules as full_case in process $ulx3s_top_rohd.sv:134$proc$23 in module UartRx.
+Marked 2 switch rules as full_case in process $ulx3s_top_rohd.sv:97$proc$10 in module TdpBram.
 Marked 2 switch rules as full_case in process $ulx3s_top_rohd.sv:47$proc$4 in module DivideByN_0.
 Marked 2 switch rules as full_case in process $ulx3s_top_rohd.sv:16$proc$1 in module DivideByN.
 Removed a total of 1 dead cases.
@@ -175,12 +175,12 @@ Converted 0 switches.
 <suppressed ~122 debug messages>
 
 2.4.7. Executing PROC_MUX pass (convert decision trees to multiplexers).
-Creating decoders for process `\Ulx3sTop.$ulx3s_top_rohd.sv:1426$proc$527'.
+Creating decoders for process `\Ulx3sTop.$ulx3s_top_rohd.sv:1427$proc$527'.
      1/1: $0\tx_busy_latch[0:0]
-Creating decoders for process `\Ulx3sTop.$ulx3s_top_rohd.sv:1399$proc$524'.
+Creating decoders for process `\Ulx3sTop.$ulx3s_top_rohd.sv:1400$proc$524'.
      1/2: $0\uart_rxd_latch[7:0]
      2/2: $0\uart_rx_valid[0:0]
-Creating decoders for process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating decoders for process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
      1/27: $0\mmio_tx_strobe[0:0]
      2/27: $0\port_b_en[0:0]
      3/27: $0\port_b_we[0:0]
@@ -208,24 +208,24 @@ Creating decoders for process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
     25/27: $0\port_b_addr[15:0]
     26/27: $0\port_a_en[0:0]
     27/27: $0\port_a_addr[15:0]
-Creating decoders for process `\UartTx.$ulx3s_top_rohd.sv:195$proc$45'.
+Creating decoders for process `\UartTx.$ulx3s_top_rohd.sv:196$proc$45'.
      1/3: $0\serial_r[0:0]
      2/3: $0\ready[0:0]
      3/3: $0\shiftreg[9:0]
-Creating decoders for process `\UartRx.$ulx3s_top_rohd.sv:169$proc$42'.
-Creating decoders for process `\UartRx.$ulx3s_top_rohd.sv:133$proc$23'.
+Creating decoders for process `\UartRx.$ulx3s_top_rohd.sv:170$proc$42'.
+Creating decoders for process `\UartRx.$ulx3s_top_rohd.sv:134$proc$23'.
      1/3: $0\data_strobe[0:0]
      2/3: $0\state[5:0]
      3/3: $0\shiftreg[8:0]
-Creating decoders for process `\TdpBram.$ulx3s_top_rohd.sv:96$proc$10'.
-     1/7: $2$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$19
-     2/7: $2$memwr$\mem$ulx3s_top_rohd.sv:99$7_DATA[15:0]$18
-     3/7: $2$memwr$\mem$ulx3s_top_rohd.sv:99$7_ADDR[15:0]$17
-     4/7: $1$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$16
-     5/7: $1$memwr$\mem$ulx3s_top_rohd.sv:99$7_DATA[15:0]$15
-     6/7: $1$memwr$\mem$ulx3s_top_rohd.sv:99$7_ADDR[15:0]$14
+Creating decoders for process `\TdpBram.$ulx3s_top_rohd.sv:97$proc$10'.
+     1/7: $2$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$19
+     2/7: $2$memwr$\mem$ulx3s_top_rohd.sv:100$7_DATA[15:0]$18
+     3/7: $2$memwr$\mem$ulx3s_top_rohd.sv:100$7_ADDR[15:0]$17
+     4/7: $1$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$16
+     5/7: $1$memwr$\mem$ulx3s_top_rohd.sv:100$7_DATA[15:0]$15
+     6/7: $1$memwr$\mem$ulx3s_top_rohd.sv:100$7_ADDR[15:0]$14
      7/7: $0\port_b_rdata_raw[15:0]
-Creating decoders for process `\TdpBram.$ulx3s_top_rohd.sv:89$proc$8'.
+Creating decoders for process `\TdpBram.$ulx3s_top_rohd.sv:90$proc$8'.
      1/1: $0\port_a_rdata_raw[15:0]
 Creating decoders for process `\DivideByN_0.$ulx3s_top_rohd.sv:47$proc$4'.
      1/2: $0\out[0:0]
@@ -237,93 +237,93 @@ Creating decoders for process `\DivideByN.$ulx3s_top_rohd.sv:16$proc$1'.
 2.4.8. Executing PROC_DLATCH pass (convert process syncs to latches).
 
 2.4.9. Executing PROC_DFF pass (convert process syncs to FFs).
-Creating register for signal `\Ulx3sTop.\tx_busy_latch' using process `\Ulx3sTop.$ulx3s_top_rohd.sv:1426$proc$527'.
+Creating register for signal `\Ulx3sTop.\tx_busy_latch' using process `\Ulx3sTop.$ulx3s_top_rohd.sv:1427$proc$527'.
   created $dff cell `$procdff$1927' with positive edge clock.
-Creating register for signal `\Ulx3sTop.\uart_rx_valid' using process `\Ulx3sTop.$ulx3s_top_rohd.sv:1399$proc$524'.
+Creating register for signal `\Ulx3sTop.\uart_rx_valid' using process `\Ulx3sTop.$ulx3s_top_rohd.sv:1400$proc$524'.
   created $dff cell `$procdff$1928' with positive edge clock.
-Creating register for signal `\Ulx3sTop.\uart_rxd_latch' using process `\Ulx3sTop.$ulx3s_top_rohd.sv:1399$proc$524'.
+Creating register for signal `\Ulx3sTop.\uart_rxd_latch' using process `\Ulx3sTop.$ulx3s_top_rohd.sv:1400$proc$524'.
   created $dff cell `$procdff$1929' with positive edge clock.
-Creating register for signal `\CpuCore.\port_a_addr' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\port_a_addr' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1930' with positive edge clock.
-Creating register for signal `\CpuCore.\port_a_en' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\port_a_en' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1931' with positive edge clock.
-Creating register for signal `\CpuCore.\port_b_addr' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\port_b_addr' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1932' with positive edge clock.
-Creating register for signal `\CpuCore.\port_b_wdata' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\port_b_wdata' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1933' with positive edge clock.
-Creating register for signal `\CpuCore.\port_b_we' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\port_b_we' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1934' with positive edge clock.
-Creating register for signal `\CpuCore.\port_b_en' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\port_b_en' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1935' with positive edge clock.
-Creating register for signal `\CpuCore.\state' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\state' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1936' with positive edge clock.
-Creating register for signal `\CpuCore.\mmio_tx_data' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\mmio_tx_data' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1937' with positive edge clock.
-Creating register for signal `\CpuCore.\mmio_tx_strobe' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\mmio_tx_strobe' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1938' with positive edge clock.
-Creating register for signal `\CpuCore.\a_bank_stage' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\a_bank_stage' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1939' with positive edge clock.
-Creating register for signal `\CpuCore.\a_rdata_q' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\a_rdata_q' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1940' with positive edge clock.
-Creating register for signal `\CpuCore.\b_bank_stage' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\b_bank_stage' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1941' with positive edge clock.
-Creating register for signal `\CpuCore.\b_rdata_q' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\b_rdata_q' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1942' with positive edge clock.
-Creating register for signal `\CpuCore.\dest_reg' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\dest_reg' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1943' with positive edge clock.
-Creating register for signal `\CpuCore.\inst_reg' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\inst_reg' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1944' with positive edge clock.
-Creating register for signal `\CpuCore.\is_mmio_rd_reg' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\is_mmio_rd_reg' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1945' with positive edge clock.
-Creating register for signal `\CpuCore.\mmio_rdata_reg' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\mmio_rdata_reg' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1946' with positive edge clock.
-Creating register for signal `\CpuCore.\pc' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\pc' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1947' with positive edge clock.
-Creating register for signal `\CpuCore.\r0' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\r0' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1948' with positive edge clock.
-Creating register for signal `\CpuCore.\r1' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\r1' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1949' with positive edge clock.
-Creating register for signal `\CpuCore.\r2' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\r2' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1950' with positive edge clock.
-Creating register for signal `\CpuCore.\r3' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\r3' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1951' with positive edge clock.
-Creating register for signal `\CpuCore.\shadow_r0' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\shadow_r0' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1952' with positive edge clock.
-Creating register for signal `\CpuCore.\shadow_r1' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\shadow_r1' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1953' with positive edge clock.
-Creating register for signal `\CpuCore.\shadow_r2' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\shadow_r2' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1954' with positive edge clock.
-Creating register for signal `\CpuCore.\shadow_r3' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\shadow_r3' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1955' with positive edge clock.
-Creating register for signal `\CpuCore.\slot' using process `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
+Creating register for signal `\CpuCore.\slot' using process `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
   created $dff cell `$procdff$1956' with positive edge clock.
-Creating register for signal `\UartTx.\shiftreg' using process `\UartTx.$ulx3s_top_rohd.sv:195$proc$45'.
+Creating register for signal `\UartTx.\shiftreg' using process `\UartTx.$ulx3s_top_rohd.sv:196$proc$45'.
   created $dff cell `$procdff$1957' with positive edge clock.
-Creating register for signal `\UartTx.\ready' using process `\UartTx.$ulx3s_top_rohd.sv:195$proc$45'.
+Creating register for signal `\UartTx.\ready' using process `\UartTx.$ulx3s_top_rohd.sv:196$proc$45'.
   created $dff cell `$procdff$1958' with positive edge clock.
-Creating register for signal `\UartTx.\serial_r' using process `\UartTx.$ulx3s_top_rohd.sv:195$proc$45'.
+Creating register for signal `\UartTx.\serial_r' using process `\UartTx.$ulx3s_top_rohd.sv:196$proc$45'.
   created $dff cell `$procdff$1959' with positive edge clock.
-Creating register for signal `\UartRx.\serial_buf' using process `\UartRx.$ulx3s_top_rohd.sv:169$proc$42'.
+Creating register for signal `\UartRx.\serial_buf' using process `\UartRx.$ulx3s_top_rohd.sv:170$proc$42'.
   created $dff cell `$procdff$1960' with positive edge clock.
-Creating register for signal `\UartRx.\data_strobe' using process `\UartRx.$ulx3s_top_rohd.sv:133$proc$23'.
+Creating register for signal `\UartRx.\data_strobe' using process `\UartRx.$ulx3s_top_rohd.sv:134$proc$23'.
   created $dff cell `$procdff$1961' with positive edge clock.
-Creating register for signal `\UartRx.\shiftreg' using process `\UartRx.$ulx3s_top_rohd.sv:133$proc$23'.
+Creating register for signal `\UartRx.\shiftreg' using process `\UartRx.$ulx3s_top_rohd.sv:134$proc$23'.
   created $dff cell `$procdff$1962' with positive edge clock.
-Creating register for signal `\UartRx.\state' using process `\UartRx.$ulx3s_top_rohd.sv:133$proc$23'.
+Creating register for signal `\UartRx.\state' using process `\UartRx.$ulx3s_top_rohd.sv:134$proc$23'.
   created $dff cell `$procdff$1963' with positive edge clock.
-Creating register for signal `\TdpBram.\port_b_rdata' using process `\TdpBram.$ulx3s_top_rohd.sv:96$proc$10'.
+Creating register for signal `\TdpBram.\port_b_rdata' using process `\TdpBram.$ulx3s_top_rohd.sv:97$proc$10'.
   created $dff cell `$procdff$1964' with positive edge clock.
-Creating register for signal `\TdpBram.\port_b_rdata_raw' using process `\TdpBram.$ulx3s_top_rohd.sv:96$proc$10'.
+Creating register for signal `\TdpBram.\port_b_rdata_raw' using process `\TdpBram.$ulx3s_top_rohd.sv:97$proc$10'.
   created $dff cell `$procdff$1965' with positive edge clock.
-Creating register for signal `\TdpBram.$memwr$\mem$ulx3s_top_rohd.sv:99$7_ADDR' using process `\TdpBram.$ulx3s_top_rohd.sv:96$proc$10'.
+Creating register for signal `\TdpBram.$memwr$\mem$ulx3s_top_rohd.sv:100$7_ADDR' using process `\TdpBram.$ulx3s_top_rohd.sv:97$proc$10'.
   created $dff cell `$procdff$1966' with positive edge clock.
-Creating register for signal `\TdpBram.$memwr$\mem$ulx3s_top_rohd.sv:99$7_DATA' using process `\TdpBram.$ulx3s_top_rohd.sv:96$proc$10'.
+Creating register for signal `\TdpBram.$memwr$\mem$ulx3s_top_rohd.sv:100$7_DATA' using process `\TdpBram.$ulx3s_top_rohd.sv:97$proc$10'.
   created $dff cell `$procdff$1967' with positive edge clock.
-Creating register for signal `\TdpBram.$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN' using process `\TdpBram.$ulx3s_top_rohd.sv:96$proc$10'.
+Creating register for signal `\TdpBram.$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN' using process `\TdpBram.$ulx3s_top_rohd.sv:97$proc$10'.
   created $dff cell `$procdff$1968' with positive edge clock.
-Creating register for signal `\TdpBram.\port_a_rdata' using process `\TdpBram.$ulx3s_top_rohd.sv:89$proc$8'.
+Creating register for signal `\TdpBram.\port_a_rdata' using process `\TdpBram.$ulx3s_top_rohd.sv:90$proc$8'.
   created $dff cell `$procdff$1969' with positive edge clock.
-Creating register for signal `\TdpBram.\port_a_rdata_raw' using process `\TdpBram.$ulx3s_top_rohd.sv:89$proc$8'.
+Creating register for signal `\TdpBram.\port_a_rdata_raw' using process `\TdpBram.$ulx3s_top_rohd.sv:90$proc$8'.
   created $dff cell `$procdff$1970' with positive edge clock.
 Creating register for signal `\DivideByN_0.\out' using process `\DivideByN_0.$ulx3s_top_rohd.sv:47$proc$4'.
   created $dff cell `$procdff$1971' with positive edge clock.
@@ -337,21 +337,21 @@ Creating register for signal `\DivideByN.\counter' using process `\DivideByN.$ul
 2.4.10. Executing PROC_MEMWR pass (convert process memory writes to cells).
 
 2.4.11. Executing PROC_CLEAN pass (remove empty switches from decision trees).
-Found and cleaned up 3 empty switches in `\Ulx3sTop.$ulx3s_top_rohd.sv:1426$proc$527'.
-Removing empty process `Ulx3sTop.$ulx3s_top_rohd.sv:1426$proc$527'.
-Found and cleaned up 3 empty switches in `\Ulx3sTop.$ulx3s_top_rohd.sv:1399$proc$524'.
-Removing empty process `Ulx3sTop.$ulx3s_top_rohd.sv:1399$proc$524'.
-Found and cleaned up 101 empty switches in `\CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
-Removing empty process `CpuCore.$ulx3s_top_rohd.sv:392$proc$51'.
-Found and cleaned up 4 empty switches in `\UartTx.$ulx3s_top_rohd.sv:195$proc$45'.
-Removing empty process `UartTx.$ulx3s_top_rohd.sv:195$proc$45'.
-Removing empty process `UartRx.$ulx3s_top_rohd.sv:169$proc$42'.
-Found and cleaned up 4 empty switches in `\UartRx.$ulx3s_top_rohd.sv:133$proc$23'.
-Removing empty process `UartRx.$ulx3s_top_rohd.sv:133$proc$23'.
-Found and cleaned up 2 empty switches in `\TdpBram.$ulx3s_top_rohd.sv:96$proc$10'.
-Removing empty process `TdpBram.$ulx3s_top_rohd.sv:96$proc$10'.
-Found and cleaned up 1 empty switch in `\TdpBram.$ulx3s_top_rohd.sv:89$proc$8'.
-Removing empty process `TdpBram.$ulx3s_top_rohd.sv:89$proc$8'.
+Found and cleaned up 3 empty switches in `\Ulx3sTop.$ulx3s_top_rohd.sv:1427$proc$527'.
+Removing empty process `Ulx3sTop.$ulx3s_top_rohd.sv:1427$proc$527'.
+Found and cleaned up 3 empty switches in `\Ulx3sTop.$ulx3s_top_rohd.sv:1400$proc$524'.
+Removing empty process `Ulx3sTop.$ulx3s_top_rohd.sv:1400$proc$524'.
+Found and cleaned up 101 empty switches in `\CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
+Removing empty process `CpuCore.$ulx3s_top_rohd.sv:393$proc$51'.
+Found and cleaned up 4 empty switches in `\UartTx.$ulx3s_top_rohd.sv:196$proc$45'.
+Removing empty process `UartTx.$ulx3s_top_rohd.sv:196$proc$45'.
+Removing empty process `UartRx.$ulx3s_top_rohd.sv:170$proc$42'.
+Found and cleaned up 4 empty switches in `\UartRx.$ulx3s_top_rohd.sv:134$proc$23'.
+Removing empty process `UartRx.$ulx3s_top_rohd.sv:134$proc$23'.
+Found and cleaned up 2 empty switches in `\TdpBram.$ulx3s_top_rohd.sv:97$proc$10'.
+Removing empty process `TdpBram.$ulx3s_top_rohd.sv:97$proc$10'.
+Found and cleaned up 1 empty switch in `\TdpBram.$ulx3s_top_rohd.sv:90$proc$8'.
+Removing empty process `TdpBram.$ulx3s_top_rohd.sv:90$proc$8'.
 Found and cleaned up 2 empty switches in `\DivideByN_0.$ulx3s_top_rohd.sv:47$proc$4'.
 Removing empty process `DivideByN_0.$ulx3s_top_rohd.sv:47$proc$4'.
 Found and cleaned up 2 empty switches in `\DivideByN.$ulx3s_top_rohd.sv:16$proc$1'.
@@ -440,14 +440,14 @@ Removed 3 multiplexer ports.
 
 2.12.4. Executing OPT_REDUCE pass (consolidate $*mux and $reduce_* inputs).
   Optimizing cells in module \Ulx3sTop.
-    New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$890: { $flatten\cpu_core.$ulx3s_top_rohd.sv:475$eq$61_Y $flatten\cpu_core.$procmux$898_CMP $flatten\cpu_core.$procmux$905_CMP $flatten\cpu_core.$procmux$909_CMP $flatten\cpu_core.$procmux$913_CMP $flatten\cpu_core.$procmux$917_CMP $flatten\cpu_core.$procmux$921_CMP $flatten\cpu_core.$procmux$925_CMP $flatten\cpu_core.$procmux$929_CMP $flatten\cpu_core.$procmux$933_CMP $flatten\cpu_core.$procmux$792_CMP $auto$opt_reduce.cc:137:opt_pmux$1985 $flatten\cpu_core.$procmux$795_CMP $flatten\cpu_core.$procmux$947_CMP $flatten\cpu_core.$procmux$951_CMP }
+    New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$890: { $flatten\cpu_core.$ulx3s_top_rohd.sv:476$eq$61_Y $flatten\cpu_core.$procmux$898_CMP $flatten\cpu_core.$procmux$905_CMP $flatten\cpu_core.$procmux$909_CMP $flatten\cpu_core.$procmux$913_CMP $flatten\cpu_core.$procmux$917_CMP $flatten\cpu_core.$procmux$921_CMP $flatten\cpu_core.$procmux$925_CMP $flatten\cpu_core.$procmux$929_CMP $flatten\cpu_core.$procmux$933_CMP $flatten\cpu_core.$procmux$792_CMP $auto$opt_reduce.cc:137:opt_pmux$1985 $flatten\cpu_core.$procmux$795_CMP $flatten\cpu_core.$procmux$947_CMP $flatten\cpu_core.$procmux$951_CMP }
     New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$966: { $flatten\cpu_core.$procmux$805_CMP $flatten\cpu_core.$procmux$800_CMP $auto$opt_reduce.cc:137:opt_pmux$1987 }
     New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$968: $auto$opt_reduce.cc:137:opt_pmux$1989
-    New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$1343: { $auto$opt_reduce.cc:137:opt_pmux$1991 $flatten\cpu_core.$ulx3s_top_rohd.sv:548$eq$105_Y }
+    New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$1343: { $auto$opt_reduce.cc:137:opt_pmux$1991 $flatten\cpu_core.$ulx3s_top_rohd.sv:549$eq$105_Y }
     New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$1546: $auto$opt_reduce.cc:137:opt_pmux$1993
     New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$1646: { $flatten\cpu_core.$procmux$805_CMP $flatten\cpu_core.$procmux$807_CMP $flatten\cpu_core.$procmux$800_CMP $auto$opt_reduce.cc:137:opt_pmux$1995 }
     New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$1649: $auto$opt_reduce.cc:137:opt_pmux$1997
-    New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$1655: { $flatten\cpu_core.$ulx3s_top_rohd.sv:475$eq$61_Y $flatten\cpu_core.$procmux$898_CMP $flatten\cpu_core.$procmux$905_CMP $flatten\cpu_core.$procmux$909_CMP $flatten\cpu_core.$procmux$913_CMP $flatten\cpu_core.$procmux$917_CMP $flatten\cpu_core.$procmux$921_CMP $flatten\cpu_core.$procmux$925_CMP $flatten\cpu_core.$procmux$929_CMP $flatten\cpu_core.$procmux$933_CMP $flatten\cpu_core.$procmux$792_CMP $auto$opt_reduce.cc:137:opt_pmux$1999 $flatten\cpu_core.$procmux$795_CMP $flatten\cpu_core.$procmux$947_CMP $flatten\cpu_core.$procmux$951_CMP }
+    New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$1655: { $flatten\cpu_core.$ulx3s_top_rohd.sv:476$eq$61_Y $flatten\cpu_core.$procmux$898_CMP $flatten\cpu_core.$procmux$905_CMP $flatten\cpu_core.$procmux$909_CMP $flatten\cpu_core.$procmux$913_CMP $flatten\cpu_core.$procmux$917_CMP $flatten\cpu_core.$procmux$921_CMP $flatten\cpu_core.$procmux$925_CMP $flatten\cpu_core.$procmux$929_CMP $flatten\cpu_core.$procmux$933_CMP $flatten\cpu_core.$procmux$792_CMP $auto$opt_reduce.cc:137:opt_pmux$1999 $flatten\cpu_core.$procmux$795_CMP $flatten\cpu_core.$procmux$947_CMP $flatten\cpu_core.$procmux$951_CMP }
     New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$804: { $auto$opt_reduce.cc:137:opt_pmux$2001 $flatten\cpu_core.$procmux$800_CMP }
     New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$818: $auto$opt_reduce.cc:137:opt_pmux$2003
     New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$834: { $auto$opt_reduce.cc:137:opt_pmux$2005 $flatten\cpu_core.$procmux$800_CMP }
@@ -460,9 +460,9 @@ Removed 3 multiplexer ports.
     New ctrl vector for $pmux cell $flatten\cpu_core.$procmux$884: $auto$opt_reduce.cc:137:opt_pmux$2011
   Optimizing cells in module \Ulx3sTop.
     Consolidated identical input bits for $mux cell $flatten\cpu_core.\cpu_core_ram.$procmux$1887:
-      Old ports: A=16'0000000000000000, B=$flatten\cpu_core.\cpu_core_ram.$2$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$19, Y=$flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13
-      New ports: A=1'0, B=$flatten\cpu_core.\cpu_core_ram.$procmux$1870_Y [0], Y=$flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0]
-      New connections: $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [15:1] = { $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:99$7_EN[15:0]$13 [0] }
+      Old ports: A=16'0000000000000000, B=$flatten\cpu_core.\cpu_core_ram.$2$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$19, Y=$flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13
+      New ports: A=1'0, B=$flatten\cpu_core.\cpu_core_ram.$procmux$1870_Y [0], Y=$flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0]
+      New connections: $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [15:1] = { $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] $flatten\cpu_core.\cpu_core_ram.$0$memwr$\mem$ulx3s_top_rohd.sv:100$7_EN[15:0]$13 [0] }
   Optimizing cells in module \Ulx3sTop.
 Performed a total of 16 changes.
 
@@ -792,7 +792,7 @@ Adding SRST signal on $flatten\uart.\uart_rx.$procdff$1963 ($dff) from module Ul
 Adding EN signal on $auto$ff.cc:337:slice$2144 ($sdff) from module Ulx3sTop (D = $flatten\uart.\uart_rx.$procmux$1853_Y, Q = \uart.uart_rx.state).
 Adding SRST signal on $flatten\uart.\uart_rx.$procdff$1962 ($dff) from module Ulx3sTop (D = $flatten\uart.\uart_rx.$procmux$1863_Y, Q = \uart.uart_rx.shiftreg, rval = 9'000000000).
 Adding EN signal on $auto$ff.cc:337:slice$2146 ($sdff) from module Ulx3sTop (D = { \uart.uart_rx.serial_buf [1] \uart.uart_rx.shiftreg [8:1] }, Q = \uart.uart_rx.shiftreg).
-Adding SRST signal on $flatten\uart.\uart_rx.$procdff$1961 ($dff) from module Ulx3sTop (D = $flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:153$and$31_Y, Q = \uart.uart_rx.data_strobe, rval = 1'0).
+Adding SRST signal on $flatten\uart.\uart_rx.$procdff$1961 ($dff) from module Ulx3sTop (D = $flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:154$and$31_Y, Q = \uart.uart_rx.data_strobe, rval = 1'0).
 Adding SRST signal on $flatten\uart.\uart_rx.\divide_by_n.$procdff$1974 ($dff) from module Ulx3sTop (D = \uart.uart_rx.divide_by_n._in8__counter_add_const_1, Q = \uart.uart_rx.divide_by_n.counter, rval = 0).
 Adding SRST signal on $flatten\uart.\uart_rx.\divide_by_n.$procdff$1973 ($dff) from module Ulx3sTop (D = $flatten\uart.\uart_rx.\divide_by_n.$procmux$1916_Y, Q = \uart.uart_rx.divide_by_n.out, rval = 1'0).
 Adding SRST signal on $flatten\uart.\uart_tx.$procdff$1957 ($dff) from module Ulx3sTop (D = $flatten\uart.\uart_tx.$procmux$1837_Y [0], Q = \uart.uart_tx.shiftreg [0], rval = 1'0).
@@ -808,14 +808,14 @@ Adding SRST signal on $flatten\uart.\uart_tx.\divide_by_n.$procdff$1971 ($dff) f
 Adding SRST signal on $flatten\cpu_core.$procdff$1952 ($dff) from module Ulx3sTop (D = $flatten\cpu_core.$procmux$1124_Y, Q = \cpu_core.shadow_r0, rval = 16'0000000000000000).
 Adding EN signal on $auto$ff.cc:337:slice$2197 ($sdff) from module Ulx3sTop (D = \cpu_core.r0, Q = \cpu_core.shadow_r0).
 Adding EN signal on $flatten\cpu_core.\cpu_core_ram.$procdff$1965 ($dff) from module Ulx3sTop (D = $flatten\cpu_core.\cpu_core_ram.$procmux$1897_Y, Q = \cpu_core.cpu_core_ram.port_b_rdata_raw).
-Adding EN signal on $flatten\cpu_core.\cpu_core_ram.$procdff$1970 ($dff) from module Ulx3sTop (D = $flatten\cpu_core.\cpu_core_ram.$ulx3s_top_rohd.sv:91$memrd$9$\mem_DATA, Q = \cpu_core.cpu_core_ram.port_a_rdata_raw).
+Adding EN signal on $flatten\cpu_core.\cpu_core_ram.$procdff$1970 ($dff) from module Ulx3sTop (D = $flatten\cpu_core.\cpu_core_ram.$ulx3s_top_rohd.sv:92$memrd$9$\mem_DATA, Q = \cpu_core.cpu_core_ram.port_a_rdata_raw).
 Adding SRST signal on $flatten\cpu_core.$procdff$1948 ($dff) from module Ulx3sTop (D = $flatten\cpu_core.$procmux$1341_Y, Q = \cpu_core.r0, rval = 16'0000000000000000).
 Adding EN signal on $auto$ff.cc:337:slice$2205 ($sdff) from module Ulx3sTop (D = $flatten\cpu_core.$procmux$1341_Y [14:0], Q = \cpu_core.r0 [14:0]).
 Adding EN signal on $auto$ff.cc:337:slice$2205 ($sdff) from module Ulx3sTop (D = $flatten\cpu_core.$procmux$1341_Y [15], Q = \cpu_core.r0 [15]).
 Adding SRST signal on $flatten\cpu_core.$procdff$1947 ($dff) from module Ulx3sTop (D = $flatten\cpu_core.$procmux$1414_Y, Q = \cpu_core.pc, rval = 16'0000000100000000).
 Adding EN signal on $auto$ff.cc:337:slice$2296 ($sdff) from module Ulx3sTop (D = $flatten\cpu_core.$procmux$1414_Y, Q = \cpu_core.pc).
 Adding SRST signal on $flatten\cpu_core.$procdff$1946 ($dff) from module Ulx3sTop (D = $flatten\cpu_core.$procmux$1491_Y, Q = \cpu_core.mmio_rdata_reg, rval = 16'0000000000000000).
-Adding EN signal on $auto$ff.cc:337:slice$2304 ($sdff) from module Ulx3sTop (D = $flatten\cpu_core.$ulx3s_top_rohd.sv:1173$ternary$398_Y, Q = \cpu_core.mmio_rdata_reg).
+Adding EN signal on $auto$ff.cc:337:slice$2304 ($sdff) from module Ulx3sTop (D = $flatten\cpu_core.$ulx3s_top_rohd.sv:1174$ternary$398_Y, Q = \cpu_core.mmio_rdata_reg).
 Adding SRST signal on $flatten\cpu_core.$procdff$1945 ($dff) from module Ulx3sTop (D = $flatten\cpu_core.$procmux$1497_Y, Q = \cpu_core.is_mmio_rd_reg, rval = 1'0).
 Adding EN signal on $auto$ff.cc:337:slice$2306 ($sdff) from module Ulx3sTop (D = \cpu_core._const_0_or__const_0_or__const_0_or__port_b_addr_equals_const_14_or__port_b_addr_equals_const_15, Q = \cpu_core.is_mmio_rd_reg).
 Adding SRST signal on $flatten\cpu_core.$procdff$1944 ($dff) from module Ulx3sTop (D = $flatten\cpu_core.$procmux$1526_Y, Q = \cpu_core.inst_reg, rval = 16'0000000000000000).
@@ -931,48 +931,48 @@ Optimizing module Ulx3sTop.
 
 2.15. Executing WREDUCE pass (reducing word size of cells).
 Removed top 16 address bits (of 32) from memory init port Ulx3sTop.$flatten\cpu_core.\cpu_core_ram.$ulx3s_top_rohd.sv:83$meminit$21$\mem (cpu_core.cpu_core_ram.mem).
-Removed top 15 bits (of 16) from mux cell Ulx3sTop.$ulx3s_top_rohd.sv:1443$ternary$528 ($mux).
-Removed top 1 bits (of 2) from port B of cell Ulx3sTop.$flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:165$eq$41 ($eq).
-Removed top 5 bits (of 6) from port B of cell Ulx3sTop.$flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:176$add$43 ($add).
-Removed top 1 bits (of 7) from port Y of cell Ulx3sTop.$flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:176$add$43 ($add).
+Removed top 15 bits (of 16) from mux cell Ulx3sTop.$ulx3s_top_rohd.sv:1444$ternary$528 ($mux).
+Removed top 1 bits (of 2) from port B of cell Ulx3sTop.$flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:166$eq$41 ($eq).
+Removed top 5 bits (of 6) from port B of cell Ulx3sTop.$flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:177$add$43 ($add).
+Removed top 1 bits (of 7) from port Y of cell Ulx3sTop.$flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:177$add$43 ($add).
 Removed top 31 bits (of 32) from port B of cell Ulx3sTop.$flatten\uart.\uart_rx.\divide_by_n.$ulx3s_top_rohd.sv:33$add$3 ($add).
 Removed top 1 bits (of 33) from port Y of cell Ulx3sTop.$flatten\uart.\uart_rx.\divide_by_n.$ulx3s_top_rohd.sv:33$add$3 ($add).
 Removed top 30 bits (of 32) from port B of cell Ulx3sTop.$flatten\uart.\uart_rx.\divide_by_n.$ulx3s_top_rohd.sv:21$eq$2 ($eq).
 Removed top 31 bits (of 32) from port B of cell Ulx3sTop.$flatten\uart.\uart_tx.\divide_by_n.$ulx3s_top_rohd.sv:64$add$6 ($add).
 Removed top 1 bits (of 33) from port Y of cell Ulx3sTop.$flatten\uart.\uart_tx.\divide_by_n.$ulx3s_top_rohd.sv:64$add$6 ($add).
 Removed top 28 bits (of 32) from port B of cell Ulx3sTop.$flatten\uart.\uart_tx.\divide_by_n.$ulx3s_top_rohd.sv:52$eq$5 ($eq).
-Removed top 12 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1293$eq$523 ($eq).
-Removed top 12 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1291$eq$518 ($eq).
-Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1256$add$481 ($add).
-Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1256$add$481 ($add).
-Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1254$add$479 ($add).
-Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1254$add$479 ($add).
-Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1252$add$477 ($add).
-Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1252$add$477 ($add).
-Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1250$add$475 ($add).
-Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1250$add$475 ($add).
-Removed top 7 bits (of 16) from port A of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1240$add$474 ($add).
-Removed top 9 bits (of 17) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1240$add$474 ($add).
-Removed top 7 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1240$add$474 ($add).
-Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1236$add$460 ($add).
-Removed top 1 bits (of 17) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1236$add$460 ($add).
-Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1235$add$451 ($add).
-Removed top 1 bits (of 17) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1235$add$451 ($add).
-Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1234$add$442 ($add).
-Removed top 1 bits (of 17) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1234$add$442 ($add).
-Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1233$add$433 ($add).
-Removed top 1 bits (of 17) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1233$add$433 ($add).
-Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1231$add$418 ($add).
-Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1231$add$418 ($add).
-Removed top 1 bits (of 2) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1189$eq$402 ($eq).
-Removed top 11 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:622$eq$158 ($eq).
-Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:615$sub$144 ($sub).
-Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:610$sub$141 ($sub).
-Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:605$sub$138 ($sub).
-Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:600$sub$135 ($sub).
-Removed top 12 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:552$eq$121 ($eq).
-Removed top 1 bits (of 2) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:501$eq$89 ($eq).
-Removed top 1 bits (of 2) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:492$eq$73 ($eq).
+Removed top 12 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1294$eq$523 ($eq).
+Removed top 12 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1292$eq$518 ($eq).
+Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1257$add$481 ($add).
+Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1257$add$481 ($add).
+Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1255$add$479 ($add).
+Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1255$add$479 ($add).
+Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1253$add$477 ($add).
+Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1253$add$477 ($add).
+Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1251$add$475 ($add).
+Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1251$add$475 ($add).
+Removed top 7 bits (of 16) from port A of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1241$add$474 ($add).
+Removed top 9 bits (of 17) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1241$add$474 ($add).
+Removed top 7 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1241$add$474 ($add).
+Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1237$add$460 ($add).
+Removed top 1 bits (of 17) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1237$add$460 ($add).
+Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1236$add$451 ($add).
+Removed top 1 bits (of 17) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1236$add$451 ($add).
+Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1235$add$442 ($add).
+Removed top 1 bits (of 17) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1235$add$442 ($add).
+Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1234$add$433 ($add).
+Removed top 1 bits (of 17) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1234$add$433 ($add).
+Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1232$add$418 ($add).
+Removed top 1 bits (of 17) from port Y of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1232$add$418 ($add).
+Removed top 1 bits (of 2) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1190$eq$402 ($eq).
+Removed top 11 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:623$eq$158 ($eq).
+Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:616$sub$144 ($sub).
+Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:611$sub$141 ($sub).
+Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:606$sub$138 ($sub).
+Removed top 15 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:601$sub$135 ($sub).
+Removed top 12 bits (of 16) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:553$eq$121 ($eq).
+Removed top 1 bits (of 2) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:502$eq$89 ($eq).
+Removed top 1 bits (of 2) from port B of cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:493$eq$73 ($eq).
 Removed top 1 bits (of 16) from mux cell Ulx3sTop.$flatten\cpu_core.$procmux$1369 ($mux).
 Removed top 1 bits (of 16) from mux cell Ulx3sTop.$flatten\cpu_core.$procmux$1298 ($mux).
 Removed top 1 bits (of 16) from mux cell Ulx3sTop.$flatten\cpu_core.$procmux$1228 ($mux).
@@ -984,9 +984,9 @@ Removed top 2 bits (of 4) from port B of cell Ulx3sTop.$flatten\cpu_core.$procmu
 Removed top 1 bits (of 4) from port B of cell Ulx3sTop.$flatten\cpu_core.$procmux$820_CMP0 ($eq).
 Removed top 2 bits (of 4) from port B of cell Ulx3sTop.$flatten\cpu_core.$procmux$795_CMP0 ($eq).
 Removed top 1 bits (of 4) from port B of cell Ulx3sTop.$flatten\cpu_core.$procmux$792_CMP0 ($eq).
-Removed top 1 bits (of 17) from mux cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1233$ternary$432 ($mux).
-Removed top 1 bits (of 17) from mux cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1233$ternary$430 ($mux).
-Removed top 15 bits (of 16) from mux cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1173$ternary$397 ($mux).
+Removed top 1 bits (of 17) from mux cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1234$ternary$432 ($mux).
+Removed top 1 bits (of 17) from mux cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1234$ternary$430 ($mux).
+Removed top 15 bits (of 16) from mux cell Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1174$ternary$397 ($mux).
 Removed top 2 bits (of 7) from port B of cell Ulx3sTop.$auto$fsm_map.cc:77:implement_pattern_cache$2051 ($eq).
 Removed top 1 bits (of 4) from port B of cell Ulx3sTop.$auto$fsm_map.cc:77:implement_pattern_cache$2063 ($eq).
 Removed top 1 bits (of 2) from port B of cell Ulx3sTop.$auto$simple.cc:200:make_patterns_logic$2167 ($ne).
@@ -995,10 +995,10 @@ Removed top 1 bits (of 2) from port B of cell Ulx3sTop.$auto$simple.cc:200:make_
 Removed top 1 bits (of 2) from port B of cell Ulx3sTop.$auto$simple.cc:200:make_patterns_logic$2317 ($ne).
 Removed top 1 bits (of 6) from port B of cell Ulx3sTop.$auto$simple.cc:200:make_patterns_logic$2372 ($ne).
 Removed top 1 bits (of 16) from wire Ulx3sTop.$flatten\cpu_core.$procmux$1369_Y.
-Removed top 1 bits (of 17) from wire Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1233$ternary$432_Y.
-Removed top 1 bits (of 17) from wire Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1233$ternary$430_Y.
+Removed top 1 bits (of 17) from wire Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1234$ternary$432_Y.
+Removed top 1 bits (of 17) from wire Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1234$ternary$430_Y.
 Removed top 1 bits (of 16) from wire Ulx3sTop.$flatten\cpu_core.$procmux$1228_Y.
-Removed top 15 bits (of 16) from wire Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1173$ternary$397_Y.
+Removed top 15 bits (of 16) from wire Ulx3sTop.$flatten\cpu_core.$ulx3s_top_rohd.sv:1174$ternary$397_Y.
 Removed top 1 bits (of 16) from wire Ulx3sTop.$flatten\cpu_core.$procmux$1298_Y.
 Removed top 1 bits (of 16) from wire Ulx3sTop.$flatten\cpu_core.$procmux$1158_Y.
 Removed top 15 bits (of 16) from wire Ulx3sTop.cpu_tx_status.
@@ -1054,69 +1054,69 @@ No more expansions possible.
 
 2.24. Executing ALUMACC pass (create $alu and $macc cells).
 Extracting $alu and $macc cells in module Ulx3sTop:
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1233$add$433 ($add).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:672$sub$172 ($sub).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1234$add$442 ($add).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1235$add$451 ($add).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1236$add$460 ($add).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:676$sub$180 ($sub).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1240$add$474 ($add).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1250$add$475 ($add).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1252$add$477 ($add).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1254$add$479 ($add).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1256$add$481 ($add).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:680$sub$188 ($sub).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:684$sub$196 ($sub).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:600$sub$135 ($sub).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:605$sub$138 ($sub).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:610$sub$141 ($sub).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:615$sub$144 ($sub).
-  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1231$add$418 ($add).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1234$add$433 ($add).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:673$sub$172 ($sub).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1235$add$442 ($add).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1236$add$451 ($add).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1237$add$460 ($add).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:677$sub$180 ($sub).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1241$add$474 ($add).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1251$add$475 ($add).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1253$add$477 ($add).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1255$add$479 ($add).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1257$add$481 ($add).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:681$sub$188 ($sub).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:685$sub$196 ($sub).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:601$sub$135 ($sub).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:606$sub$138 ($sub).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:611$sub$141 ($sub).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:616$sub$144 ($sub).
+  creating $macc model for $flatten\cpu_core.$ulx3s_top_rohd.sv:1232$add$418 ($add).
   creating $macc model for $flatten\uart.\uart_tx.\divide_by_n.$ulx3s_top_rohd.sv:64$add$6 ($add).
   creating $macc model for $flatten\uart.\uart_rx.\divide_by_n.$ulx3s_top_rohd.sv:33$add$3 ($add).
-  creating $macc model for $flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:176$add$43 ($add).
-  creating $alu model for $macc $flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:176$add$43.
+  creating $macc model for $flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:177$add$43 ($add).
+  creating $alu model for $macc $flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:177$add$43.
   creating $alu model for $macc $flatten\uart.\uart_rx.\divide_by_n.$ulx3s_top_rohd.sv:33$add$3.
   creating $alu model for $macc $flatten\uart.\uart_tx.\divide_by_n.$ulx3s_top_rohd.sv:64$add$6.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1231$add$418.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:615$sub$144.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:610$sub$141.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:605$sub$138.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:600$sub$135.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:684$sub$196.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:680$sub$188.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1256$add$481.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1254$add$479.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1252$add$477.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1250$add$475.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1240$add$474.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:676$sub$180.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1236$add$460.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1235$add$451.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1234$add$442.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:672$sub$172.
-  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1233$add$433.
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1233$add$433: $auto$alumacc.cc:578:replace_alu$2696
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:672$sub$172: $auto$alumacc.cc:578:replace_alu$2699
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1234$add$442: $auto$alumacc.cc:578:replace_alu$2702
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1235$add$451: $auto$alumacc.cc:578:replace_alu$2705
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1236$add$460: $auto$alumacc.cc:578:replace_alu$2708
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:676$sub$180: $auto$alumacc.cc:578:replace_alu$2711
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1240$add$474: $auto$alumacc.cc:578:replace_alu$2714
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1250$add$475: $auto$alumacc.cc:578:replace_alu$2717
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1252$add$477: $auto$alumacc.cc:578:replace_alu$2720
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1254$add$479: $auto$alumacc.cc:578:replace_alu$2723
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1256$add$481: $auto$alumacc.cc:578:replace_alu$2726
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:680$sub$188: $auto$alumacc.cc:578:replace_alu$2729
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:684$sub$196: $auto$alumacc.cc:578:replace_alu$2732
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:600$sub$135: $auto$alumacc.cc:578:replace_alu$2735
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:605$sub$138: $auto$alumacc.cc:578:replace_alu$2738
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:610$sub$141: $auto$alumacc.cc:578:replace_alu$2741
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:615$sub$144: $auto$alumacc.cc:578:replace_alu$2744
-  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1231$add$418: $auto$alumacc.cc:578:replace_alu$2747
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1232$add$418.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:616$sub$144.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:611$sub$141.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:606$sub$138.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:601$sub$135.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:685$sub$196.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:681$sub$188.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1257$add$481.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1255$add$479.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1253$add$477.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1251$add$475.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1241$add$474.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:677$sub$180.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1237$add$460.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1236$add$451.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1235$add$442.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:673$sub$172.
+  creating $alu model for $macc $flatten\cpu_core.$ulx3s_top_rohd.sv:1234$add$433.
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1234$add$433: $auto$alumacc.cc:578:replace_alu$2696
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:673$sub$172: $auto$alumacc.cc:578:replace_alu$2699
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1235$add$442: $auto$alumacc.cc:578:replace_alu$2702
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1236$add$451: $auto$alumacc.cc:578:replace_alu$2705
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1237$add$460: $auto$alumacc.cc:578:replace_alu$2708
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:677$sub$180: $auto$alumacc.cc:578:replace_alu$2711
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1241$add$474: $auto$alumacc.cc:578:replace_alu$2714
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1251$add$475: $auto$alumacc.cc:578:replace_alu$2717
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1253$add$477: $auto$alumacc.cc:578:replace_alu$2720
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1255$add$479: $auto$alumacc.cc:578:replace_alu$2723
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1257$add$481: $auto$alumacc.cc:578:replace_alu$2726
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:681$sub$188: $auto$alumacc.cc:578:replace_alu$2729
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:685$sub$196: $auto$alumacc.cc:578:replace_alu$2732
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:601$sub$135: $auto$alumacc.cc:578:replace_alu$2735
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:606$sub$138: $auto$alumacc.cc:578:replace_alu$2738
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:611$sub$141: $auto$alumacc.cc:578:replace_alu$2741
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:616$sub$144: $auto$alumacc.cc:578:replace_alu$2744
+  creating $alu cell for $flatten\cpu_core.$ulx3s_top_rohd.sv:1232$add$418: $auto$alumacc.cc:578:replace_alu$2747
   creating $alu cell for $flatten\uart.\uart_tx.\divide_by_n.$ulx3s_top_rohd.sv:64$add$6: $auto$alumacc.cc:578:replace_alu$2750
   creating $alu cell for $flatten\uart.\uart_rx.\divide_by_n.$ulx3s_top_rohd.sv:33$add$3: $auto$alumacc.cc:578:replace_alu$2753
-  creating $alu cell for $flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:176$add$43: $auto$alumacc.cc:578:replace_alu$2756
+  creating $alu cell for $flatten\uart.\uart_rx.$ulx3s_top_rohd.sv:177$add$43: $auto$alumacc.cc:578:replace_alu$2756
   created 21 $alu and 0 $macc cells.
 
 2.25. Executing OPT pass (performing simple optimizations).
@@ -1252,22 +1252,22 @@ Generating RTLIL representation for module `$__PDPW16KD_'.
 Successfully finished Verilog frontend.
 
 2.29.3. Continuing TECHMAP pass.
-Using template $paramod$83c91684c63f43931ac7f585a59cd7bfb8ffd048$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$66b7581cd676ca7c2c28e80f74ede73e065e6f27$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$343bec92f76b08b794edbdf7624d1e8bb74b2876$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$4fc30325c0544a4fdd9fa5f0fa7b84af0f9d5289$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$5a9046324bbfa5b6faae3189b1eec2373b37d94d$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$bd00e7abcfd274fc02721d7d555a5a8139bf7151$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$9f43ed84ca9016af26bb7080dc20fc89ff93dea5$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$47d51b0a310492dd968a3b5e9065b36062870c5b$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$b566147dde20ff123ec1b4a45b907135b9baf8e0$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$4f6ccf76c148723b85a585bf1e7d1de8ac27adb7$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$98a688722ef8469bb7c8bacee04a0b9d28744331$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$3335b50b806712503a665ed473e1624997ffe2e9$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$ddebb25ef22312a38d16d4fa91dc4f43276fb1b5$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$244e6740f0031b0d41d87748cef787bbaab12854$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$d525db9e71bd3e90eaf3796af4ed7633cb1c84ec$__DP16KD_ for cells of type $__DP16KD_.
-Using template $paramod$7b151496b1b3cd156ed4b21c4338a0f04fb73a2c$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$516cf5e03019b9a891c774230d49c85148fca2dc$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$4f3291d01cdb0b40c670168c117f0292b05148ae$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$9e753df38b00c700b7bf784d34057a9ccd0a37f4$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$2d0f7ae220e1aba8358467531c4f6082b8346a87$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$0f8830f17a88c52f9c94ed79407fb014899f0528$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$b85ccd81e8068a7989a45c907ab879ba3ee7952e$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$4ed8664ec79389eb457067061517f8c1309a668c$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$2e3d8921037ca25838a10905a472777260870068$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$324a21e90b5462d656eb8a85d0c5096673a3b0ce$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$3fd2be907d38944cf6a6b245035f633f319b9174$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$6b49d02942b78bdf60ab4cb27f0256f055f9c3c2$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$f86b87d580afc4f706ec5c7d969ffc7d142f4bea$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$199c111eb73cf8a578182ced9f63d9b459970bd6$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$1e3ea3c06fddcc762e8127f16de7f15f2fd9edd4$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$677e0c96366f7ca0c4b8e1596a0d24e02fe3b767$__DP16KD_ for cells of type $__DP16KD_.
+Using template $paramod$1c72553498e6742515fee7b1ffb4ac25406b0358$__DP16KD_ for cells of type $__DP16KD_.
 Using template $paramod$b99d13011bae2fd5e48b61b83819a784fc9d6021$__DP16KD_ for cells of type $__DP16KD_.
 No more expansions possible.
 <suppressed ~592 debug messages>
@@ -1345,10 +1345,10 @@ Removed 0 multiplexer ports.
 
 2.32.4. Executing OPT_REDUCE pass (consolidate $*mux and $reduce_* inputs).
   Optimizing cells in module \Ulx3sTop.
-    Consolidated identical input bits for $mux cell $flatten\cpu_core.$ulx3s_top_rohd.sv:1173$ternary$398:
-      Old ports: A={ 15'000000000000000 $auto$wreduce.cc:514:run$2692 [0] }, B={ \uart_rx_valid 7'0000000 \uart_rxd_latch }, Y=$flatten\cpu_core.$ulx3s_top_rohd.sv:1173$ternary$398_Y
-      New ports: A={ 8'00000000 $auto$wreduce.cc:514:run$2692 [0] }, B={ \uart_rx_valid \uart_rxd_latch }, Y={ $flatten\cpu_core.$ulx3s_top_rohd.sv:1173$ternary$398_Y [15] $flatten\cpu_core.$ulx3s_top_rohd.sv:1173$ternary$398_Y [7:0] }
-      New connections: $flatten\cpu_core.$ulx3s_top_rohd.sv:1173$ternary$398_Y [14:8] = 7'0000000
+    Consolidated identical input bits for $mux cell $flatten\cpu_core.$ulx3s_top_rohd.sv:1174$ternary$398:
+      Old ports: A={ 15'000000000000000 $auto$wreduce.cc:514:run$2692 [0] }, B={ \uart_rx_valid 7'0000000 \uart_rxd_latch }, Y=$flatten\cpu_core.$ulx3s_top_rohd.sv:1174$ternary$398_Y
+      New ports: A={ 8'00000000 $auto$wreduce.cc:514:run$2692 [0] }, B={ \uart_rx_valid \uart_rxd_latch }, Y={ $flatten\cpu_core.$ulx3s_top_rohd.sv:1174$ternary$398_Y [15] $flatten\cpu_core.$ulx3s_top_rohd.sv:1174$ternary$398_Y [7:0] }
+      New connections: $flatten\cpu_core.$ulx3s_top_rohd.sv:1174$ternary$398_Y [14:8] = 7'0000000
   Optimizing cells in module \Ulx3sTop.
 Performed a total of 1 changes.
 
@@ -1909,11 +1909,11 @@ ABC: K = 7. Memory (bytes): Truth =    0. Cut =   80. Obj =  160. Set =  816. Cu
 ABC: Node =    7255.  Ch =   689.  Total mem =    3.47 MB. Peak cut mem =    0.22 MB.
 ABC: P:  Del = 3756.00.  Ar =    7333.0.  Edge =     8789.  Cut =    86168.  T =     0.02 sec
 ABC: P:  Del = 3756.00.  Ar =    7275.0.  Edge =     8817.  Cut =    85488.  T =     0.02 sec
-ABC: P:  Del = 3755.00.  Ar =    3083.0.  Edge =     6246.  Cut =   224939.  T =     0.04 sec
+ABC: P:  Del = 3755.00.  Ar =    3083.0.  Edge =     6246.  Cut =   224939.  T =     0.05 sec
 ABC: F:  Del = 3755.00.  Ar =    2435.0.  Edge =     5775.  Cut =   135382.  T =     0.03 sec
 ABC: A:  Del = 3754.00.  Ar =    2142.0.  Edge =     5581.  Cut =   118762.  T =     0.04 sec
 ABC: A:  Del = 3753.00.  Ar =    2134.0.  Edge =     5568.  Cut =   115057.  T =     0.04 sec
-ABC: Total time =     0.19 sec
+ABC: Total time =     0.20 sec
 ABC: + &write -n <abc-temp-dir>/output.aig 
 ABC: + &mfs 
 ABC: + &ps -l 
@@ -1922,9 +1922,9 @@ ABC: Mapping (K=7)  :  lut =   1446  edge =    5511  lev =    7 (0.40)  levB =  
 ABC: LUT = 1446 : 2=255 17.6 %  3=238 16.5 %  4=603 41.7 %  5=257 17.8 %  6=61 4.2 %  7=32 2.2 %  Ave = 3.81
 ABC: + &write -n <abc-temp-dir>/output.aig 
 ABC: + &verify 
-ABC: Networks are equivalent.  Time =     0.14 sec
+ABC: Networks are equivalent.  Time =     0.17 sec
 ABC: + time 
-ABC: elapse: 1.10 seconds, total: 1.10 seconds
+ABC: elapse: 1.32 seconds, total: 1.32 seconds
 
 2.46.14.6. Executing AIGER frontend.
 <suppressed ~10 debug messages>
@@ -3044,6 +3044,6 @@ Found and reported 0 problems.
 
 2.53. Executing JSON backend.
 
-End of script. Logfile hash: 87a5c4e704, time: 5.26s, user: 4.00s, system: 0.14s, MEM: 163.03 MB peak
+End of script. Logfile hash: d37cdfabbd, time: 6.51s, user: 4.91s, system: 0.17s, MEM: 166.61 MB peak
 Yosys 0.70+240 (git sha1 5cdfd1241-dirty, Release, Clang /usr/local/osxcross/target/bin/aarch64-apple-darwin25.5-clang++ 21.1.8)
-Time spent: 36% 12x techmap (1 sec), 21% 1x abc9_exe (1 sec), ...
+Time spent: 37% 12x techmap (2 sec), 20% 1x abc9_exe (1 sec), ...

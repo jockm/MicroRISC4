@@ -4,9 +4,11 @@
 // ==============================================================================
 
 import 'package:rohd/rohd.dart';
+import 'constants.dart';
 import 'cpu_config.dart';
 import 'cpu_core.dart';
 import 'ecp5_pll.dart';
+import 'noc_cache_wrapper.dart';
 import 'uart.dart';
 
 class Ulx3sTop extends Module {
@@ -25,6 +27,7 @@ class Ulx3sTop extends Module {
       trapTableBase: 0x0100,
       memWords: 65536,
     ),
+    int nocCores = 0,
     String? initHexFile = 'system_image.hex',
     Map<int, int>? initialMemory,
     super.name = 'ulx3s_top',
@@ -77,7 +80,49 @@ class Ulx3sTop extends Module {
     );
 
     ftdiRxd <= uart.serialTxd;
-    led <= [pll.locked, cpu.debugPc.slice(6, 0)].swizzle();
+
+    if (nocCores >= 2) {
+      final mmioAddr = List.generate(
+        nocCores,
+        (i) => Const(MiniRISC4Constants.addrNocRxStat, width: MiniRISC4Constants.addrWidth),
+      );
+      final mmioWdata = List.generate(
+        nocCores,
+        (i) => Const(0, width: MiniRISC4Constants.dataWidth),
+      );
+      final mmioWe = List.generate(nocCores, (i) => Const(0));
+      final mmioRe = List.generate(nocCores, (i) => Const(0));
+      final netOutReady = List.generate(nocCores, (i) => Const(1));
+
+      final nocFabric = NocMultiCoreCacheWrapper(
+        clk: clk24mhz,
+        reset: uartReset,
+        mmioAddr: mmioAddr,
+        mmioWdata: mmioWdata,
+        mmioWe: mmioWe,
+        mmioRe: mmioRe,
+        netOutReady: netOutReady,
+        srvInjectValid: Const(0),
+        srvInjectType: Const(0),
+        srvInjectSrcCore: Const(0, width: 8),
+        srvInjectSrcCh: Const(0, width: 8),
+        srvInjectDstCore: Const(0, width: 8),
+        srvInjectDstCh: Const(0, width: 8),
+        srvInjectPayload: Const(0, width: MiniRISC4Constants.dataWidth),
+        numCores: nocCores,
+        serverCoreId: 0,
+        numChannels: config.nocChannels,
+        fifoDepth: config.nocFifoDepth,
+        name: 'ulx3s_noc_fabric',
+      );
+      led <= [
+        pll.locked,
+        nocFabric.output('mboxTrapReq_0'),
+        cpu.debugPc.slice(5, 0),
+      ].swizzle();
+    } else {
+      led <= [pll.locked, cpu.debugPc.slice(6, 0)].swizzle();
+    }
 
     Sequential(clk24mhz, reset: uartReset, resetValues: {
       uartRxValid: 0,

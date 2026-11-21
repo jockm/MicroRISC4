@@ -5,30 +5,50 @@
 
 import 'dart:io';
 import 'package:rohd/rohd.dart';
+import 'package:minirisc4_rohd/cpu_config.dart';
 import 'package:minirisc4_rohd/ulx3s_top.dart';
 
 void main(List<String> args) async {
   var hexPath = 'system_image.hex';
   var outDir = '.';
+  var memWords = 65536;
+  var nocCores = 0;
 
   for (var i = 0; i < args.length; i++) {
     if (args[i] == '--hex' && i + 1 < args.length) {
       hexPath = args[++i];
     } else if (args[i] == '--out' && i + 1 < args.length) {
       outDir = args[++i];
+    } else if (args[i] == '--mem-words' && i + 1 < args.length) {
+      memWords = int.tryParse(args[++i]) ?? memWords;
+    } else if (args[i] == '--noc-cores' && i + 1 < args.length) {
+      nocCores = int.tryParse(args[++i]) ?? nocCores;
     }
   }
 
-  print('Building MiniRISC4 ULX3S-85F hardware representation in ROHD...');
+  print('Building MiniRISC4 ULX3S-85F hardware representation in ROHD (memWords=$memWords, nocCores=$nocCores)...');
 
   final clk25 = Logic(name: 'clk_25mhz');
   final btnPwrN = Logic(name: 'btn_pwr_n');
   final ftdiTxd = Logic(name: 'ftdi_txd');
 
+  final cfg = CpuConfig(
+    coreId: 0,
+    enableCpuid: nocCores >= 2,
+    enableUart: true,
+    enableCrossTraps: nocCores >= 2,
+    enableMathAccel: false,
+    enableNoc: nocCores >= 2,
+    trapTableBase: 0x0100,
+    memWords: memWords,
+  );
+
   final top = Ulx3sTop(
     clk25mhz: clk25,
     btnPwrN: btnPwrN,
     ftdiTxd: ftdiTxd,
+    config: cfg,
+    nocCores: nocCores,
     initHexFile: hexPath,
   );
 

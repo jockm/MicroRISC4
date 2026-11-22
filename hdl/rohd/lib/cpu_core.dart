@@ -368,17 +368,7 @@ class CpuCore extends Module {
                   final regR = getReg(decRrQ);
                   final regL = getReg(decRlQ);
                   final regLInc = regL + 1;
-                  final rDec = [
-                    r[0] - 1,
-                    r[1] - 1,
-                    r[2] - 1,
-                    r[3] - 1,
-                  ];
-                  final regRDec = mux(
-                    decRrQ.eq(0),
-                    rDec[0],
-                    mux(decRrQ.eq(1), rDec[1], mux(decRrQ.eq(2), rDec[2], rDec[3])),
-                  );
+                  final regRDec = regR - 1;
                   return [If(Const(1, width: 1), then: [
                 portBEn < 0,
                 portBWe < 0,
@@ -676,6 +666,17 @@ class CpuCore extends Module {
       decRrQ < byteVal.slice(3, 2),
       decRlQ < byteVal.slice(1, 0),
       decImm4Q < byteVal.slice(3, 0),
+    ];
+  }
+
+  static List<Conditional> _writeReg(
+    List<Logic> r,
+    Logic regIdx,
+    Logic value,
+  ) {
+    return [
+      for (int i = 0; i < r.length; i++)
+        If(regIdx.eq(i), then: [r[i] < value]),
     ];
   }
 

@@ -679,9 +679,16 @@ class CpuCore extends Module {
     Logic regIdx,
     Logic value,
   ) {
+    final idx0 = regIdx[0];
+    final idx1 = regIdx[1];
+    final sel0 = ~idx1 & ~idx0;
+    final sel1 = ~idx1 & idx0;
+    final sel2 = idx1 & ~idx0;
+    final sel3 = idx1 & idx0;
+    final sels = [sel0, sel1, sel2, sel3];
     return [
       for (int i = 0; i < r.length; i++)
-        If(regIdx.eq(i), then: [r[i] < value]),
+        If(sels[i], then: [r[i] < value]),
     ];
   }
 

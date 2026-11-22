@@ -38,13 +38,13 @@ apps/asm/build/*
 !apps/asm/build/.gitkeep
 
 # Parcore generated synthesis artifacts
-hdl/parcore/parcore_top.sv
-hdl/parcore/*.synth.json
-hdl/parcore/*.config
-hdl/parcore/*.bit
+hdl/rohd/parcore_top.sv
+hdl/rohd/*.synth.json
+hdl/rohd/*.config
+hdl/rohd/*.bit
 
 # Stage kernel binary builds
-build/parcore/
+build/rohd/
 
 
 ######################################

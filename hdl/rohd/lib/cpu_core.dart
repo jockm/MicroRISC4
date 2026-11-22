@@ -385,6 +385,7 @@ class CpuCore extends Module {
                   return [If(Const(1, width: 1), then: [
                 portBEn < 0,
                 portBWe < 0,
+                portBWdata < regL,
                 If(illegalSlot1, then: [
                   r[0] < pc + 1,
                   _branchTo(
@@ -419,7 +420,6 @@ class CpuCore extends Module {
                     // 0x3: LD (Rr), Rl - Poke
                     CaseItem(Const(MiniRISC4Constants.opLdPoke, width: 4), [
                       portBAddr < regR,
-                      portBWdata < regL,
                       portBWe < 1,
                       portBEn < 1,
                       if (config.enableUart)
@@ -448,7 +448,6 @@ class CpuCore extends Module {
                     CaseItem(Const(MiniRISC4Constants.opLdPredec, width: 4), [
                       ..._writeReg(r, decRrQ, regRDec),
                       portBAddr < regRDec,
-                      portBWdata < regL,
                       portBWe < 1,
                       portBEn < 1,
                       if (config.enableUart)

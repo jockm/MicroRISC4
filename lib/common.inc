@@ -291,6 +291,7 @@
     LD      (R2), R3
     XCHG    R3
     XCHG    R2
+    XCHG    R0
 .endmacro
 
 .macro STPOP ptr_addr, reg
@@ -305,6 +306,7 @@
     LD      (R2), R3
     XCHG    R3
     XCHG    R2
+    XCHG    R0
 .endmacro
 
 .macro RPUSH reg
@@ -354,6 +356,7 @@
 
 .macro RRET
     RPOP    R0
+    XCHG    R0
     JMP     R0
 .endmacro
 

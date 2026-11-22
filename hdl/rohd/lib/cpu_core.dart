@@ -32,6 +32,7 @@ class CpuCore extends Module {
     Logic? extTrapReq,
     Logic? extTrapNum,
     Logic? spiMiso,
+    Logic? nocRdata,
     this.config = const CpuConfig(),
     String? initHexFile,
     Map<int, int>? initialMemory,
@@ -69,6 +70,14 @@ class CpuCore extends Module {
       spiMisoIn = addInput('spi_miso', spiMiso ?? Const(1));
     } else {
       spiMisoIn = Const(1);
+    }
+
+    final Logic nocRdataIn;
+    if (config.enableNoc) {
+      nocRdataIn = addInput('mmio_noc_rdata', nocRdata ?? Const(0, width: 16),
+          width: 16);
+    } else {
+      nocRdataIn = Const(0, width: 16);
     }
 
     final spiSck = config.enableSpi ? addOutput('spi_sck') : null;
@@ -167,7 +176,16 @@ class CpuCore extends Module {
 
     final isSpiMatch =
         (config.enableSpi && spiMatch != null) ? spiMatch : Const(0);
-    final isMmio = isMmioCpuid | isMmioRx | isMmioTx | isMathMatch | isSpiMatch;
+    final isNocMatch = config.enableNoc
+        ? (portBAddr.gte(Const(MiniRISC4Constants.addrNocTxData, width: 16)) &
+            portBAddr.lte(Const(MiniRISC4Constants.addrNocChCfg1, width: 16)))
+        : Const(0);
+    final isMmio = isMmioCpuid |
+        isMmioRx |
+        isMmioTx |
+        isMathMatch |
+        isSpiMatch |
+        isNocMatch;
 
     // Mask RAM writes when targeting MMIO addresses
     final ramBWe = portBEn & portBWe & ~isMmio;
@@ -229,7 +247,11 @@ class CpuCore extends Module {
             mux(
               isSpiMatch,
               spiRdata ?? Const(0, width: 16),
-              Const(0, width: 16),
+              mux(
+                isNocMatch,
+                nocRdataIn,
+                Const(0, width: 16),
+              ),
             ),
           ),
         ),

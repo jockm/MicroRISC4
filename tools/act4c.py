@@ -1181,8 +1181,8 @@ class CodeGen:
             self.emit("APUSH   R1")
             self.gen_lvalue_addr(stmt.target)
             self.emit("APUSH   R0")
-            self.emit("APOP    R1")
             self.emit("APOP    R0")
+            self.emit("APOP    R1")
             self.emit("LD      (R0), R1")
         else:
             self.gen_lvalue_addr(stmt.target)

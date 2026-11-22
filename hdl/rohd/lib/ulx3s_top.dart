@@ -54,8 +54,27 @@ class Ulx3sTop extends Module {
     final uartRxValid = Logic(name: 'uart_rx_valid');
     final txBusyLatch = Logic(name: 'tx_busy_latch');
 
+    final useNoc = nocCores >= 2;
+    final effectiveConfig = useNoc
+        ? CpuConfig(
+            coreId: config.coreId,
+            enableCpuid: config.enableCpuid,
+            enableUart: config.enableUart,
+            enableCrossTraps: config.enableCrossTraps,
+            enableShadowRegs: config.enableShadowRegs,
+            enableMathAccel: config.enableMathAccel,
+            enableSpi: config.enableSpi,
+            enableNoc: true,
+            nocChannels: config.nocChannels,
+            nocFifoDepth: config.nocFifoDepth,
+            trapTableBase: config.trapTableBase,
+            memWords: config.memWords,
+          )
+        : config;
+
     final cpuRxData = Logic(name: 'cpu_rx_data', width: 16);
     final cpuTxStatus = Logic(name: 'cpu_tx_status', width: 16);
+    final nocRdataCore0 = Logic(name: 'noc_rdata_core0', width: 16);
 
     cpuRxData <= [uartRxValid, Const(0, width: 7), uartRxdLatch].swizzle();
     cpuTxStatus <= mux(txBusyLatch, Const(1, width: 16), Const(0, width: 16));
@@ -65,7 +84,8 @@ class Ulx3sTop extends Module {
       rstN: sysRstN,
       mmioRxData: cpuRxData,
       mmioTxStatus: cpuTxStatus,
-      config: config,
+      nocRdata: useNoc ? nocRdataCore0 : null,
+      config: effectiveConfig,
       initHexFile: initHexFile,
       initialMemory: initialMemory,
     );
@@ -81,17 +101,36 @@ class Ulx3sTop extends Module {
 
     ftdiRxd <= uart.serialTxd;
 
-    if (nocCores >= 2) {
+    if (useNoc) {
+      final busEn = cpu.output('port_b_en_out');
+      final busWe = cpu.output('port_b_we_out');
+      final busAddr = cpu.output('port_b_addr_out');
+      final busWdata = cpu.output('port_b_wdata_out');
+      final inNocRange =
+          busAddr.gte(Const(MiniRISC4Constants.addrNocTxData, width: 16)) &
+              busAddr.lte(Const(MiniRISC4Constants.addrNocChCfg1, width: 16));
+
       final mmioAddr = List.generate(
         nocCores,
-        (i) => Const(MiniRISC4Constants.addrNocRxStat, width: MiniRISC4Constants.addrWidth),
+        (i) => (i == 0)
+            ? busAddr
+            : Const(MiniRISC4Constants.addrNocRxStat,
+                width: MiniRISC4Constants.addrWidth),
       );
       final mmioWdata = List.generate(
         nocCores,
-        (i) => Const(0, width: MiniRISC4Constants.dataWidth),
+        (i) => (i == 0)
+            ? busWdata
+            : Const(0, width: MiniRISC4Constants.dataWidth),
       );
-      final mmioWe = List.generate(nocCores, (i) => Const(0));
-      final mmioRe = List.generate(nocCores, (i) => Const(0));
+      final mmioWe = List.generate(
+        nocCores,
+        (i) => (i == 0) ? (busEn & busWe & inNocRange) : Const(0),
+      );
+      final mmioRe = List.generate(
+        nocCores,
+        (i) => (i == 0) ? (busEn & (~busWe) & inNocRange) : Const(0),
+      );
       final netOutReady = List.generate(nocCores, (i) => Const(1));
 
       final nocFabric = NocMultiCoreCacheWrapper(
@@ -115,11 +154,15 @@ class Ulx3sTop extends Module {
         fifoDepth: config.nocFifoDepth,
         name: 'ulx3s_noc_fabric',
       );
+            nocRdataCore0 <= nocFabric.output('mmioRdata_0');
       led <= [
         pll.locked,
         nocFabric.output('mboxTrapReq_0'),
         cpu.debugPc.slice(5, 0),
       ].swizzle();
+    } else {
+      nocRdataCore0 <= Const(0, width: 16);
+      led <= [pll.locked, cpu.debugPc.slice(6, 0)].swizzle();
     } else {
       led <= [pll.locked, cpu.debugPc.slice(6, 0)].swizzle();
     }

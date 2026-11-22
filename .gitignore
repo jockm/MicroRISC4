@@ -12,16 +12,17 @@
 # Build artifacts
 **/*.bin
 **/*.lst
+**/*.hex
 
 # ROHD-generated SystemVerilog top-level outputs
-hdl/particle/particle_top.sv
-hdl/particle/*.sv
+hdl/rohd/particle_top.sv
+hdl/rohd/*.sv
 
 # Synthesis and PnR toolchain artifacts (Yosys / nextpnr)
-hdl/particle/*.synth.json
-hdl/particle/*.config
-hdl/particle/*.bit
-hdl/particle/*.bin
+hdl/rohd/*.synth.json
+hdl/rohd/*.config
+hdl/rohd/*.bit
+hdl/rohd/*.bin
 
 # Python Bytecode Cache
 __pycache__/
@@ -37,11 +38,6 @@ apps/act/build/*
 apps/asm/build/*
 !apps/asm/build/.gitkeep
 
-# Parcore generated synthesis artifacts
-hdl/rohd/parcore_top.sv
-hdl/rohd/*.synth.json
-hdl/rohd/*.config
-hdl/rohd/*.bit
 
 # Stage kernel binary builds
 build/rohd/

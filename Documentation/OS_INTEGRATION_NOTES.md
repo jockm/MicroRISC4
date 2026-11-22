@@ -15,9 +15,8 @@ Unzip this archive at the root of your MiniRISC4 repository to place all new fil
 - `lib/sys.a4` — User-space ACT4 syscall client library
 - `mr4src/act4/apps/ls.a4` — Standalone user-space `ls` app (loads at `0x0400`)
 
-## Existing File Hookups (Manual / Non-Destructive)
-1. **`hdl/rohd/lib/cpu_config.dart`**: Add `final bool enableSpi;` (default `false`, `true` in `CpuConfig.multiCorePrimary()`).
-2. **`hdl/rohd/lib/cpu_core.dart`**: Instantiate `SpiMaster` when `config.enableSpi` is true, OR `spiMatch` into `isMmio`, and MUX `spiRdata` into `portBRdata`.
+## ROHD SPI Configuration
+The current ROHD package already defines `enableSpi` in `CpuConfig` and instantiates `SpiMaster` when it is enabled. Set `enableSpi: true` on the `CpuConfig` used for a core that should expose SPI. There is no `CpuConfig.multiCorePrimary()` factory; use the `CpuConfig` constructor or one of its existing factories (`standalone`, `computeWorker`, or `leanWorker`).
 3. **Compiling user apps**:
    ```bash
    python3 tools/act4c.py --org 0x0400 --nopreamble -I lib mr4src/act4/apps/ls.a4 -o build/ls.asm

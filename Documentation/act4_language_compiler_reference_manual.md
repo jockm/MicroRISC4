@@ -41,14 +41,14 @@ const u16 UART_BASE   = 0x000E;
 ### 2.3 Memory-Mapped Variables (`@ <address>`)
 Variables can be explicitly bound to physical memory or MMIO registers using `@ <address>`:
 ```c
-u16 fifo_in   @ 0x000A; // Inter-core streaming FIFO (read-only pop)
-u16 fifo_out  @ 0x000B; // Inter-core streaming FIFO (write-only push)
-u16 mailbox   @ 0x000C; // Cross-core interrupt / trap trigger
+u16 fifo_in   @ 0x000A; // Reserved name; ordinary RAM in the current ROHD CPU
+u16 fifo_out  @ 0x000B; // Reserved name; ordinary RAM in the current ROHD CPU
+u16 mailbox   @ 0x000C; // RAM; CacheSubsystemTop also observes writes for its two-core trap glue
 u16 cpuid     @ 0x000D; // Hardware Core ID register (read-only)
 u16 uart_rx   @ 0x000E; // UART receive register (bit 15 = valid flag)
 u16 uart_tx   @ 0x000F; // UART transmit register (0 = idle)
 ```
-Reading or writing these variables produces single-cycle direct loads and stores to the specified hardware address without pointer setup.
+Reading or writing these variables emits direct loads and stores to the specified address without pointer setup. An `@` declaration does not make an address a hardware peripheral; `0x000A` and `0x000B` are RAM in the current ROHD CPU.
 
 ### 2.4 Structures (`type`)
 Structures are declared using the `type` keyword. Struct members are allocated sequentially at 1-word offsets:
@@ -97,12 +97,15 @@ Compiled ACT4 binaries follow the unified MiniRISC4 memory architecture:
 | `0x0004` | 1 word | **Return Stack Pointer (RSP)** (default: `0xFEFF`). |
 | `0x0005` | 1 word | **Argument Stack Pointer (ASP)** (default: `0xFAFF`). |
 | `0x0006` – `0x0009` | 4 words | General scratchpad workspace. |
-| `0x000A` | 1 word | **FIFO_IN**: Inter-core inbound pop port. |
-| `0x000B` | 1 word | **FIFO_OUT**: Inter-core outbound push port. |
-| `0x000C` | 1 word | **MAILBOX**: Cross-core trap strobe register. |
+| `0x000A` | 1 word | Scratchpad RAM; no FIFO is implemented at this address. |
+| `0x000B` | 1 word | Scratchpad RAM; no FIFO is implemented at this address. |
+| `0x000C` | 1 word | RAM; `CacheSubsystemTop` also observes writes for its two-core trap glue. |
 | `0x000D` | 1 word | **CPUID**: Hardware Core ID register. |
 | `0x000E` | 1 word | **UART_RX**: Bit 15 = valid; bits [7:0] = byte. |
 | `0x000F` | 1 word | **UART_TX**: Read 0 = idle; write transmits byte. |
+| `0x0010` – `0x0016` | 7 words | Optional Math Accelerator MMIO; otherwise RAM. |
+| `0x0018` – `0x001A` | 3 words | Optional SPI MMIO; otherwise RAM. |
+| `0x0020` – `0x0029` | 10 words | Optional NoC MMIO; otherwise RAM. |
 | `0x0100` – `0x01FF` | 256 words | **Direct Stride Vector Table** (16 slots $\times$ 16 words). |
 | `0x0200` – `TOP` | Variable | **Program Space**: Compiled functions, static variables, heap, and stacks. |
 

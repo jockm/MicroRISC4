@@ -154,7 +154,7 @@ class Ulx3sTop extends Module {
         fifoDepth: config.nocFifoDepth,
         name: 'ulx3s_noc_fabric',
       );
-            nocRdataCore0 <= nocFabric.output('mmioRdata_0');
+      nocRdataCore0 <= nocFabric.output('mmioRdata_0');
       led <= [
         pll.locked,
         nocFabric.output('mboxTrapReq_0'),
@@ -162,8 +162,6 @@ class Ulx3sTop extends Module {
       ].swizzle();
     } else {
       nocRdataCore0 <= Const(0, width: 16);
-      led <= [pll.locked, cpu.debugPc.slice(6, 0)].swizzle();
-    } else {
       led <= [pll.locked, cpu.debugPc.slice(6, 0)].swizzle();
     }
 

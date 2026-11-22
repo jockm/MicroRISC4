@@ -31,7 +31,7 @@ Where an instruction takes two operands, they are comma-separated (`<dest>, <src
 | `LD (Rr), Rl` | `0011rrll` | Memory store (Poke): $\text{mem}[Rr] \leftarrow Rl$. |
 | `LD Rr, (Rl++)` | `0100rrll` | **Pop (Post-increment load)**: $Rr \leftarrow \text{mem}[Rl]$; $Rl \leftarrow Rl + 1$. |
 | `LD (--Rr), Rl` | `0101rrll` | **Push (Pre-decrement store)**: $Rr \leftarrow Rr - 1$; $\text{mem}[Rr] \leftarrow Rl$. |
-| `PUSH8 Rr, const8` | `1111rr10` + *data8* | Shift $Rr$ left by 8 bits and insert byte constant: $Rr \leftarrow (Rr \ll 8) \mid \text{const8}$. **Word-aligned** (Slot 0 + Slot 1). |
+| `PUSH8 Rr, const8` | `111110rr` + *data8* | Shift $Rr$ left by 8 bits and insert byte constant: $Rr \leftarrow (Rr \ll 8) \mid \text{const8}$. **Word-aligned** (Slot 0 + Slot 1). |
 
 ### 2.2 ALU & Logic Operations
 | Syntax | Bitform (Slot) | Description |
@@ -45,13 +45,13 @@ Where an instruction takes two operands, they are comma-separated (`<dest>, <src
 ### 2.3 Shifts, Rotates & Register Exchange
 | Syntax | Bitform (Slot) | Description |
 | :--- | :---: | :--- |
-| `SHIFT.L Rr` | `1011rr10` | Logical shift left by 1 bit: $Rr \leftarrow Rr \ll 1$. |
-| `SHIFT.R Rr` | `1011rr00` | Logical shift right by 1 bit: $Rr \leftarrow Rr \gg 1$. |
-| `SHIFT.AR Rr` | `1011rr01` | Arithmetic shift right by 1 bit (preserves sign bit `[15]`). |
-| `ROT.L Rr` | `1100rr00` | Rotate left by 1 bit through bit `[15]` to `[0]`. |
-| `ROT.R Rr` | `1100rr10` | Rotate right by 1 bit through bit `[0]` to `[15]`. |
-| `INC Rr` | `1100rr11` | Increment: $Rr \leftarrow Rr + 1$. |
-| `DEC Rr` | `1100rr01` | Decrement: $Rr \leftarrow Rr - 1$. |
+| `SHIFT.L Rr` | `101100rr` | Logical shift left by 1 bit: $Rr \leftarrow Rr \ll 1$. |
+| `SHIFT.R Rr` | `101101rr` | Logical shift right by 1 bit: $Rr \leftarrow Rr \gg 1$. |
+| `SHIFT.AR Rr` | `101110rr` | Arithmetic shift right by 1 bit (preserves sign bit `[15]`). |
+| `ROT.L Rr` | `110000rr` | Rotate left by 1 bit through bit `[15]` to `[0]`. |
+| `ROT.R Rr` | `110001rr` | Rotate right by 1 bit through bit `[0]` to `[15]`. |
+| `INC Rr` | `110010rr` | Increment: $Rr \leftarrow Rr + 1$. |
+| `DEC Rr` | `110011rr` | Decrement: $Rr \leftarrow Rr - 1$. |
 | `XCHG Rr` | `101111rr` | **Shadow Register Exchange**: Exchanges $Rr$ with $shadow\_r[r]$ in 1 clock cycle. |
 
 ### 2.4 Control Flow & Exceptions
@@ -61,9 +61,9 @@ MiniRISC4 branches and jumps are strictly **register-indirect**. Branch targets 
 | :--- | :---: | :--- |
 | `JMP.Z Rr, Rl` | `1101rrll` | Branch if Zero: if $Rl == 0$ then $PC \leftarrow Rr$. |
 | `JMP.M Rr, Rl` | `1110rrll` | Branch if Negative: if $Rl[15] == 1$ then $PC \leftarrow Rr$. |
-| `JMP Rr` | `1111rr00` | Unconditional jump: $PC \leftarrow Rr$. |
-| `LINK Rr, R0` | `1111rr01` | Call Subroutine: $R0 \leftarrow PC + 1$; $PC \leftarrow Rr$. Must target $R0$. **Word-aligned** (occupies Slot 0; Slot 1 is auto-padded with `NOP`). |
-| `TRAP Rr, val8` | `1111rr11` + *val8* | Software Trap: $R0 \leftarrow PC + 1$; $PC \leftarrow \text{mem}[\text{TRAP\_BASE} + (Rr \ \& \ 0xF)]$. **Word-aligned** (Slot 0 + immediate byte *val8* in Slot 1). If *val8* is omitted (`TRAP Rr`), defaults to `0x00`. |
+| `JMP Rr` | `111100rr` | Unconditional jump: $PC \leftarrow Rr$. |
+| `LINK Rr, R0` | `111101rr` | Call Subroutine: $R0 \leftarrow PC + 1$; $PC \leftarrow Rr$. Must target $R0$. **Word-aligned** (occupies Slot 0; Slot 1 is auto-padded with `NOP`). |
+| `TRAP Rr, val8` | `111111rr` + *val8* | Software trap: $R0 \leftarrow PC + 1$; $PC \leftarrow \text{TRAP\_BASE} + ((Rr \ \& \ 0xF) \ll 4)$. **Word-aligned** (Slot 0 + Slot 1 byte). The Slot 1 byte is emitted to occupy the word but ignored by the CPU. If omitted, it defaults to `0x00`. |
 
 ---
 
@@ -107,9 +107,9 @@ MiniRISC4 branches and jumps are strictly **register-indirect**. Branch targets 
 The assembler automatically defines standard system symbols in its symbol table:
 * `TRAP_BASE`, `_TRAP_BASE`: Default `0x0100` (or set via `--trap-base`).
 * `CPUID_ADDR`: `0x000D` (Hardware Core ID register).
-* `FIFO_IN`: `0x000A` (Inter-core inbound queue pop port).
-* `FIFO_OUT`: `0x000B` (Inter-core outbound queue push port).
-* `MAILBOX`: `0x000C` (Cross-core trigger register).
+* `FIFO_IN`: `0x000A` (reserved symbol; ordinary RAM in the current ROHD CPU).
+* `FIFO_OUT`: `0x000B` (reserved symbol; ordinary RAM in the current ROHD CPU).
+* `MAILBOX`: `0x000C` (ordinary RAM in the current ROHD CPU; writes are additionally observed by the two-core `CacheSubsystemTop` glue).
 * `UART_RX`: `0x000E` (Serial receive port).
 * `UART_TX`: `0x000F` (Serial transmit port).
 * `RSP_INIT`: `0xFEFF` (Default Return Stack base).

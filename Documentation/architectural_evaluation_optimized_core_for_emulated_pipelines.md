@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary
 
-The `mr4riscv` subproject demonstrates an innovative architectural approach: decomposing a standard 32-bit RISC-V (RV32IM) CPU pipeline into communicating, firmware-driven worker cores. Each stage (Fetch, Decode, Execute, Memory/Writeback, and Cache/SDRAM management) runs on a dedicated 16-bit MiniRISC4 core communicating across hardware FIFOs and mailbox trap strobes.
+The `mr4riscv` subproject explores decomposing a standard 32-bit RISC-V (RV32IM) CPU pipeline into firmware-driven worker cores. The current ROHD `Mr4RiscvTop` instantiates five MiniRISC4 cores but does not connect their data or trap interfaces, so it is not yet a functioning communicating pipeline. The low-memory FIFO behavior described in earlier documentation is also not implemented by `CpuCore`.
 
 While this decoupled architecture offers extreme post-synthesis flexibility—allowing pipeline behaviors, hazard resolution, caching policies, and instruction extensions to be modified purely in assembly—the 16-bit MiniRISC4 processing element imposes severe performance penalties when emulating a 32-bit target ISA. 
 
@@ -27,9 +27,7 @@ The RISC-V encoding relies on scattered bitfields (`opcode`, `rd`, `funct3`, `rs
 * As a result, the instruction decode stage requires **~25 to 35 clock cycles** per RV32 instruction, forming the critical throughput bottleneck of the pipeline.
 
 ### 2.3 Software Messaging Protocol Overhead
-Inter-core streaming over memory-mapped FIFOs (`0x000A`/`0x000B`) and mailboxes (`0x000C`) requires multiple instructions:
-* Pushing/popping requires loading pointer registers (`LD R0, 10`), issuing memory reads/writes, and managing argument stack exchanges.
-* Receiving messages requires polling loops or trap table context-switches, consuming 5 to 15 clock cycles per inter-stage transaction.
+The intended inter-core protocol has been described using low-memory FIFOs (`0x000A`/`0x000B`) and a mailbox (`0x000C`), but these FIFOs are not present in the current ROHD CPU. Those addresses are RAM; `CacheSubsystemTop` only adds a fixed two-core trap trigger by observing writes to `0x000C`. The NoC block uses a separate `0x0020`–`0x0029` MMIO range and is not connected to multiple CPU cores by `Mr4RiscvTop`. Therefore the messaging overhead below is a design estimate, not measured behavior of a working inter-stage pipeline.
 
 ---
 

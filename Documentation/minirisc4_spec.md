@@ -40,4 +40,4 @@
 | `0xF` | `0` | `JMP` | `Rr` | Unconditional branch to `Rr` |
 | `0xF` | `1` | `LINK` | `Rr, R0` | Save the return address in `R0`, then branch to `Rr` |
 | `0xF` | `2` | `PUSH8` | `Rr, imm8` | Shift `Rr` left by 8 bits and insert `imm8` |
-| `0xF` | `3` | `TRAP` | `Rr, byte8` | Software trap using `Rr` and `byte8` |
+| `0xF` | `3` | `TRAP` | `Rr, ignored byte8` | Branch to `TRAP_BASE + ((Rr & 0xF) << 4)` and save `PC + 1` in `R0`; the Slot 1 byte occupies the word but is ignored |

@@ -16,13 +16,14 @@ All addresses are **16-bit word addresses**. Each memory word packs two 8-bit in
 | **`0x0004`** | 1 word | Pointer | **Return Stack Pointer (RSP)**: Holds the current top-of-stack address for subroutine call/return frames. |
 | **`0x0005`** | 1 word | Pointer | **Argument Stack Pointer (ASP)**: Holds the current top-of-stack address for expression evaluation and parameter passing. |
 | **`0x0006` – `0x0009`** | 4 words | Scratchpad RAM | **Compiler / General Workspace**: Dedicated temporary cells (`_act4_t0`–`_act4_t3`) for expression evaluation and fast scratches. |
-| **`0x000A`** | 1 word | **MMIO / RAM** | **Inter-Core Inbound Stream FIFO (`FIFO_IN`)**: Reading pops incoming 16-bit payload from upstream core queue. Reverts to RAM if unused. |
-| **`0x000B`** | 1 word | **MMIO / RAM** | **Inter-Core Outbound Stream FIFO (`FIFO_OUT`)**: Writing pushes 16-bit payload to downstream core queue. Reverts to RAM if unused. |
-| **`0x000C`** | 1 word | **MMIO / RAM** | **Inter-Core Mailbox Trigger (`MAILBOX`)**: Writing `(target_core << 8) | trap_num` fires cross-core hardware strobe. Reverts to RAM if unused. |
+| **`0x000A`** | 1 word | Scratchpad RAM | Ordinary RAM in the current ROHD CPU; no inbound FIFO is implemented at this address. |
+| **`0x000B`** | 1 word | Scratchpad RAM | Ordinary RAM in the current ROHD CPU; no outbound FIFO is implemented at this address. |
+| **`0x000C`** | 1 word | **RAM / top-level glue** | Ordinary RAM in `CpuCore`. `CacheSubsystemTop` additionally observes writes here to signal traps between its two cores; this is not a generic CPU MMIO peripheral. |
 | **`0x000D`** | 1 word | **MMIO / RAM** | **Hardware `CPUID` Register**: Read-only register returning `CORE_ID`. Reverts to standard read/write scratchpad RAM if CPUID is disabled. |
 | **`0x000E`** | 1 word | **MMIO / RAM** | **UART RX Register**: Read: bit 15 = valid; bits `[7:0]` = data byte. Reading pops FIFO. Reverts to RAM if UART is disabled. |
 | **`0x000F`** | 1 word | **MMIO / RAM** | **UART TX Register**: Read: 0 = idle, 1 = busy. Write: bits `[7:0]` transmitted via serial port. Reverts to RAM if UART is disabled. |
-| **`0x0010` – `0x00FF`** | 240 words | Scratchpad RAM | **Kernel & System Scratchpad Workspace**: Static OS kernel variables, buffer pointers, descriptors, and I/O driver buffers. |
+| **`0x0010` – `0x00FF`** | 240 words | RAM / optional MMIO | RAM except for optional Math MMIO at `0x0010`–`0x0016`, SPI MMIO at `0x0018`–`0x001A`, and NoC MMIO at `0x0020`–`0x0029`. |
+| **`0x0020` – `0x0029`** | 10 words | Optional NoC MMIO | NoC registers when enabled; otherwise ordinary RAM. These are separate from the unimplemented `0x000A`/`0x000B` stream FIFOs. |
 | **`0x0100` – `0x01FF`** | 256 words | **Direct Vectors** | **Hardware Direct Stride Vector Table**: 16 vectors spaced 16 words (32 bytes) apart. Reset / Trap 0 entry point is `0x0100`. |
 | **`0x0200` – `TOP - 1280`** | Variable | RAM | **Application Code, Heap, & Static Data Space**: High-level application code, compiled functions, and heap data. |
 | **`TOP - 1280` – `TOP - 256`** | 1,024 words | Stack Space | **Argument Stack (ASP)**: Full Descending stack (default initial base: `MEM_WORDS - 0x0501`). |
@@ -36,17 +37,15 @@ All addresses are **16-bit word addresses**. Each memory word packs two 8-bit in
 
 Addresses `0x0000` through `0x000F` can be loaded into `R0` using the single-byte immediate instruction `LD R0, imm4` (Opcode `0x1`). 
 
-Consequently, any read or write to these low-memory control words takes **only two single-byte instructions packed into a single 16-bit word (2 clock cycles)**:
+The address can be loaded and used with two instruction slots packed into one 16-bit word. This does not imply a two-clock memory access: the CPU's synchronous RAM/MMIO read path adds wait and read-latch cycles.
 
 ```assembly
-; Read Hardware CPUID into R1 (1 word, 2 clock cycles):
+; Read Hardware CPUID into R1 (two instruction slots; the memory read adds cycles):
     LD      R0, 13          ; Slot 0: R0 = 0x000D
     LD      R1, (R0)        ; Slot 1: R1 = PEEK16(0x000D)
-
-; Pop 1 word from Inbound Stream FIFO into R2 (1 word, 2 clock cycles):
-    LD      R0, 10          ; Slot 0: R0 = 0x000A
-    LD      R2, (R0)        ; Slot 1: R2 = PEEK16(0x000A)
 ```
+
+The NoC peripheral, when enabled, uses its separate MMIO range at `0x0020`–`0x0029`; it is not the `0x000A`/`0x000B` FIFO described in older software conventions.
 
 ---
 
@@ -54,21 +53,23 @@ Consequently, any read or write to these low-memory control words takes **only t
 
 The processor uses **Direct Stride Vectoring** with a fixed stride of **16 words (32 bytes)** per vector slot.
 
-When an exception or trap occurs, hardware does not read an address pointer from memory. Instead, it computes the target address combinationally in 0 wait cycles and immediately sets:
+When a trap occurs, hardware does not read an address pointer from memory. It computes the direct-stride target combinationally; the subsequent instruction fetch still follows the normal synchronous memory path:
 
 $$	ext{PC} \leftarrow 	ext{TRAP\_BASE} + (	ext{trap\_num} \ll 4)$$
 
 ```text
 Address Range      Vector        Architectural Role
 0x0100 - 0x010F    Trap 0        Reset / Cold Boot Entry Point
-0x0110 - 0x011F    Trap 1        TRAP_MSG_READY (Inbound FIFO Data Ready)
-0x0120 - 0x012F    Trap 2        TRAP_BURST_DONE (DMA / SDRAM Transfer Complete)
-0x0130 - 0x013F    Trap 3        TRAP_CACHE_MISS (Cache Fill Request)
-0x0140 - 0x014F    Trap 4        TRAP_TIMER_TICK (Timer / Scheduler Strobe)
+0x0110 - 0x011F    Trap 1        Suggested software convention (not a built-in event)
+0x0120 - 0x012F    Trap 2        Suggested software convention (not a built-in event)
+0x0130 - 0x013F    Trap 3        Suggested software convention (not a built-in event)
+0x0140 - 0x014F    Trap 4        Suggested software convention (not a built-in event)
 ...
-0x01E0 - 0x01EF    Trap 14       TRAP_CORE_FAULT (Inter-Core Fault Strobe)
+0x01E0 - 0x01EF    Trap 14       Suggested software convention (not a built-in event)
 0x01F0 - 0x01FF    Trap 15       TRAP_ALIGN_FAULT (Slot 1 Word-Alignment Fault)
 ```
+
+Trap 0 is the reset entry and Trap 15 is used for the slot-1 alignment fault. Other vector meanings are software conventions; the core does not generate timer, cache-miss, FIFO, or fault events for them automatically.
 
 ### Reset & Startup Constraint (`START_PROGRAM`)
 On power-on or hardware reset, the core loads $	ext{PC} \leftarrow 	ext{0x0100}$ and begins execution in Trap 0's slot.

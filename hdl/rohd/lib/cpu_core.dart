@@ -380,8 +380,7 @@ class CpuCore extends Module {
                   Case(decOpQ, [
                     // 0x0: LD Rr, Rl
                     CaseItem(Const(MiniRISC4Constants.opLdReg, width: 4), [
-                      for (int i = 0; i < 4; i++)
-                        If(decRrQ.eq(i), then: [r[i] < regL]),
+                      ..._writeReg(r, decRrQ, regL),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
                     ]),
 
@@ -454,36 +453,31 @@ class CpuCore extends Module {
 
                     // 0x6: ADD
                     CaseItem(Const(MiniRISC4Constants.opAdd, width: 4), [
-                      for (int i = 0; i < 4; i++)
-                        If(decRrQ.eq(i), then: [r[i] < regR + regL]),
+                      ..._writeReg(r, decRrQ, regR + regL),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
                     ]),
 
                     // 0x7: SUB
                     CaseItem(Const(MiniRISC4Constants.opSub, width: 4), [
-                      for (int i = 0; i < 4; i++)
-                        If(decRrQ.eq(i), then: [r[i] < regR - regL]),
+                      ..._writeReg(r, decRrQ, regR - regL),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
                     ]),
 
                     // 0x8: OR
                     CaseItem(Const(MiniRISC4Constants.opOr, width: 4), [
-                      for (int i = 0; i < 4; i++)
-                        If(decRrQ.eq(i), then: [r[i] < regR | regL]),
+                      ..._writeReg(r, decRrQ, regR | regL),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
                     ]),
 
                     // 0x9: XOR
                     CaseItem(Const(MiniRISC4Constants.opXor, width: 4), [
-                      for (int i = 0; i < 4; i++)
-                        If(decRrQ.eq(i), then: [r[i] < regR ^ regL]),
+                      ..._writeReg(r, decRrQ, regR ^ regL),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
                     ]),
 
                     // 0xA: Native AND
                     CaseItem(Const(MiniRISC4Constants.opAnd, width: 4), [
-                      for (int i = 0; i < 4; i++)
-                        If(decRrQ.eq(i), then: [r[i] < regR & regL]),
+                      ..._writeReg(r, decRrQ, regR & regL),
                       _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
                     ]),
 

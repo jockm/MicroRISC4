@@ -143,6 +143,75 @@ trap1_msg_handler:
 
 `0x000A` and `0x000B` are ordinary RAM in the current `CpuCore`; no point-to-point FIFOs are attached there. The optional NoC network interface uses MMIO addresses `0x0020`–`0x0029`. In `Ulx3sTop`, only the CPU's NoC MMIO bus is connected to node 0; the other network-interface nodes are not connected to additional CPU cores.
 
+The NoC register interface used below is:
+
+| Address | Register | Behavior |
+| :---: | :--- | :--- |
+| `0x0020` | `NOC_TX_DATA` | Write one 16-bit word to the selected channel's transmit interface. |
+| `0x0021` | `NOC_SEL_CH` | Select the transmit/receive channel. |
+| `0x0023` | `NOC_RX_STAT` | Bit 0: selected receive channel not empty; bit 1: receive channel full; bit 2: transmit interface ready; bits `[15:8]`: receive count. |
+| `0x0024` | `NOC_RX_TRYR` | Read the selected channel's receive word and pop it; returns zero when empty. |
+| `0x0028` | `NOC_CH_CFG0` | For the selected transmit channel, set destination core in bits `[15:8]` and destination channel in bits `[7:0]`. |
+| `0x0029` | `NOC_CH_CFG1` | Set bit 0 to enable the selected transmit-channel route. |
+
+### 4.5 Example: Send One Word from Core 0 to Core 1
+
+This example uses channel 0 on both cores and sends one word (`0xBEEF`). It assumes both cores have `enableNoc: true`, their Port B buses are connected to separate NoC network interfaces, and the NoC wrapper links Core 0 to Core 1. Include `lib/common.inc` for the `LOAD16` and `LD0` macros.
+
+Core 0 configures channel 0 to reach Core 1's channel 0, waits until the transmit interface is ready, then writes the payload:
+
+```assembly
+; Configure Core 0 channel 0 -> Core 1 channel 0.
+    LOAD16  R0, 0x0021
+    LD0     R1
+    LD      (R0), R1
+
+    LOAD16  R0, 0x0028
+    LOAD16  R1, 0x0100       ; Destination core 1, destination channel 0
+    LD      (R0), R1
+
+    LOAD16  R0, 0x0029
+    LOAD16  R1, 1            ; Enable the route
+    LD      (R0), R1
+
+.align
+_tx_wait:
+    LOAD16  R0, 0x0023
+    LD      R1, (R0)         ; Read NoC status
+    SHIFT.R R1
+    SHIFT.R R1               ; Move transmit-ready bit 2 to bit 0
+    LOAD16  R2, 1
+    AND     R1, R2
+    LOAD16  R3, _tx_wait
+    JMP.Z   R3, R1
+
+    LOAD16  R0, 0x0020
+    LOAD16  R1, 0xBEEF
+    LD      (R0), R1         ; Send one word on channel 0
+```
+
+Core 1 selects its receive channel, polls the not-empty status bit, and reads from `NOC_RX_TRYR` to pop the word into `R2`:
+
+```assembly
+    LOAD16  R0, 0x0021
+    LD0     R1
+    LD      (R0), R1         ; Select receive channel 0
+
+.align
+_rx_wait:
+    LOAD16  R0, 0x0023
+    LD      R1, (R0)
+    LOAD16  R2, 1
+    AND     R1, R2           ; Isolate not-empty bit 0
+    LOAD16  R3, _rx_wait
+    JMP.Z   R3, R1
+
+    LOAD16  R0, 0x0024
+    LD      R2, (R0)         ; Pop received word; R2 = 0xBEEF
+```
+
+The receive storage currently holds only one data word per channel even though the status counter and `fifoDepth` parameter can report larger depths. Consume each word before sending another to that channel, or later data can overwrite the unread word. The network interface also does not apply backpressure when the destination channel is full. `Ulx3sTop` currently connects only one CPU's NoC MMIO bus, so this two-core assembly requires a top-level that connects both CPU buses to NoC nodes.
+
 ---
 
 ## 5. Software Conventions for Multi-Core Systems

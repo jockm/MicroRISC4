@@ -303,8 +303,12 @@
     LD      R3, (R2)
     LD      %reg, (R3++)
     LD      (R2), R3
+    XCHG    R1
+    LD      R1, %reg
     XCHG    R3
     XCHG    R2
+    LD      %reg, R1
+    XCHG    R1
 .endmacro
 
 .macro RPUSH reg

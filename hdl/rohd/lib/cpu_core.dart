@@ -629,7 +629,7 @@ class CpuCore extends Module {
                 portBWe < 0,
                 ..._writeReg(
                     r, destReg, mux(isMmioRdReg, mmioRdataReg, portBRdata)),
-                _advanceFromMemRd(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
               ]),
             ], defaultItem: [
               state < Const(_stReset, width: 3),
@@ -699,40 +699,6 @@ class CpuCore extends Module {
     ]);
   }
 
-  /// Advance from ST_MEM_RD: Slot 0 moves to Slot 1; Slot 1 advances PC
-  /// and fetches the next instruction word.
-  static Conditional _advanceFromMemRd(
-    Logic slot,
-    Logic instReg,
-    Logic portARdata,
-    Logic portAAddr,
-    Logic portAEn,
-    Logic state,
-    Logic pc,
-    Logic decOpQ,
-    Logic decRrQ,
-    Logic decRlQ,
-    Logic decImm4Q,
-  ) {
-    return If(slot.eq(MiniRISC4Constants.slotByte0), then: [
-      slot < MiniRISC4Constants.slotByte1,
-      portAEn < 0,
-      state < Const(_stExec, width: 3),
-      ..._latchExecByte(
-        instReg.slice(15, 8),
-        decOpQ,
-        decRrQ,
-        decRlQ,
-        decImm4Q,
-      ),
-    ], orElse: [
-      pc < pc + 1,
-      portAAddr < pc + 1,
-      portAEn < 1,
-      slot < MiniRISC4Constants.slotByte0,
-      state < Const(_stFetch, width: 3),
-    ]);
-  }
 
   /// Branch to targetAddr through ST_FETCH so synchronous Port A BRAM settles.
   static Conditional _branchTo(Logic targetAddr, Logic pc, Logic portAAddr,

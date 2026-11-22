@@ -280,9 +280,9 @@
 ; HARDWARE STACK ENGINE MACROS (Full Descending)
 ; ==============================================================================
 .macro STPUSH ptr_addr, reg
+    XCHG    R0
     XCHG    R2
     XCHG    R3
-    XCHG    R0
     LD      R0, %ptr_addr
     LD      R2, R0
     XCHG    R0
@@ -291,13 +291,12 @@
     LD      (R2), R3
     XCHG    R3
     XCHG    R2
-    XCHG    R0
 .endmacro
 
 .macro STPOP ptr_addr, reg
+    XCHG    R0
     XCHG    R2
     XCHG    R3
-    XCHG    R0
     LD      R0, %ptr_addr
     LD      R2, R0
     XCHG    R0
@@ -306,7 +305,6 @@
     LD      (R2), R3
     XCHG    R3
     XCHG    R2
-    XCHG    R0
 .endmacro
 
 .macro RPUSH reg
@@ -356,7 +354,6 @@
 
 .macro RRET
     RPOP    R0
-    XCHG    R0
     JMP     R0
 .endmacro
 

@@ -369,6 +369,19 @@ class CpuCore extends Module {
                   final regL = getReg(decRlQ);
                   final regLInc = regL + 1;
                   final regRDec = regR - 1;
+                  Conditional advance() => _advanceFromExec(
+                        slot,
+                        instReg,
+                        portARdata,
+                        portAAddr,
+                        portAEn,
+                        state,
+                        pc,
+                        decOpQ,
+                        decRrQ,
+                        decRlQ,
+                        decImm4Q,
+                      );
                   return [If(Const(1, width: 1), then: [
                 portBEn < 0,
                 portBWe < 0,
@@ -381,13 +394,13 @@ class CpuCore extends Module {
                     // 0x0: LD Rr, Rl
                     CaseItem(Const(MiniRISC4Constants.opLdReg, width: 4), [
                       ..._writeReg(r, decRrQ, regL),
-                      _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                      advance(),
                     ]),
 
                     // 0x1: LD R0, decImm4Q
                     CaseItem(Const(MiniRISC4Constants.opLdImm4, width: 4), [
                       r[0] < [Const(0, width: 12), decImm4Q].swizzle(),
-                      _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                      advance(),
                     ]),
 
                     // 0x2: LD Rr, (Rl) - Peek
@@ -414,7 +427,7 @@ class CpuCore extends Module {
                           txData < regL.slice(7, 0),
                           txStrobe < 1,
                         ]),
-                      _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                      advance(),
                     ]),
 
                     // 0x4: LD Rr, (Rl++) - Pop (Full Descending)
@@ -444,37 +457,37 @@ class CpuCore extends Module {
                               txData < regL.slice(7, 0),
                               txStrobe < 1,
                             ]),
-                      _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                      advance(),
                     ]),
 
                     // 0x6: ADD
                     CaseItem(Const(MiniRISC4Constants.opAdd, width: 4), [
                       ..._writeReg(r, decRrQ, regR + regL),
-                      _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                      advance(),
                     ]),
 
                     // 0x7: SUB
                     CaseItem(Const(MiniRISC4Constants.opSub, width: 4), [
                       ..._writeReg(r, decRrQ, regR - regL),
-                      _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                      advance(),
                     ]),
 
                     // 0x8: OR
                     CaseItem(Const(MiniRISC4Constants.opOr, width: 4), [
                       ..._writeReg(r, decRrQ, regR | regL),
-                      _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                      advance(),
                     ]),
 
                     // 0x9: XOR
                     CaseItem(Const(MiniRISC4Constants.opXor, width: 4), [
                       ..._writeReg(r, decRrQ, regR ^ regL),
-                      _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                      advance(),
                     ]),
 
                     // 0xA: Native AND
                     CaseItem(Const(MiniRISC4Constants.opAnd, width: 4), [
                       ..._writeReg(r, decRrQ, regR & regL),
-                      _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                      advance(),
                     ]),
 
                     // 0xB: SHIFT & XCHG
@@ -482,26 +495,17 @@ class CpuCore extends Module {
                       Case(decRrQ, [
                         CaseItem(
                             Const(MiniRISC4Constants.subShiftL, width: 2), [
-                          for (int i = 0; i < 4; i++)
-                            If(decRlQ.eq(i), then: [
-                              r[i] <
-                                  [r[i].slice(14, 0), Const(0, width: 1)]
-                                      .swizzle()
-                            ]),
+                          ..._writeReg(r, decRlQ,
+                              [regL.slice(14, 0), Const(0, width: 1)].swizzle()),
                         ]),
                         CaseItem(
                             Const(MiniRISC4Constants.subShiftR, width: 2), [
-                          for (int i = 0; i < 4; i++)
-                            If(decRlQ.eq(i), then: [
-                              r[i] <
-                                  [Const(0, width: 1), r[i].slice(15, 1)]
-                                      .swizzle()
-                            ]),
+                          ..._writeReg(r, decRlQ,
+                              [Const(0, width: 1), regL.slice(15, 1)].swizzle()),
                         ]),
                         CaseItem(
                             Const(MiniRISC4Constants.subShiftAr, width: 2), [
-                          for (int i = 0; i < 4; i++)
-                            If(decRlQ.eq(i), then: [r[i] < asr1(r[i])]),
+                          ..._writeReg(r, decRlQ, asr1(regL)),
                         ]),
                         CaseItem(
                             Const(MiniRISC4Constants.subShiftXchg, width: 2), [
@@ -513,29 +517,26 @@ class CpuCore extends Module {
                               ]),
                         ]),
                       ]),
-                      _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                      advance(),
                     ]),
 
                     // 0xC: ROT / INC / DEC
                     CaseItem(Const(MiniRISC4Constants.opRotIncDec, width: 4), [
                       Case(decRrQ, [
                         CaseItem(Const(MiniRISC4Constants.subRotL, width: 2), [
-                          for (int i = 0; i < 4; i++)
-                            If(decRlQ.eq(i), then: [r[i] < rotl1(r[i])]),
+                          ..._writeReg(r, decRlQ, rotl1(regL)),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subRotR, width: 2), [
-                          for (int i = 0; i < 4; i++)
-                            If(decRlQ.eq(i), then: [r[i] < rotr1(r[i])]),
+                          ..._writeReg(r, decRlQ, rotr1(regL)),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subInc, width: 2), [
                           ..._writeReg(r, decRlQ, regLInc),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subDec, width: 2), [
-                          for (int i = 0; i < 4; i++)
-                            If(decRlQ.eq(i), then: [r[i] < r[i] - 1]),
+                          ..._writeReg(r, decRlQ, regL - 1),
                         ]),
                       ]),
-                      _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                      advance(),
                     ]),
 
                     // 0xD: JMP.Z
@@ -544,7 +545,7 @@ class CpuCore extends Module {
                         _branchTo(
                             regR, pc, portAAddr, portAEn, slot, state),
                       ], orElse: [
-                        _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                        advance(),
                       ]),
                     ]),
 
@@ -554,7 +555,7 @@ class CpuCore extends Module {
                         _branchTo(
                             regR, pc, portAAddr, portAEn, slot, state),
                       ], orElse: [
-                        _advanceFromExec(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
+                        advance(),
                       ]),
                     ]),
 
@@ -571,12 +572,8 @@ class CpuCore extends Module {
                               regL, pc, portAAddr, portAEn, slot, state),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subPush8, width: 2), [
-                          for (int i = 0; i < 4; i++)
-                            If(decRlQ.eq(i), then: [
-                              r[i] <
-                                  [r[i].slice(7, 0), instReg.slice(15, 8)]
-                                      .swizzle(),
-                            ]),
+                          ..._writeReg(r, decRlQ,
+                              [regL.slice(7, 0), instReg.slice(15, 8)].swizzle()),
                           _branchTo(
                               pc + 1, pc, portAAddr, portAEn, slot, state),
                         ]),

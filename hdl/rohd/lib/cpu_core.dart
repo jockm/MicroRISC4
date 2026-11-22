@@ -630,10 +630,8 @@ class CpuCore extends Module {
               CaseItem(Const(_stMemRd, width: 3), [
                 portBEn < 0,
                 portBWe < 0,
-                for (int i = 0; i < 4; i++)
-                  If(destReg.eq(i), then: [
-                    r[i] < mux(isMmioRdReg, mmioRdataReg, portBRdata),
-                  ]),
+                ..._writeReg(
+                    r, destReg, mux(isMmioRdReg, mmioRdataReg, portBRdata)),
                 _advanceFromMemRd(slot, instReg, portARdata, portAAddr, portAEn, state, pc, decOpQ, decRrQ, decRlQ, decImm4Q),
               ]),
             ], defaultItem: [

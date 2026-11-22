@@ -427,17 +427,13 @@ class CpuCore extends Module {
                       portBWe < 0,
                       portBEn < 1,
                       destReg < decRrQ,
-                      for (int i = 0; i < 4; i++)
-                        If(decRlQ.eq(i), then: [r[i] < regLInc]),
+                      ..._writeReg(r, decRlQ, regLInc),
                       state < Const(_stMemWait, width: 3),
                     ]),
 
                     // 0x5: LD (--Rr), Rl - Push (Full Descending)
                     CaseItem(Const(MiniRISC4Constants.opLdPredec, width: 4), [
-                      for (int i = 0; i < 4; i++)
-                        If(decRrQ.eq(i), then: [
-                          r[i] < regRDec,
-                        ]),
+                      ..._writeReg(r, decRrQ, regRDec),
                       portBAddr < regRDec,
                       portBWdata < regL,
                       portBWe < 1,
@@ -532,8 +528,7 @@ class CpuCore extends Module {
                             If(decRlQ.eq(i), then: [r[i] < rotr1(r[i])]),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subInc, width: 2), [
-                          for (int i = 0; i < 4; i++)
-                            If(decRlQ.eq(i), then: [r[i] < regLInc]),
+                          ..._writeReg(r, decRlQ, regLInc),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subDec, width: 2), [
                           for (int i = 0; i < 4; i++)

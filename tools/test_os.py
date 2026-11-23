@@ -608,6 +608,9 @@ void main(void) {
         seg_ps = run_app("!PS.BIN", "1    RUN    PS.BIN")
         seg_cat = run_app("! CAT.BIN", "Hello from MiniRISC4 FAT32 SD card!")
         seg_wr = run_app("! WRTEST.BIN", "READBACK:Userland write OK!")
+        seg_cat_arg = run_app("! CAT.BIN APP.TXT", "Userland write OK!")
+        seg_cat_nospace = run_app("!CAT.BIN app.txt", "Userland write OK!")
+        assert "Userland write OK!" in seg_cat_arg and "Userland write OK!" in seg_cat_nospace
         seg_big = run_app("! BIGAPP.BIN", "BIGAPP_OK")
         assert "BIGAPP_OK" in seg_big
 
@@ -642,7 +645,7 @@ u16 msg[8];
 
 void main(void) {
     u16 child_pid = 0;
-    if (sys_spawn("CAT.BIN", &child_pid) != 0) {
+    if (sys_spawn("CAT.BIN NOTE.TXT", &child_pid) != 0) {
         sys_puts("SPAWN: failed\\r\\n");
         sys_exit(1);
     }
@@ -675,7 +678,7 @@ void main(void) {
         sd_root.mkdir()
         shutil.copy(OS_BUILD / "cat.bin", sd_root / "CAT.BIN")
         shutil.copy(sp_bin, sd_root / "SPAWN.BIN")
-        (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
+        (sd_root / "NOTE.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
         sd_img = p / "spawn_test.img"
         subprocess.run(
             [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
@@ -1239,6 +1242,8 @@ void main(void) {
 
         sd_root = p / "sd_root"
         sd_root.mkdir()
+        shutil.copy(OS_BUILD / "ls.bin", sd_root / "LS.BIN")
+        shutil.copy(OS_BUILD / "cat.bin", sd_root / "CAT.BIN")
         shutil.copy(app_bin, sd_root / "DIRAPP.BIN")
         (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
         sd_img = p / "subdir_test.img"
@@ -1308,6 +1313,12 @@ void main(void) {
         assert "SUB" not in send_cmd("ls\r")
         send_cmd("cd /\r")
         assert "\r\n/\r\n" in send_cmd("pwd\r")
+
+        # 4b. Userland LS.BIN and CAT.BIN taking directory/file path arguments via SYS_GETARGS
+        out_uls = send_cmd("! LS.BIN /docs\r", max_steps=16000000)
+        assert "NOTE.TXT" in out_uls, f"! LS.BIN /docs missed NOTE.TXT:\n{out_uls}"
+        out_ucat = send_cmd("! CAT.BIN docs/note.txt\r", max_steps=16000000)
+        assert "hello nested" in out_ucat, f"! CAT.BIN docs/note.txt missed content:\n{out_ucat}"
 
         # 5. Userland worker app using sys_mkdir / sys_open / sys_opendir / sys_chdir / sys_rmdir
         procs_addr = os_sim.sym_to_addr["_procs"]

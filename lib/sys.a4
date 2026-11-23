@@ -23,6 +23,7 @@ const u16 SYS_CHDIR     = 0x18;
 const u16 SYS_READ      = 0x20;
 const u16 SYS_READDIR   = 0x21;
 const u16 SYS_PS        = 0x22;
+const u16 SYS_GETARGS   = 0x23;
 
 const u16 O_RDONLY      = 0;
 const u16 O_WRONLY      = 1;
@@ -370,6 +371,26 @@ u16 sys_ps(u16 idx, ProcEntry *out_proc) {
         LD0     R0
         INC     R0
         TRAP    R0, 0x22
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+        LOAD16  R0, __sys_r2
+        LD      (R0), R2
+    }
+    return _sys_r1;
+}
+
+u16 sys_getargs(u16 *dst_buf, u16 max_words) {
+    _sys_p1 = dst_buf;
+    _sys_p2 = max_words;
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LD0     R3
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x23
         LOAD16  R0, __sys_r1
         LD      (R0), R1
         LOAD16  R0, __sys_r2

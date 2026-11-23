@@ -61,7 +61,7 @@ The ultimate objective of this project is a fully functional, stable operating s
 
 ### Phase 4: Process Management, Context Switching & Syscalls
 - [x] **Multi-Core Process Execution & Cooperative Fibers:** Native multitasking across Core 0 (OS) + Worker Cores (1..N, scalable up to 255 cores via `worker_stub.asm` + `fifo_sel`), plus optional single-core cooperative fibers (`lib/fiber.a4`, `fibers.a4`) with per-fiber `RSP`/`ASP` stacks and `0xDEAD` canaries.
-- [x] **Syscall Dispatcher:** Implemented 3-class Trap 1 syscall table (`SYS_EXIT`, `SYS_PUTC`, `SYS_GETC`, `SYS_KILL`, `SYS_CLOSE`, `SYS_WRITE_CON`, `SYS_SPAWN`, `SYS_OPEN`, `SYS_WRITE`, `SYS_OPENDIR`, `SYS_UNLINK`, `SYS_MKDIR`, `SYS_RMDIR`, `SYS_CHDIR`, `SYS_READ`, `SYS_READDIR`, `SYS_PS`) and `lib/sys.a4` wrappers.
+- [x] **Syscall Dispatcher:** Implemented 3-class Trap 1 syscall table (`SYS_EXIT`, `SYS_PUTC`, `SYS_GETC`, `SYS_KILL`, `SYS_CLOSE`, `SYS_WRITE_CON`, `SYS_SPAWN`, `SYS_OPEN`, `SYS_WRITE`, `SYS_OPENDIR`, `SYS_UNLINK`, `SYS_MKDIR`, `SYS_RMDIR`, `SYS_CHDIR`, `SYS_READ`, `SYS_READDIR`, `SYS_PS`, `SYS_GETARGS`) and `lib/sys.a4` wrappers.
 - [x] **IPC & Messaging:** Validated inter-core FIFO (`0x000A`/`0x000B`), channel selector (`0x0021`), Mailbox Trap 1/14 (`0x000C`), and counting `_msg_pending` queue across Core 0 and Workers 1–3.
 
 ### Phase 5: Interactive Shell & Userland Application Suite

@@ -374,22 +374,22 @@ void shell_cmd_clear(void) {
     uart_puts("[H");
 }
 
-void shell_cmd_run(u16 foreground) {
+void shell_cmd_run(u16 foreground, u16 arg_off) {
     u16 pid  = 0;
     u16 mode = 0;
 
     if (getbyte(sh_arg, 0) == 0) {
         if (foreground != 0) {
-            uart_puts("Usage: ! <file>\r\n");
+            uart_puts("Usage: ! <file> [args]\r\n");
         } else {
-            uart_puts("Usage: run <file>\r\n");
+            uart_puts("Usage: run <file> [args]\r\n");
         }
         return;
     }
     if (foreground != 0) {
         mode = 2;
     }
-    pid = proc_spawn_from_file(sh_arg, mode);
+    pid = proc_spawn_from_file(sh_arg, sh_line, arg_off, mode);
     if (pid == 0) {
         if (proc_last_err == SPAWN_ERR_CORE) {
             uart_puts("No free worker core\r\n");
@@ -485,7 +485,7 @@ void shell_exec(void) {
     }
 
     if (getbyte(sh_cmd, 0) == 33) {
-        // Support both "! APP.BIN" and "!APP.BIN"
+        // Support both "! APP.BIN [args]" and "!APP.BIN [args]"
         if (getbyte(sh_cmd, 1) != 0) {
             i = 1;
             while (i < 16) {
@@ -497,13 +497,15 @@ void shell_exec(void) {
                 i++;
             }
             setbyte(sh_arg, 15, 0);
+            shell_cmd_run(1, sh_arg_idx);
+        } else {
+            shell_cmd_run(1, sh_rest_idx);
         }
-        shell_cmd_run(1);
         return;
     }
 
     if (str_eq(sh_cmd, "help") == 1) {
-        uart_puts("Commands: ps, ! <file>, run <file>, fg [--fgoutput] <pid>, bg <pid>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write <file> <text>, rm <file>, echo <text>, clear\r\n");
+        uart_puts("Commands: ps, ! <file> [args], run <file> [args], fg [--fgoutput] <pid>, bg <pid>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write <file> <text>, rm <file>, echo <text>, clear\r\n");
     } else if (str_eq(sh_cmd, "ps") == 1) {
         proc_print_ps();
     } else if (str_eq(sh_cmd, "fg") == 1) {
@@ -531,7 +533,7 @@ void shell_exec(void) {
     } else if (str_eq(sh_cmd, "rmdir") == 1) {
         shell_cmd_rmdir();
     } else if (str_eq(sh_cmd, "run") == 1) {
-        shell_cmd_run(0);
+        shell_cmd_run(0, sh_rest_idx);
     } else if (str_eq(sh_cmd, "cat") == 1) {
         shell_cmd_cat();
     } else if (str_eq(sh_cmd, "rm") == 1) {

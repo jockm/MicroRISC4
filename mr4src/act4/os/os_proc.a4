@@ -21,6 +21,9 @@ const u16 TRAP_KILL      = 14;      // TRAP_CORE_FAULT -> worker_stub reset
 const u16 FG_RX_CAP      = 16;      // Power-of-2 ring buffer for fg SYS_GETC
 const u16 FG_RX_MASK     = FG_RX_CAP - 1;
 
+const u16 PROC_ARG_WORDS = 32;      // 64-byte packed command-line arg per core
+const u16 PROC_ARG_TOTAL = MAX_CORES * PROC_ARG_WORDS;
+
 const u16 SPAWN_OK       = 0;
 const u16 SPAWN_ERR_FILE = 1;
 const u16 SPAWN_ERR_CORE = 2;
@@ -33,6 +36,7 @@ type ProcEntry {
 
 ProcEntry procs[MAX_CORES];
 u16 proc_con_out[MAX_CORES];        // 1 = allowed to write to UART console
+u16 proc_args[PROC_ARG_TOTAL];      // Per-core packed NUL-terminated argument string
 u16 fg_pid = 0;                     // 0 = Core 0 shell owns UART RX, else worker PID
 u16 proc_last_words = 0;            // Word count of last streamed binary
 u16 proc_last_err   = 0;            // Last spawn error (SPAWN_*)
@@ -69,6 +73,7 @@ void proc_init(void) {
     u16 i = 0;
     procs[0].state = PROC_RUN;
     proc_con_out[0] = 1;
+    proc_args[0] = 0;
     str_copy(procs[0].name, "os_kernel", 16);
     fg_pid = 0;
     fg_rx_clear();
@@ -78,9 +83,40 @@ void proc_init(void) {
         procs[i].state = PROC_FREE;
         procs[i].exit_code = 0;
         proc_con_out[i] = 0;
+        proc_args[i * PROC_ARG_WORDS] = 0;
         setbyte(procs[i].name, 0, 0);
         i++;
     }
+}
+
+// Copy NUL-terminated packed string from src starting at byte offset `src_off`
+// into proc_args for `pid` (word-aligned at byte 0).
+void proc_set_args_from(u16 pid, u16 *src, u16 src_off) {
+    u16 *dst    = &proc_args[pid * PROC_ARG_WORDS];
+    u16 max_len = (PROC_ARG_WORDS << 1) - 1;
+    u16 i       = 0;
+    u16 ch      = 0;
+
+    if (pid >= MAX_CORES) {
+        return;
+    }
+    if (src == 0) {
+        dst[0] = 0;
+        return;
+    }
+    while (i < max_len) {
+        ch = getbyte(src, src_off + i);
+        setbyte(dst, i, ch);
+        if (ch == 0) {
+            // Ensure upper byte of last word is zeroed if NUL landed on even byte
+            if ((i & 0x0001) == 0) {
+                setbyte(dst, i + 1, 0);
+            }
+            return;
+        }
+        i++;
+    }
+    setbyte(dst, max_len, 0);
 }
 
 void proc_clear_worker_con_out(void) {
@@ -156,6 +192,7 @@ u16 proc_mark_exited(u16 pid, u16 code) {
         return 0;
     }
     proc_con_out[pid] = 0;
+    proc_args[pid * PROC_ARG_WORDS] = 0;
     if (fg_pid == pid) {
         fg_pid = 0;
         fg_rx_clear();
@@ -177,6 +214,7 @@ u16 proc_kill(u16 pid) {
     }
     mailbox = (pid << 8) | TRAP_KILL;
     proc_con_out[pid] = 0;
+    proc_args[pid * PROC_ARG_WORDS] = 0;
     if (fg_pid == pid) {
         fg_pid = 0;
         fg_rx_clear();
@@ -188,9 +226,10 @@ u16 proc_kill(u16 pid) {
 }
 
 // Stream a FAT32 binary directly sector-by-sector into a free worker core and launch it.
+// arg_src / arg_off specify optional packed command-line argument string (arg_src == 0 for none).
 // con_mode: 0 = background (muted), 1 = inherit output only, 2 = exclusive foreground.
 // Returns allocated PID (1..MAX_CORES-1) on success, or 0 on error (see proc_last_err).
-u16 proc_spawn_from_file(u16 *path, u16 con_mode) {
+u16 proc_spawn_from_file(u16 *path, u16 *arg_src, u16 arg_off, u16 con_mode) {
     u16 fd         = 0xFFFF;
     u16 pid        = 0;
     u16 sz_lo      = 0;
@@ -231,6 +270,7 @@ u16 proc_spawn_from_file(u16 *path, u16 con_mode) {
 
     procs[pid].state = PROC_LOAD;
     str_copy(procs[pid].name, path, 16);
+    proc_set_args_from(pid, arg_src, arg_off);
 
     if (con_mode == 2) {
         proc_clear_worker_con_out();

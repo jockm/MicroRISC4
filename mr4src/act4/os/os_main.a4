@@ -32,6 +32,7 @@ const u16 SYS_CHDIR     = 0x18;
 const u16 SYS_READ      = 0x20;
 const u16 SYS_READDIR   = 0x21;
 const u16 SYS_PS        = 0x22;
+const u16 SYS_GETARGS   = 0x23;
 
 // Error Codes
 const u16 ERR_OK        = 0x0000;
@@ -165,11 +166,34 @@ void handle_syscall(void) {
             i++;
         }
         sys_buf[63] = 0;
+        // Split optional "PATH ARGS..." at first space
+        i = 0;
+        arg1 = 0;
+        while (i < 126) {
+            ch = getbyte(sys_buf, i);
+            if (ch == 0) {
+                break;
+            }
+            if (ch == 32) {
+                setbyte(sys_buf, i, 0);
+                i++;
+                while (getbyte(sys_buf, i) == 32) {
+                    i++;
+                }
+                arg1 = i;
+                break;
+            }
+            i++;
+        }
         ch = 0;
         if (pid < MAX_CORES && proc_con_out[pid] != 0) {
             ch = 1;                     // Child inherits console output from parent
         }
-        arg2 = proc_spawn_from_file(sys_buf, ch);
+        if (arg1 != 0) {
+            arg2 = proc_spawn_from_file(sys_buf, sys_buf, arg1, ch);
+        } else {
+            arg2 = proc_spawn_from_file(sys_buf, 0, 0, ch);
+        }
         fifo_sel = pid;
         if (arg2 == 0) {
             fifo_out = ERR_IO;
@@ -415,6 +439,41 @@ void handle_syscall(void) {
                 fifo_out = procs[extra].name[i];
                 i++;
             }
+        }
+        return;
+    }
+
+    if (id == SYS_GETARGS) {
+        extra = fifo_in;
+        wlen  = fifo_in;                // max_words
+        if (pid >= MAX_CORES || wlen == 0) {
+            fifo_out = ERR_IO;
+            fifo_out = 0;
+            return;
+        }
+        if (wlen > PROC_ARG_WORDS) {
+            wlen = PROC_ARG_WORDS;
+        }
+        arg1 = pid * PROC_ARG_WORDS;
+        i = 0;
+        while (i < wlen) {
+            arg2 = proc_args[arg1 + i];
+            if ((arg2 & 0x00FF) == 0 || (arg2 >> 8) == 0) {
+                i++;
+                break;
+            }
+            i++;
+        }
+        fifo_out = ERR_OK;
+        fifo_out = i;
+        extra = 0;
+        while (extra < i) {
+            arg2 = proc_args[arg1 + extra];
+            if ((extra + 1) == i && (arg2 & 0x00FF) != 0 && (arg2 >> 8) != 0) {
+                arg2 = arg2 & 0x00FF;   // Guarantee NUL termination on truncation
+            }
+            fifo_out = arg2;
+            extra++;
         }
         return;
     }

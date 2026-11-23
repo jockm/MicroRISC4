@@ -151,6 +151,28 @@ void handle_syscall(void) {
         return;
     }
 
+    if (id == SYS_UNLINK) {
+        extra = fifo_in;
+        wlen  = fifo_in;
+        i = 0;
+        while (i < wlen) {
+            arg1 = fifo_in;
+            if (i < 63) {
+                sys_buf[i] = arg1;
+            }
+            i++;
+        }
+        sys_buf[63] = 0;
+        arg2 = fat32_unlink_root(sys_buf);
+        if (arg2 == 0) {
+            fifo_out = ERR_OK;
+        } else {
+            fifo_out = ERR_IO;
+        }
+        fifo_out = arg2;
+        return;
+    }
+
     if (id == SYS_READDIR) {
         extra = fifo_in;                // dir_fd
         wlen  = fifo_in;                // max_words (11)

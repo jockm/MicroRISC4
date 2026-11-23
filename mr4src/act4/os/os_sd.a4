@@ -137,3 +137,52 @@ u16 sd_read_sector(u16 lba_hi, u16 lba_lo, u16 *buf) {
     sd_deselect();
     return 0;
 }
+
+// Write 256-word buffer (512 bytes) to 32-bit LBA via CMD24 (0 = OK)
+u16 sd_write_sector(u16 lba_hi, u16 lba_lo, u16 *buf) {
+    u16 i    = 0;
+    u16 w    = 0;
+    u16 resp = 0;
+
+    sd_select();
+    if (sd_cmd(24, lba_hi, lba_lo, 0xFF) != 0x00) {
+        sd_deselect();
+        return 1;
+    }
+
+    // One dummy byte followed by 0xFE data start token
+    sd_xfer(0xFF);
+    sd_xfer(0xFE);
+
+    // Stream 256 little-endian u16 words (512 bytes)
+    i = 0;
+    while (i < 256) {
+        w = buf[i];
+        sd_xfer(w & 0x00FF);
+        sd_xfer(w >> 8);
+        i++;
+    }
+
+    // 16-bit dummy CRC
+    sd_xfer(0xFF);
+    sd_xfer(0xFF);
+
+    // Check data response token (bits [4:0] == 0x05 means Data Accepted)
+    resp = sd_xfer(0xFF);
+    if ((resp & 0x001F) != 0x0005) {
+        sd_deselect();
+        return 2;
+    }
+
+    // Wait for card busy release (MISO returns non-zero)
+    i = 0;
+    while (i < 10000) {
+        if (sd_xfer(0xFF) != 0x00) {
+            sd_deselect();
+            return 0;
+        }
+        i++;
+    }
+    sd_deselect();
+    return 3;
+}

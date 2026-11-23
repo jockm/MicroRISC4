@@ -124,6 +124,32 @@ void shell_cmd_cat(void) {
     }
 }
 
+void shell_cmd_rm(void) {
+    u16 err = 0;
+    if (getbyte(sh_arg, 0) == 0) {
+        uart_puts("Usage: rm <file>\r\n");
+        return;
+    }
+    if (fat_mounted == 0) {
+        uart_puts("SD/FAT32 not mounted\r\n");
+        return;
+    }
+    err = fat32_unlink_root(sh_arg);
+    if (err == 0) {
+        uart_puts("Removed ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else if (err == 2) {
+        uart_puts("File not found: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else {
+        uart_puts("Failed to remove: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    }
+}
+
 void shell_exec(void) {
     u16 pid = 0;
     u16 err = 0;
@@ -174,9 +200,7 @@ void shell_exec(void) {
     } else if (str_eq(sh_cmd, "cat") == 1) {
         shell_cmd_cat();
     } else if (str_eq(sh_cmd, "rm") == 1) {
-        uart_puts("TODO: rm ");
-        uart_puts(sh_arg);
-        uart_nl();
+        shell_cmd_rm();
     } else {
         uart_puts("Unknown command: ");
         uart_puts(sh_cmd);

@@ -109,6 +109,9 @@ class SpiSdCard:
         self.cmd_buf = []
         self.tx_queue = []
         self.app_cmd = False
+        self.write_state = 0
+        self.write_lba = 0
+        self.write_buf = bytearray()
 
     def set_ctrl(self, val: int):
         prev_cs = self.cs_n
@@ -117,6 +120,8 @@ class SpiSdCard:
         if self.cs_n == 1 and prev_cs == 0:
             self.cmd_buf.clear()
             self.tx_queue.clear()
+            self.write_state = 0
+            self.write_buf.clear()
 
     def status(self) -> int:
         return 0  # never busy
@@ -124,6 +129,25 @@ class SpiSdCard:
     def xfer(self, byte_val: int) -> int:
         b = byte_val & 0xFF
         if self.cs_n == 1:
+            return 0xFF
+
+        if self.write_state == 1:
+            if self.tx_queue:
+                return self.tx_queue.pop(0)
+            if b == 0xFE:
+                self.write_state = 2
+                self.write_buf.clear()
+            return 0xFF
+
+        if self.write_state == 2:
+            self.write_buf.append(b)
+            if len(self.write_buf) == 514:
+                off = self.write_lba * 512
+                if off + 512 <= len(self.image):
+                    self.image[off:off + 512] = self.write_buf[:512]
+                self.write_state = 0
+                self.write_buf.clear()
+                self.tx_queue = [0x05, 0xFF]  # Data Accepted, then ready
             return 0xFF
 
         if not self.cmd_buf:
@@ -160,6 +184,12 @@ class SpiSdCard:
             if len(sector) < 512:
                 sector = sector + (b"\x00" * (512 - len(sector)))
             self.tx_queue = [0x00, 0xFF, 0xFE] + list(sector) + [0xFF, 0xFF]
+        elif cmd == 24:  # CMD24: WRITE_BLOCK (SDHC = block address)
+            self.app_cmd = False
+            self.write_lba = arg & 0xFFFFFFFF
+            self.write_state = 1
+            self.write_buf.clear()
+            self.tx_queue = [0x00]
         else:
             self.app_cmd = False
             self.tx_queue = [0x00]

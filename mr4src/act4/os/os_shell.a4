@@ -738,7 +738,7 @@ void shell_exec(void) {
         return;
     }
 
-    if (str_eq(sh_cmd, ""&"") == 1) {
+    if (str_eq(sh_cmd, "help") == 1) {
         uart_puts("Commands: ps, ! <file> [args], run/& <file> [args], fg [--fgoutput] <pid>, bg <pid>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write/append <file> <text>, cp/mv <src> <dst>, rm <file>, df, echo <text>, clear\r\n");
     } else if (str_eq(sh_cmd, "ps") == 1) {
         proc_print_ps();

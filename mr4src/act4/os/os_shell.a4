@@ -9,6 +9,7 @@ u16 sh_len = 0;
 
 u16 sh_cmd[8];          // 16-byte command token
 u16 sh_arg[16];         // 32-byte first argument token
+u16 sh_arg_idx  = 0;    // Byte offset in sh_line where first arg starts
 u16 sh_rest_idx = 0;    // Byte offset in sh_line after first arg
 DirEntry sh_ent;
 
@@ -46,6 +47,7 @@ void shell_tokenize(void) {
     while (getbyte(sh_line, i) == 32) {
         i++;
     }
+    sh_arg_idx = i;
 
     // Copy argument token
     j = 0;
@@ -204,6 +206,72 @@ void shell_cmd_write(void) {
     uart_nl();
 }
 
+void shell_cmd_stat(void) {
+    u16 err  = 0;
+    u16 c_lo = 0;
+    u16 c_hi = 0;
+
+    if (getbyte(sh_arg, 0) == 0) {
+        uart_puts("Usage: stat <file>\r\n");
+        return;
+    }
+    if (fat_mounted == 0) {
+        uart_puts("SD/FAT32 not mounted\r\n");
+        return;
+    }
+    err = fat32_stat_root(sh_arg, &sh_ent);
+    if (err == 2) {
+        uart_puts("File not found: ");
+        uart_puts(sh_arg);
+        uart_nl();
+        return;
+    }
+    if (err != 0) {
+        uart_puts("stat failed\r\n");
+        return;
+    }
+    c_lo = tmp32_lo;
+    c_hi = tmp32_hi;
+    uart_puts(sh_ent.name);
+    uart_puts("  size=");
+    if (sh_ent.size_hi != 0) {
+        uart_puts("0x");
+        uart_put_hex16(sh_ent.size_hi);
+        uart_put_hex16(sh_ent.size_lo);
+    } else {
+        uart_put_dec16(sh_ent.size_lo);
+    }
+    uart_puts(" bytes  attr=0x");
+    uart_put_hex16(sh_ent.attr);
+    uart_puts("  clus=0x");
+    if (c_hi != 0) {
+        uart_put_hex16(c_hi);
+    }
+    uart_put_hex16(c_lo);
+    uart_nl();
+}
+
+void shell_cmd_echo(void) {
+    u16 i  = sh_arg_idx;
+    u16 ch = 0;
+    while (true) {
+        ch = getbyte(sh_line, i);
+        if (ch == 0) {
+            break;
+        }
+        uart_putc(ch);
+        i++;
+    }
+    uart_nl();
+}
+
+void shell_cmd_clear(void) {
+    uart_putc(27);
+    uart_puts("[2J");
+    uart_putc(27);
+    uart_puts("[H");
+}
+
 void shell_exec(void) {
     u16 pid = 0;
     u16 err = 0;
@@ -214,7 +282,7 @@ void shell_exec(void) {
     }
 
     if (str_eq(sh_cmd, "help") == 1) {
-        uart_puts("Commands: ps, run <file>, kill <pid>, ls, cat <file>, write <file> <text>, rm <file>\r\n");
+        uart_puts("Commands: ps, run <file>, kill <pid>, ls, cat <file>, stat <file>, write <file> <text>, rm <file>, echo <text>, clear\r\n");
     } else if (str_eq(sh_cmd, "ps") == 1) {
         proc_print_ps();
     } else if (str_eq(sh_cmd, "kill") == 1) {
@@ -257,6 +325,12 @@ void shell_exec(void) {
         shell_cmd_rm();
     } else if (str_eq(sh_cmd, "write") == 1) {
         shell_cmd_write();
+    } else if (str_eq(sh_cmd, "stat") == 1) {
+        shell_cmd_stat();
+    } else if (str_eq(sh_cmd, "echo") == 1) {
+        shell_cmd_echo();
+    } else if (str_eq(sh_cmd, "clear") == 1) {
+        shell_cmd_clear();
     } else {
         uart_puts("Unknown command: ");
         uart_puts(sh_cmd);

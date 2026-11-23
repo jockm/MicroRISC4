@@ -385,6 +385,11 @@ def test_os_shell_fs(args):
         "help",
         "ps",
         "ls",
+        "echo Hello MiniRISC4 world",
+        "clear",
+        "stat",
+        "stat README.TXT",
+        "stat NOFILE.TXT",
         "cat",
         "cat README.TXT",
         "cat readme.txt",
@@ -411,6 +416,10 @@ def test_os_shell_fs(args):
         "FAT32 mounted OK",
         "0    RUN    os_kernel",
         "LS.BIN",
+        "Hello MiniRISC4 world",
+        "\x1b[2J\x1b[H",
+        "Usage: stat <file>",
+        "README.TXT  size=36 bytes  attr=0x0020",
         "Usage: cat <file>",
         "Hello from MiniRISC4 FAT32 SD card!",
         "File not found: NOFILE.TXT",
@@ -599,12 +608,140 @@ void main(void) {
         assert worker_sim.mem[0x0005] == 0xFAFF, f"Core 1 ASP leaked: 0x{worker_sim.mem[0x0005]:04X}"
 
 
+# ------------------------------------------------------------------------------
+# Test 6: Multi-worker (Cores 1..3) + userland SYS_SPAWN (Core 1 spawns Core 2)
+# ------------------------------------------------------------------------------
+def test_os_spawn_multiworker(_args):
+    spawner_src = """
+import "sys.a4";
+
+u16 msg[8];
+
+void main(void) {
+    u16 child_pid = 0;
+    if (sys_spawn("CAT.BIN", &child_pid) != 0) {
+        sys_puts("SPAWN: failed\\r\\n");
+        sys_exit(1);
+    }
+    // Emit status line atomically in a single SYS_WRITE_CON so concurrent
+    // Core 2 output can interleave around (never inside) the parent's line.
+    setbyte(msg, 0, 83);  // S
+    setbyte(msg, 1, 80);  // P
+    setbyte(msg, 2, 65);  // A
+    setbyte(msg, 3, 87);  // W
+    setbyte(msg, 4, 78);  // N
+    setbyte(msg, 5, 69);  // E
+    setbyte(msg, 6, 68);  // D
+    setbyte(msg, 7, 58);  // :
+    setbyte(msg, 8, child_pid + 48);
+    setbyte(msg, 9, 13);
+    setbyte(msg, 10, 10);
+    setbyte(msg, 11, 0);
+    sys_puts(msg);
+    sys_exit(0);
+}
+"""
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td)
+        a4 = p / "spawner.a4"
+        sp_bin = p / "spawner.bin"
+        a4.write_text(spawner_src, encoding="utf-8")
+        compile_and_assemble(a4, sp_bin, org=0x0400, nopreamble=True, sparsebin=True)
+
+        sd_root = p / "sd_root"
+        sd_root.mkdir()
+        shutil.copy(OS_BUILD / "cat.bin", sd_root / "CAT.BIN")
+        shutil.copy(sp_bin, sd_root / "SPAWN.BIN")
+        (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
+        sd_img = p / "spawn_test.img"
+        subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
+             "-o", str(sd_img), "--size-mb", "16", "--spc", "1"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
+        os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
+        os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+        os_sim.pc = 0x0100
+        uart_out, bad_writes = attach_uart_and_watch(os_sim)
+
+        workers = []
+        for cid in (1, 2, 3):
+            ws = mr4sim.MiniRISC4Sim(core_id=cid)
+            ws.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+            ws.pc = 0x0100
+            ws._poll_stdin = lambda: None
+            workers.append(ws)
+        mr4sim.connect_os_workers(os_sim, workers)
+
+        def step_all(max_steps, stop_fn):
+            for _ in range(max_steps):
+                os_sim.step()
+                for ws in workers:
+                    ws.step()
+                if stop_fn():
+                    return True
+            return False
+
+        # Boot OS
+        assert step_all(1500000, lambda: "".join(uart_out).endswith("mr4> ")), "OS boot failed"
+
+        procs_addr = os_sim.sym_to_addr["_procs"]
+        pid1_state = procs_addr + 10
+        pid2_state = procs_addr + 20
+
+        start = len(uart_out)
+        for ch in "run SPAWN.BIN\r":
+            os_sim.rx_queue.append(ord(ch))
+        assert step_all(
+            8000000,
+            lambda: len(uart_out) > start and "".join(uart_out[start:]).endswith("mr4> "),
+        ), f"run SPAWN.BIN prompt timeout; output:\n{''.join(uart_out[start:])}"
+
+        # Wait until BOTH parent (PID 1 on Core 1) and child (PID 2 on Core 2) finish
+        def both_finished():
+            if os_sim.mem[pid1_state] != 0 or os_sim.mem[pid2_state] != 0:
+                return False
+            seg_now = "".join(uart_out[start:])
+            if "SPAWNED:2\r\n" not in seg_now:
+                return False
+            return "Hello from MiniRISC4 FAT32 SD card!" in seg_now.replace("SPAWNED:2\r\n", "")
+
+        done = step_all(12000000, both_finished)
+        seg = "".join(uart_out[start:])
+        assert done, f"Multi-worker SYS_SPAWN failed; output:\n{seg}"
+        assert os_sim.mem[pid1_state + 1] == 0, f"Parent PID 1 exit={os_sim.mem[pid1_state + 1]}"
+        assert os_sim.mem[pid2_state + 1] == 0, f"Child PID 2 exit={os_sim.mem[pid2_state + 1]}"
+
+        # Run `ps` so Core 0 returns to idle shell prompt and workers settle in _loader_idle
+        ps_start = len(uart_out)
+        for ch in "ps\r":
+            os_sim.rx_queue.append(ord(ch))
+        assert step_all(
+            2000000,
+            lambda: len(uart_out) > ps_start and "".join(uart_out[ps_start:]).endswith("mr4> "),
+        ), "ps after multi-worker SYS_SPAWN timed out"
+        ps_out = "".join(uart_out[ps_start:])
+        assert "1    FREE" in ps_out and "2    FREE" in ps_out, f"Workers not reclaimed in ps:\n{ps_out}"
+
+        assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
+        assert os_sim.mem[0x0005] == 0xFAFF, f"Core 0 ASP leaked: 0x{os_sim.mem[0x0005]:04X}"
+        for idx, ws in enumerate(workers, start=1):
+            assert ws.mem[0x0004] == 0xFEFF, f"Worker {idx} RSP leaked: 0x{ws.mem[0x0004]:04X}"
+            assert ws.mem[0x0005] == 0xFAFF, f"Worker {idx} ASP leaked: 0x{ws.mem[0x0005]:04X}"
+
+
 TESTS = [
     ("compiler_runtime", test_compiler_runtime),
     ("trap_isr", test_trap_isr),
     ("os_shell_fs", test_os_shell_fs),
     ("os_async_trap1", test_os_async_trap1),
     ("os_multicore_apps", test_os_multicore_apps),
+    ("os_spawn_multiworker", test_os_spawn_multiworker),
 ]
 
 

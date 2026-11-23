@@ -166,6 +166,28 @@ u16 sys_readdir(u16 dir_fd, DirEntry *ent) {
     return _sys_r1;
 }
 
+u16 sys_spawn(u16 *filename, u16 *out_pid) {
+    _sys_p1 = filename;
+    _sys_p2 = str_word_len(filename);
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LD0     R3
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x11
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+        LOAD16  R0, __sys_r2
+        LD      (R0), R2
+    }
+    _sys_w = out_pid;
+    _sys_w[0] = _sys_r2;
+    return _sys_r1;
+}
+
 u16 sys_open(u16 *path, u16 mode, u16 *out_fd) {
     _sys_p1 = path;
     _sys_p2 = str_word_len(path);

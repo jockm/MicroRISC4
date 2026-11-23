@@ -579,7 +579,10 @@ class MiniRISC4Sim:
             sys.stdout.write(char)
             sys.stdout.flush()
         elif addr == 0x000B and self.fifo_out_queue is not None:
-            self.fifo_out_queue.append(val)
+            if callable(self.fifo_out_queue):
+                self.fifo_out_queue(val)
+            else:
+                self.fifo_out_queue.append(val)
             self.mem[addr] = val
         elif addr == 0x000C and self.mailbox_handler is not None:
             self.mem[addr] = val
@@ -1025,26 +1028,52 @@ Control:
 """)
 
 
+def connect_os_workers(os_sim: MiniRISC4Sim, worker_sims: list[MiniRISC4Sim]):
+    """Link Core 0 (OS) and Worker Cores 1..N via channel-selected FIFO (0x000A/B, 0x0021) and Mailbox (0x000C)."""
+    os_in_q: deque[int] = deque()
+    os_sim.fifo_in_queue = os_in_q
+    worker_in: dict[int, deque[int]] = {}
+    worker_stage: dict[int, deque[int]] = {}
+    cores: dict[int, MiniRISC4Sim] = {os_sim.core_id: os_sim}
+
+    def on_os_fifo_out(val: int):
+        sel = os_sim.noc_ni.sel_ch
+        target = sel if sel in worker_in else next(iter(worker_in))
+        worker_in[target].append(val)
+
+    os_sim.fifo_out_queue = on_os_fifo_out
+
+    def make_mailbox_handler(src_cid: int):
+        def on_mailbox(val: int):
+            dst_core = (val >> 8) & 0xFF
+            trap_num = val & 0x0F
+            if src_cid in worker_stage and dst_core == os_sim.core_id:
+                # Atomically deliver the worker's staged syscall packet into Core 0 FIFO_IN
+                q = worker_stage[src_cid]
+                while q:
+                    os_in_q.append(q.popleft())
+            target = cores.get(dst_core)
+            if target is not None and not target.halted:
+                target.pending_traps.append(trap_num)
+        return on_mailbox
+
+    os_sim.mailbox_handler = make_mailbox_handler(os_sim.core_id)
+
+    for w in worker_sims:
+        cid = w.core_id
+        cores[cid] = w
+        in_q: deque[int] = deque()
+        out_q: deque[int] = deque()
+        worker_in[cid] = in_q
+        worker_stage[cid] = out_q
+        w.fifo_in_queue = in_q
+        w.fifo_out_queue = out_q
+        w.mailbox_handler = make_mailbox_handler(cid)
+
+
 def connect_os_worker(os_sim: MiniRISC4Sim, worker_sim: MiniRISC4Sim):
-    """Link Core 0 (OS) and a Worker Core via inter-core FIFO (0x000A/B) and Mailbox (0x000C)."""
-    os_to_worker = deque()
-    worker_to_os = deque()
-    os_sim.fifo_out_queue = os_to_worker
-    worker_sim.fifo_in_queue = os_to_worker
-    worker_sim.fifo_out_queue = worker_to_os
-    os_sim.fifo_in_queue = worker_to_os
-
-    cores = {os_sim.core_id: os_sim, worker_sim.core_id: worker_sim}
-
-    def on_mailbox(val: int):
-        dst_core = (val >> 8) & 0xFF
-        trap_num = val & 0x0F
-        target = cores.get(dst_core)
-        if target is not None and not target.halted:
-            target.pending_traps.append(trap_num)
-
-    os_sim.mailbox_handler = on_mailbox
-    worker_sim.mailbox_handler = on_mailbox
+    """Link Core 0 (OS) and a single Worker Core via inter-core FIFO (0x000A/B) and Mailbox (0x000C)."""
+    connect_os_workers(os_sim, [worker_sim])
 
 
 def main():
@@ -1063,7 +1092,8 @@ def main():
     parser.add_argument("--trace", action="store_true", help="Print PC and register state on every cycle")
     parser.add_argument("--sym", default=None, help="Assembler listing file (.lst) for symbol resolution")
     parser.add_argument("--sd-image", default=None, help="Path to FAT32 SD disk image for SPI SD card emulation")
-    parser.add_argument("--worker", default=None, help="Path to worker_stub.bin to run on Core 1 linked via FIFO/Mailbox")
+    parser.add_argument("--worker", default=None, help="Path to worker_stub.bin to run on worker cores linked via FIFO/Mailbox")
+    parser.add_argument("--workers", type=int, default=1, help="Number of worker cores to launch when --worker is set (1..3, default: 1)")
     args = parser.parse_args()
 
     if not os.path.exists(args.binary):
@@ -1084,16 +1114,19 @@ def main():
     else:
         sim.pc = 0x0100
 
-    worker_sim = None
+    worker_sims: list[MiniRISC4Sim] = []
     if args.worker:
         if not os.path.exists(args.worker):
             print(f"Error: Worker binary '{args.worker}' not found.", file=sys.stderr)
             sys.exit(1)
-        worker_sim = MiniRISC4Sim(trace=False, core_id=1)
-        worker_sim.trap_base = args.trapbase & ADDR_MASK
-        worker_sim.load_binary(args.worker, offset=0)
-        worker_sim.pc = 0x0100
-        connect_os_worker(sim, worker_sim)
+        num_workers = max(1, min(3, args.workers))
+        for cid in range(1, num_workers + 1):
+            ws = MiniRISC4Sim(trace=False, core_id=cid)
+            ws.trap_base = args.trapbase & ADDR_MASK
+            ws.load_binary(args.worker, offset=0)
+            ws.pc = 0x0100
+            worker_sims.append(ws)
+        connect_os_workers(sim, worker_sims)
 
     if args.debug:
         sim.interactive_cli()
@@ -1117,8 +1150,9 @@ def main():
                             tty.setcbreak(sys.stdin.fileno())
 
                     sim.step()
-                    if worker_sim is not None and not worker_sim.halted:
-                        worker_sim.step()
+                    for ws in worker_sims:
+                        if not ws.halted:
+                            ws.step()
 
             except KeyboardInterrupt:
                 if old_settings:

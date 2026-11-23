@@ -55,6 +55,24 @@ void uart_put_hex16(u16 w) {
     uart_put_hex_digit(w);
 }
 
+void uart_put_dec16(u16 v) {
+    u16 digits[5];
+    u16 n = 0;
+    if (v == 0) {
+        uart_putc(48);
+        return;
+    }
+    while (v > 0) {
+        digits[n] = (v % 10) + 48;
+        v = v / 10;
+        n++;
+    }
+    while (n > 0) {
+        n--;
+        uart_putc(digits[n]);
+    }
+}
+
 // Compare two null-terminated packed strings (1 = equal, 0 = not equal)
 u16 str_eq(u16 *a, u16 *b) {
     u16 i = 0;

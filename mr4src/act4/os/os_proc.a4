@@ -6,6 +6,7 @@
 u16 fifo_in  @ 0x000A;
 u16 fifo_out @ 0x000B;
 u16 mailbox  @ 0x000C;
+u16 fifo_sel @ 0x0021;
 
 const u16 MAX_CORES      = 4;       // Core 0 = OS, Cores 1..3 = Workers
 const u16 PROC_FREE      = 0;
@@ -86,7 +87,8 @@ u16 proc_spawn_from_buf(u16 *name, u16 *img, u16 word_count) {
     procs[pid].state = PROC_LOAD;
     str_copy(procs[pid].name, name, 16);
 
-    // Send Load Packet matching worker_stub.asm
+    // Select target worker core channel and stream Load Packet matching worker_stub.asm
+    fifo_sel = pid;
     fifo_out = CMD_LOAD_MAGIC;
     fifo_out = APP_LOAD_ADDR;
     fifo_out = word_count;

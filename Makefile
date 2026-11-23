@@ -310,7 +310,7 @@ sd-img: $(SD_SRC_DIR)
 	python3 $(MKSDIMG) $(SD_SRC_DIR) -o $(SD_IMG) --size-mb $(SD_SIZE_MB) --spc $(SD_SPC)
 
 sim-os: os-build sd-img
-	python3 $(SIM) $(OS_MAIN_BIN) --sym $(OS_MAIN_LST) --sd-image $(SD_IMG) --worker $(BUILD_DIR)/worker_stub.bin --startaddr 0x0100
+	python3 $(SIM) $(OS_MAIN_BIN) --sym $(OS_MAIN_LST) --sd-image $(SD_IMG) --worker $(BUILD_DIR)/worker_stub.bin --workers 3 --startaddr 0x0100
 
 test-os: os-build sd-img
 	$(PYTHON) $(TOOLS_DIR)/test_os.py --sd-image $(SD_IMG)

@@ -1044,3 +1044,59 @@ u16 fat32_write_bytes(u16 fd, u16 *src_buf, u16 byte_count) {
     fat32_sync_dir_size(fd);
     return written;
 }
+
+// Look up an 8.3 entry in root directory (case-insensitive) into *out.
+// Starting cluster is returned in (tmp32_hi:tmp32_lo).
+// Returns 0 = found, 1 = not mounted / I/O error, 2 = not found.
+u16 fat32_stat_root(u16 *filename, DirEntry *out) {
+    u16 off          = 0;
+    u16 first        = 0;
+    u16 attr         = 0;
+    u16 sec_idx      = 0;
+    u16 scan_clus_lo = root_clus_lo;
+    u16 scan_clus_hi = root_clus_hi;
+    u16 entry_name[8];
+
+    if (fat_mounted == 0) {
+        return 1;
+    }
+
+    while (true) {
+        sec_idx = 0;
+        while (sec_idx < sec_per_clus) {
+            cluster_to_lba(scan_clus_hi, scan_clus_lo);
+            add32(tmp32_hi, tmp32_lo, 0, sec_idx);
+            if (sd_read_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
+                return 1;
+            }
+            off = 0;
+            while (off < 512) {
+                first = getbyte(sec_buf, off);
+                attr  = getbyte(sec_buf, off + 11);
+                if (first == 0x00) {
+                    return 2;
+                }
+                if (first != 0xE5 && attr != 0x0F && (attr & 0x08) == 0) {
+                    format_83_name(off, entry_name);
+                    if (str_eq_ci(entry_name, filename) == 1) {
+                        out->attr    = attr;
+                        out->size_lo = rd_u16(sec_buf, off + 28);
+                        out->size_hi = rd_u16(sec_buf, off + 30);
+                        str_copy(out->name, entry_name, 16);
+                        tmp32_lo     = rd_u16(sec_buf, off + 26);
+                        tmp32_hi     = rd_u16(sec_buf, off + 20);
+                        return 0;
+                    }
+                }
+                off = off + 32;
+            }
+            sec_idx++;
+        }
+        if (fat32_next_cluster(scan_clus_hi, scan_clus_lo) != 0) {
+            return 2;
+        }
+        scan_clus_hi = tmp32_hi;
+        scan_clus_lo = tmp32_lo;
+    }
+    return 2;
+}

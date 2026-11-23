@@ -48,7 +48,7 @@ DirEntry sys_ent;
 // Preserves R1 & R2 via hardware shadow registers so main/shell is undisturbed.
 // -----------------------------------------------------------------------------
 void on_msg_ready(void) @ trap(1) {
-    msg_pending = 1;
+    msg_pending++;
 }
 // Drain remaining words of an unhandled syscall so FIFO stays aligned
 void drain_fifo(u16 count) {
@@ -71,6 +71,9 @@ void handle_syscall(void) {
     u16 i     = 0;
     u16 ch    = 0;
     u16 fd    = 0;
+
+    // Direct all FIFO replies for this syscall to the requesting worker core
+    fifo_sel = pid;
 
     if (id == SYS_EXIT) {
         arg1 = fifo_in;
@@ -133,6 +136,37 @@ void handle_syscall(void) {
         uart_puts(sys_buf);
         fifo_out = ERR_OK;
         fifo_out = wlen;
+        return;
+    }
+
+    if (id == SYS_SPAWN) {
+        extra = fifo_in;
+        wlen  = fifo_in;
+        i = 0;
+        while (i < wlen) {
+            arg1 = fifo_in;
+            if (i < 63) {
+                sys_buf[i] = arg1;
+            }
+            i++;
+        }
+        sys_buf[63] = 0;
+        arg1 = fat32_read_file_root(sys_buf, run_img_buf, RUN_BUF_MAX);
+        if (arg1 == 0) {
+            fifo_sel = pid;
+            fifo_out = ERR_IO;
+            fifo_out = 0;
+            return;
+        }
+        arg2 = proc_spawn_from_buf(sys_buf, run_img_buf, arg1);
+        fifo_sel = pid;
+        if (arg2 == 0) {
+            fifo_out = ERR_IO;
+            fifo_out = 0;
+        } else {
+            fifo_out = ERR_OK;
+            fifo_out = arg2;
+        }
         return;
     }
 
@@ -313,7 +347,7 @@ void main(void) {
 
     while (true) {
         if (msg_pending != 0) {
-            msg_pending = 0;
+            msg_pending--;
             handle_syscall();
         }
         shell_poll();

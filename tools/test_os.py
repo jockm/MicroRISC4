@@ -635,7 +635,153 @@ void main(void) {
 
 
 # ------------------------------------------------------------------------------
-# Test 6: Multi-worker (Cores 1..3) + userland SYS_SPAWN (Core 1 spawns Core 2)
+# Test 6: MuL structured interpreter and OS filesystem commands
+# ------------------------------------------------------------------------------
+def test_os_mul(_args):
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td)
+        sd_root = p / "sd_root"
+        sd_root.mkdir()
+        for item in (BUILD_DIR / "sd_root").iterdir():
+            if item.is_file():
+                shutil.copy(item, sd_root / item.name)
+        (sd_root / "TEST.MUL").write_text(
+            "set n 0\n"
+            "expr 2+3*4\n"
+            "if {(2 + 3) * 4 == 20}\n"
+            "puts MUL_EXPR_OK\n"
+            "end\n"
+            "set greeting {hello}\n"
+            "puts \"$greeting from MuL\"\n"
+            "while {$n < 3}\n"
+            "puts $n\n"
+            "incr n\n"
+            "end\n"
+            "if {$n == 3}\n"
+            "puts MUL_CONTROL_OK\n"
+            "else\n"
+            "puts MUL_CONTROL_FAIL\n"
+            "end\n"
+            "set item0 apple\n"
+            "set item1 banana\n"
+            "set index 0\n"
+            "while {$index < 2}\n"
+            "puts $item$index\n"
+            "incr index\n"
+            "end\n"
+            "set index 1\n"
+            "set item$index cherry\n"
+            "puts $item$index\n"
+            "argc count\n"
+            "puts $count\n"
+            "argv 0 script\n"
+            "argv 1 first\n"
+            "argv 2 second\n"
+            "puts $script\n"
+            "puts $first $second\n"
+            "args allargs\n"
+            "puts $allargs\n"
+            "write OUT.TXT {hello from MuL}\n"
+            "append OUT.TXT {appended}\n"
+            "mv OUT.TXT MOVED.TXT\n"
+            "cat MOVED.TXT\n"
+            "stat MOVED.TXT\n"
+            "mkdir MULDIR\n"
+            "ls\n"
+            "cd MULDIR\n"
+            "pwd\n"
+            "cd /\n"
+            "rmdir MULDIR\n"
+            "rm MOVED.TXT\n"
+            "gets response\n"
+            "puts $response\n"
+            "puts MUL_OS_OK\n",
+            encoding="ascii",
+        )
+        sd_img = p / "mul_test.img"
+        subprocess.run(
+            [
+                sys.executable,
+                str(TOOLS_DIR / "mksdimage.py"),
+                str(sd_root),
+                "-o",
+                str(sd_img),
+                "--size-mb",
+                "16",
+                "--spc",
+                "1",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
+        os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
+        os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+        os_sim.pc = 0x0100
+        uart_out, bad_writes = attach_uart_and_watch(os_sim)
+
+        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+        worker_sim.pc = 0x0100
+        worker_sim._poll_stdin = lambda: None
+        mr4sim.connect_os_worker(os_sim, worker_sim)
+
+        assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
+        start = len(uart_out)
+        for ch in "! MUL.PRG TEST.MUL alpha beta\r":
+            os_sim.rx_queue.append(ord(ch))
+        for _ in range(50000000):
+            os_sim.step()
+            worker_sim.step()
+            if "".join(uart_out[-11:]).endswith("MuL input> "):
+                break
+        else:
+            raise AssertionError("MuL script did not reach gets")
+        for ch in "console input\r":
+            os_sim.rx_queue.append(ord(ch))
+            for _ in range(400):
+                os_sim.step()
+                worker_sim.step()
+        assert run_until_prompt(
+            os_sim, uart_out, 5000000, worker=worker_sim
+        ), "MuL script timed out after gets"
+        output = "".join(uart_out[start:])
+        for expected in (
+            "14\r\n",
+            "MUL_EXPR_OK",
+            "hello from MuL",
+            "0\r\n1\r\n2\r\n",
+            "MUL_CONTROL_OK",
+            "apple\r\nbanana\r\ncherry\r\n",
+            "3\r\n",
+            "TEST.MUL",
+            "alpha beta",
+            "TEST.MUL alpha beta",
+            "hello from MuL\r\nappended\r\n",
+            "MOVED.TXT",
+            "/MULDIR",
+            "console input",
+            "MUL_OS_OK",
+        ):
+            assert expected in output, f"MuL output missing {expected!r}:\n{output}"
+        assert "MUL_CONTROL_FAIL" not in output
+
+        procs_addr = os_sim.sym_to_addr["_procs"]
+        assert os_sim.mem[procs_addr + 10] == 0, "MuL worker did not exit"
+        assert os_sim.mem[procs_addr + 11] == 0, "MuL returned a nonzero exit code"
+        fds_addr = os_sim.sym_to_addr["_fds"]
+        open_fds = [i for i in range(8) if os_sim.mem[fds_addr + i * 15] != 0]
+        assert not open_fds, f"MuL leaked open FDs: {open_fds}"
+        assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
+        assert worker_sim.mem[0x0004] == 0xFEFF, "MuL leaked the return stack"
+        assert worker_sim.mem[0x0005] == 0xFAFF, "MuL leaked the argument stack"
+
+
+# ------------------------------------------------------------------------------
+# Test 7: Multi-worker (Cores 1..3) + userland SYS_SPAWN (Core 1 spawns Core 2)
 # ------------------------------------------------------------------------------
 def test_os_spawn_multiworker(_args):
     spawner_src = """
@@ -762,7 +908,7 @@ void main(void) {
 
 
 # ------------------------------------------------------------------------------
-# Test 7: Shell line overflow/editing, worker exhaustion & Trap 14 kill recovery
+# Test 8: Shell line overflow/editing, worker exhaustion & Trap 14 kill recovery
 # ------------------------------------------------------------------------------
 def test_os_edge_shell_and_kill(_args):
     spin_src = """
@@ -892,7 +1038,7 @@ void main(void) {
 
 
 # ------------------------------------------------------------------------------
-# Test 8: FD exhaustion, invalid syscalls (Class A/B/C), & multi-cluster write/read
+# Test 9: FD exhaustion, invalid syscalls (Class A/B/C), & multi-cluster write/read
 # ------------------------------------------------------------------------------
 def test_os_stress_fd_syscalls_multicluster(_args):
     stress_src = """
@@ -1113,7 +1259,7 @@ void main(void) {
 
 
 # ------------------------------------------------------------------------------
-# Test 9: Cooperative fibers (lib/fiber.a4 + FIBERS.PRG) on a single worker core
+# Test 10: Cooperative fibers (lib/fiber.a4 + FIBERS.PRG) on a single worker core
 # ------------------------------------------------------------------------------
 def test_os_cooperative_fibers(args):
     os_sim = mr4sim.MiniRISC4Sim(core_id=0)
@@ -1158,7 +1304,7 @@ def test_os_cooperative_fibers(args):
 
 
 # ------------------------------------------------------------------------------
-# Test 10: FAT32 Subdirectories (mkdir, cd, pwd, rmdir, nested paths & syscalls)
+# Test 11: FAT32 Subdirectories (mkdir, cd, pwd, rmdir, nested paths & syscalls)
 # ------------------------------------------------------------------------------
 def test_os_fat32_subdirs(_args):
     dirapp_src = """
@@ -1399,7 +1545,7 @@ void main(void) {
 
 
 # ------------------------------------------------------------------------------
-# Test 11: Console ownership (run vs !, fg, bg, fg --fgoutput, Ctrl-Z, Ctrl-C)
+# Test 12: Console ownership (run vs !, fg, bg, fg --fgoutput, Ctrl-Z, Ctrl-C)
 # ------------------------------------------------------------------------------
 def test_os_console_fg_bg(_args):
     bgwork_src = """
@@ -1607,7 +1753,7 @@ void main(void) {
 
 
 # ------------------------------------------------------------------------------
-# Test 12: Worker crash reporting (Trap 15 align fault + unhandled Trap 5)
+# Test 13: Worker crash reporting (Trap 15 align fault + unhandled Trap 5)
 # ------------------------------------------------------------------------------
 def test_os_worker_fault_reporting(_args):
     align_bad_src = """
@@ -1719,7 +1865,7 @@ void main(void) {
 
 
 # ------------------------------------------------------------------------------
-# Test 13: Everyday FS ops & syscalls (append, cp, mv, df, O_APPEND, SYS_RENAME, SYS_STAT, SYS_GETCWD)
+# Test 14: Everyday FS ops & syscalls (append, cp, mv, df, O_APPEND, SYS_RENAME, SYS_STAT, SYS_GETCWD)
 # ------------------------------------------------------------------------------
 def test_os_fs_ops_syscalls(_args):
     fsapp_src = """
@@ -1873,7 +2019,7 @@ void main(void) {
 
 
 # ------------------------------------------------------------------------------
-# Test 14: Explicit !/run PATH lookup (no implicit launch) & 4-entry arrow history
+# Test 15: Explicit !/run PATH lookup (no implicit launch) & 4-entry arrow history
 # ------------------------------------------------------------------------------
 def test_os_path_and_history(args):
     os_sim = mr4sim.MiniRISC4Sim(core_id=0)
@@ -1955,7 +2101,7 @@ def test_os_path_and_history(args):
 
 
 # ------------------------------------------------------------------------------
-# Test 15: Terminal control & key-decoding library (lib/term.a4)
+# Test 16: Terminal control & key-decoding library (lib/term.a4)
 # ------------------------------------------------------------------------------
 def test_os_term_lib(_args):
     termapp_src = """
@@ -2100,7 +2246,7 @@ void main(void) {
 
 
 # ------------------------------------------------------------------------------
-# Test 16: Sequential shell scripts (do <file>, @ <file>, @<file>)
+# Test 17: Sequential shell scripts (do <file>, @ <file>, @<file>)
 # ------------------------------------------------------------------------------
 def test_os_scripts(_args):
     spin_src = """
@@ -2245,6 +2391,7 @@ TESTS = [
     ("os_shell_fs", test_os_shell_fs),
     ("os_async_trap1", test_os_async_trap1),
     ("os_multicore_apps", test_os_multicore_apps),
+    ("os_mul", test_os_mul),
     ("os_spawn_multiworker", test_os_spawn_multiworker),
     ("os_edge_shell_and_kill", test_os_edge_shell_and_kill),
     ("os_stress_fd_syscalls_multicluster", test_os_stress_fd_syscalls_multicluster),

@@ -1,0 +1,1673 @@
+// ==============================================================================
+// MuL: a small structured scripting interpreter for mr4os
+// Language design inspired by Picol by Salvatore Sanfilippo:
+// https://github.com/antirez/picol (BSD-2-Clause)
+// ==============================================================================
+
+import "sys.a4";
+
+const u16 MUL_SOURCE_BYTES = 4096;
+const u16 MUL_MAX_LINES = 128;
+const u16 MUL_LINE_BYTES = 128;
+const u16 MUL_MAX_TOKENS = 12;
+const u16 MUL_TOKEN_BYTES = 128;
+const u16 MUL_MAX_VARS = 16;
+const u16 MUL_NAME_BYTES = 24;
+const u16 MUL_VALUE_BYTES = 128;
+const u16 MUL_MAX_BLOCKS = 16;
+const u16 MUL_MAX_LOOPS = 8;
+
+u16 mul_source[MUL_SOURCE_BYTES >> 1];
+u16 mul_read_buf[64];
+u16 mul_line[MUL_LINE_BYTES >> 1];
+u16 mul_args[32];
+u16 mul_argv_raw[32];
+u16 mul_cwd[32];
+u16 mul_write_buf[64];
+u16 mul_var_used[MUL_MAX_VARS];
+u16 mul_var_names[MUL_MAX_VARS * (MUL_NAME_BYTES >> 1)];
+u16 mul_var_values[MUL_MAX_VARS * (MUL_VALUE_BYTES >> 1)];
+u16 mul_token_data[MUL_MAX_TOKENS * MUL_TOKEN_BYTES >> 1];
+u16 mul_token_len[MUL_MAX_TOKENS];
+u16 mul_line_start[MUL_MAX_LINES];
+u16 mul_line_len[MUL_MAX_LINES];
+u16 mul_block_match[MUL_MAX_LINES];
+u16 mul_block_else[MUL_MAX_LINES];
+u16 mul_else_owner[MUL_MAX_LINES];
+u16 mul_block_stack[MUL_MAX_BLOCKS];
+u16 mul_block_stack_kind[MUL_MAX_BLOCKS];
+u16 mul_loop_open[MUL_MAX_LOOPS];
+u16 mul_loop_end[MUL_MAX_LOOPS];
+u16 mul_expr_values[16];
+u16 mul_expr_ops[16];
+u16 mul_expr_buf[MUL_TOKEN_BYTES >> 1];
+u16 mul_name_tmp[MUL_NAME_BYTES >> 1];
+u16 mul_value_tmp[MUL_VALUE_BYTES >> 1];
+u16 mul_number_digits[5];
+DirEntry mul_entry;
+ProcEntry mul_proc;
+
+u16 mul_source_len = 0;
+u16 mul_line_count = 0;
+u16 mul_token_count = 0;
+u16 mul_token_error = 0;
+u16 mul_block_depth = 0;
+u16 mul_loop_depth = 0;
+u16 mul_pc = 0;
+u16 mul_expr_pos = 0;
+u16 mul_expr_value_count = 0;
+u16 mul_expr_op_count = 0;
+u16 mul_expr_error = 0;
+u16 mul_error = 0;
+u16 mul_input_overflow = 0;
+
+u16 *mul_token(u16 index) {
+    return &mul_token_data[(index * MUL_TOKEN_BYTES) >> 1];
+}
+
+u16 mul_equal(u16 *a, u16 *b) {
+    u16 i = 0;
+    while (true) {
+        if (getbyte(a, i) != getbyte(b, i)) {
+            return 0;
+        }
+        if (getbyte(a, i) == 0) {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
+u16 mul_equal_token(u16 index, u16 *text) {
+    return mul_equal(mul_token(index), text);
+}
+
+void mul_copy(u16 *dst, u16 *src, u16 max_bytes) {
+    u16 i = 0;
+    u16 ch = 0;
+    while (i < max_bytes) {
+        ch = getbyte(src, i);
+        setbyte(dst, i, ch);
+        if (ch == 0) {
+            return;
+        }
+        i++;
+    }
+    setbyte(dst, max_bytes - 1, 0);
+}
+
+u16 mul_var_find(u16 *name) {
+    u16 i = 0;
+    while (i < MUL_MAX_VARS) {
+        if (mul_var_used[i] != 0 &&
+            mul_equal(&mul_var_names[i * (MUL_NAME_BYTES >> 1)], name) == 1) {
+            return i;
+        }
+        i++;
+    }
+    return 0xFFFF;
+}
+
+u16 mul_var_set(u16 *name, u16 *value) {
+    u16 slot = mul_var_find(name);
+    if (slot == 0xFFFF) {
+        slot = 0;
+        while (slot < MUL_MAX_VARS && mul_var_used[slot] != 0) {
+            slot++;
+        }
+        if (slot == MUL_MAX_VARS) {
+            return 0;
+        }
+        mul_var_used[slot] = 1;
+        mul_copy(&mul_var_names[slot * (MUL_NAME_BYTES >> 1)], name, MUL_NAME_BYTES);
+    }
+    mul_copy(&mul_var_values[slot * (MUL_VALUE_BYTES >> 1)], value, MUL_VALUE_BYTES);
+    return 1;
+}
+
+u16 mul_var_append(u16 *name, u16 *dst, u16 *pos) {
+    u16 slot = mul_var_find(name);
+    u16 i = 0;
+    u16 ch = 0;
+    if (slot == 0xFFFF) {
+        return 0;
+    }
+    while (i < (MUL_VALUE_BYTES - 1)) {
+        ch = getbyte(&mul_var_values[slot * (MUL_VALUE_BYTES >> 1)], i);
+        if (ch == 0) {
+            break;
+        }
+        if (*pos >= MUL_LINE_BYTES - 1) {
+            return 0;
+        }
+        setbyte(dst, *pos, ch);
+        (*pos)++;
+        i++;
+    }
+    return 1;
+}
+
+u16 mul_arg_count(void) {
+    u16 i = 0;
+    u16 count = 0;
+    u16 ch = 0;
+    u16 in_arg = 0;
+    while (i < 64) {
+        ch = getbyte(mul_argv_raw, i);
+        if (ch == 0) {
+            break;
+        }
+        if (ch == 32 || ch == 9) {
+            in_arg = 0;
+        } else if (in_arg == 0) {
+            in_arg = 1;
+            count++;
+        }
+        i++;
+    }
+    return count;
+}
+
+u16 mul_arg_get(u16 index, u16 *dst) {
+    u16 i = 0;
+    u16 pos = 0;
+    u16 count = 0;
+    u16 ch = 0;
+    u16 in_arg = 0;
+    while (i < 64) {
+        ch = getbyte(mul_argv_raw, i);
+        if (ch == 0) {
+            break;
+        }
+        if (ch == 32 || ch == 9) {
+            if (in_arg != 0) {
+                if (count == index) {
+                    setbyte(dst, pos, 0);
+                    return 1;
+                }
+                count++;
+                in_arg = 0;
+            }
+        } else {
+            if (in_arg == 0) {
+                pos = 0;
+            }
+            if (count == index) {
+                if (pos >= MUL_VALUE_BYTES - 1) {
+                    return 0;
+                }
+                setbyte(dst, pos, ch);
+                pos++;
+            }
+            in_arg = 1;
+        }
+        i++;
+    }
+    if (in_arg != 0 && count == index) {
+        setbyte(dst, pos, 0);
+        return 1;
+    }
+    if (count == index) {
+        setbyte(dst, 0, 0);
+        return 1;
+    }
+    return 0;
+}
+
+u16 mul_dynamic_var_append(u16 *dst, u16 *pos, u16 *line_pos) {
+    u16 i = *line_pos + 1;
+    u16 prefix_len = 0;
+    u16 index_len = 0;
+    u16 slot = 0;
+    u16 value_pos = 0;
+    u16 ch = 0;
+    u16 next = 0;
+
+    while ((getbyte(mul_line, i) >= 48 && getbyte(mul_line, i) <= 57) ||
+           (getbyte(mul_line, i) >= 65 && getbyte(mul_line, i) <= 90) ||
+           (getbyte(mul_line, i) >= 97 && getbyte(mul_line, i) <= 122) ||
+           getbyte(mul_line, i) == 95) {
+        if (prefix_len >= MUL_NAME_BYTES - 1) {
+            mul_token_error = 3;
+            return 2;
+        }
+        setbyte(mul_name_tmp, prefix_len, getbyte(mul_line, i));
+        prefix_len++;
+        i++;
+    }
+    if (getbyte(mul_line, i) != 36) {
+        return 0;
+    }
+    i++;
+    while ((getbyte(mul_line, i) >= 48 && getbyte(mul_line, i) <= 57) ||
+           (getbyte(mul_line, i) >= 65 && getbyte(mul_line, i) <= 90) ||
+           (getbyte(mul_line, i) >= 97 && getbyte(mul_line, i) <= 122) ||
+           getbyte(mul_line, i) == 95) {
+        if (index_len >= MUL_NAME_BYTES - 1) {
+            mul_token_error = 3;
+            return 2;
+        }
+        setbyte(mul_value_tmp, index_len, getbyte(mul_line, i));
+        index_len++;
+        i++;
+    }
+    setbyte(mul_value_tmp, index_len, 0);
+    if (index_len == 0) {
+        return 2;
+    }
+    slot = mul_var_find(mul_value_tmp);
+    if (slot == 0xFFFF) {
+        mul_token_error = 2;
+        return 2;
+    }
+    value_pos = 0;
+    while (value_pos < (MUL_VALUE_BYTES - 1)) {
+        ch = getbyte(&mul_var_values[slot * (MUL_VALUE_BYTES >> 1)], value_pos);
+        if (ch == 0) {
+            break;
+        }
+        if (prefix_len + value_pos >= MUL_NAME_BYTES - 1) {
+            mul_token_error = 3;
+            return 2;
+        }
+        setbyte(mul_name_tmp, prefix_len + value_pos, ch);
+        value_pos++;
+    }
+    setbyte(mul_name_tmp, prefix_len + value_pos, 0);
+    if (mul_var_append(mul_name_tmp, dst, pos) == 0) {
+        mul_token_error = 2;
+        return 2;
+    }
+    *line_pos = i;
+    return 1;
+}
+
+u16 mul_parse_number(u16 *text, u16 *out) {
+    u16 i = 0;
+    u16 value = 0;
+    u16 digit = 0;
+    u16 base = 10;
+    u16 ch = getbyte(text, 0);
+
+    if (ch == 0) {
+        return 0;
+    }
+    if (ch == 45) {
+        i = 1;
+    }
+    if (getbyte(text, i) == 48 &&
+        (getbyte(text, i + 1) == 120 || getbyte(text, i + 1) == 88)) {
+        base = 16;
+        i = i + 2;
+    }
+    if (getbyte(text, i) == 0) {
+        return 0;
+    }
+    while (true) {
+        ch = getbyte(text, i);
+        if (ch == 0) {
+            break;
+        }
+        if (ch >= 48 && ch <= 57) {
+            digit = ch - 48;
+        } else if (base == 16 && ch >= 65 && ch <= 70) {
+            digit = ch - 55;
+        } else if (base == 16 && ch >= 97 && ch <= 102) {
+            digit = ch - 87;
+        } else {
+            return 0;
+        }
+        if (digit >= base) {
+            return 0;
+        }
+        value = (value * base) + digit;
+        i++;
+    }
+    if (getbyte(text, 0) == 45) {
+        value = 0 - value;
+    }
+    *out = value;
+    return 1;
+}
+
+void mul_number_to_string(u16 value, u16 *dst) {
+    u16 count = 0;
+    u16 i = 0;
+    if (value == 0) {
+        setbyte(dst, 0, 48);
+        setbyte(dst, 1, 0);
+        return;
+    }
+    while (value != 0 && count < 5) {
+        mul_number_digits[count] = (value % 10) + 48;
+        value = value / 10;
+        count++;
+    }
+    while (count != 0) {
+        count--;
+        setbyte(dst, i, mul_number_digits[count]);
+        i++;
+    }
+    setbyte(dst, i, 0);
+}
+
+u16 mul_tokenize(void) {
+    u16 i = 0;
+    u16 t = 0;
+    u16 p = 0;
+    u16 ch = 0;
+    u16 next = 0;
+    u16 dynamic_status = 0;
+    u16 quote = 0;
+    u16 brace = 0;
+    u16 brace_depth = 0;
+    u16 name_len = 0;
+
+    mul_token_count = 0;
+    mul_token_error = 0;
+    while (true) {
+        ch = getbyte(mul_line, i);
+        if (ch == 0) {
+            break;
+        }
+        if (ch == 32 || ch == 9) {
+            i++;
+            continue;
+        }
+        if (ch == 35 && mul_token_count == 0) {
+            return 1;
+        }
+        if (mul_token_count >= MUL_MAX_TOKENS) {
+            mul_token_error = 1;
+            return 0;
+        }
+        t = mul_token_count;
+        mul_token_len[t] = 0;
+        p = 0;
+        quote = 0;
+        brace = 0;
+        brace_depth = 0;
+        if (ch == 34) {
+            quote = 1;
+            i++;
+        } else if (ch == 123) {
+            brace = 1;
+            brace_depth = 1;
+            i++;
+        }
+        while (true) {
+            ch = getbyte(mul_line, i);
+            if (ch == 0) {
+                break;
+            }
+            if (brace != 0) {
+                if (ch == 123) {
+                    brace_depth++;
+                    if (p >= MUL_TOKEN_BYTES - 1) {
+                        mul_token_error = 1;
+                        return 0;
+                    }
+                    setbyte(mul_token(t), p, ch);
+                    p++;
+                    i++;
+                    continue;
+                }
+                if (ch == 125) {
+                    brace_depth--;
+                    i++;
+                    if (brace_depth == 0) {
+                        brace = 0;
+                        break;
+                    }
+                    if (p >= MUL_TOKEN_BYTES - 1) {
+                        mul_token_error = 1;
+                        return 0;
+                    }
+                    setbyte(mul_token(t), p, ch);
+                    p++;
+                    continue;
+                }
+            } else if (quote != 0) {
+                if (ch == 34) {
+                    i++;
+                    quote = 0;
+                    break;
+                }
+            } else if (ch == 32 || ch == 9) {
+                break;
+            }
+
+            if (ch == 36) {
+                dynamic_status = mul_dynamic_var_append(mul_token(t), &p, &i);
+                if (dynamic_status == 2) {
+                    return 0;
+                }
+                if (dynamic_status == 1) {
+                    continue;
+                }
+                name_len = 0;
+                i++;
+                next = getbyte(mul_line, i);
+                while ((next >= 48 && next <= 57) ||
+                       (next >= 65 && next <= 90) ||
+                       (next >= 97 && next <= 122) || next == 95) {
+                    if (name_len >= MUL_NAME_BYTES - 1) {
+                        mul_token_error = 3;
+                        return 0;
+                    }
+                    setbyte(mul_name_tmp, name_len, next);
+                    name_len++;
+                    i++;
+                    next = getbyte(mul_line, i);
+                }
+                setbyte(mul_name_tmp, name_len, 0);
+                if (name_len == 0) {
+                    if (p < MUL_TOKEN_BYTES - 1) {
+                        setbyte(mul_token(t), p, 36);
+                        p++;
+                    }
+                } else {
+                    if (mul_var_append(mul_name_tmp, mul_token(t), &p) == 0) {
+                        mul_token_error = 2;
+                        return 0;
+                    }
+                }
+                continue;
+            }
+            if (ch == 92) {
+                i++;
+                next = getbyte(mul_line, i);
+                if (next == 110) {
+                    ch = 10;
+                } else if (next == 114) {
+                    ch = 13;
+                } else if (next == 116) {
+                    ch = 9;
+                } else if (next != 0) {
+                    ch = next;
+                }
+            }
+            if (p >= MUL_TOKEN_BYTES - 1) {
+                mul_token_error = 1;
+                return 0;
+            }
+            setbyte(mul_token(t), p, ch);
+            p++;
+            i++;
+        }
+        if (quote != 0 || brace != 0) {
+            mul_token_error = 4;
+            return 0;
+        }
+        setbyte(mul_token(t), p, 0);
+        mul_token_len[t] = p;
+        mul_token_count++;
+        while (getbyte(mul_line, i) == 32 || getbyte(mul_line, i) == 9) {
+            i++;
+        }
+    }
+    return 1;
+}
+
+u16 mul_join_tokens(u16 first, u16 *dst) {
+    u16 i = first;
+    u16 p = 0;
+    u16 j = 0;
+    u16 ch = 0;
+    while (i < mul_token_count) {
+        if (i != first) {
+            if (p >= MUL_TOKEN_BYTES - 1) {
+                return 0;
+            }
+            setbyte(dst, p, 32);
+            p++;
+        }
+        j = 0;
+        while (true) {
+            ch = getbyte(mul_token(i), j);
+            if (ch == 0) {
+                break;
+            }
+            if (p >= MUL_TOKEN_BYTES - 1) {
+                return 0;
+            }
+            setbyte(dst, p, ch);
+            p++;
+            j++;
+        }
+        i++;
+    }
+    setbyte(dst, p, 0);
+    return 1;
+}
+
+u16 mul_precedence(u16 op) {
+    if (op == 11) {
+        return 1;
+    }
+    if (op >= 5 && op <= 10) {
+        return 2;
+    }
+    if (op == 0 || op == 1) {
+        return 3;
+    }
+    if (op == 2 || op == 3 || op == 4) {
+        return 4;
+    }
+    if (op == 12) {
+        return 0;
+    }
+    return 0xFFFF;
+}
+
+u16 mul_apply_expression_op(void) {
+    u16 left = 0;
+    u16 right = 0;
+    u16 op = 0;
+    if (mul_expr_op_count == 0) {
+        return 0;
+    }
+    op = mul_expr_ops[mul_expr_op_count - 1];
+    if (op == 14) {
+        if (mul_expr_value_count == 0) {
+            return 0;
+        }
+        mul_expr_value_count--;
+        mul_expr_values[mul_expr_value_count] =
+            0 - mul_expr_values[mul_expr_value_count];
+        mul_expr_op_count--;
+        return 1;
+    }
+    if (mul_expr_value_count < 2) {
+        return 0;
+    }
+    right = mul_expr_values[mul_expr_value_count - 1];
+    left = mul_expr_values[mul_expr_value_count - 2];
+    mul_expr_value_count = mul_expr_value_count - 2;
+    mul_expr_op_count--;
+    if (op == 0) {
+        left = left + right;
+    } else if (op == 1) {
+        left = left - right;
+    } else if (op == 2) {
+        left = left * right;
+    } else if (op == 3) {
+        if (right == 0) {
+            return 0;
+        }
+        if (op == 14) {
+            return 5;
+        }
+        left = left / right;
+    } else if (op == 4) {
+        if (right == 0) {
+            return 0;
+        }
+        left = left % right;
+    } else if (op == 5) {
+        left = (left < right);
+    } else if (op == 6) {
+        left = (left <= right);
+    } else if (op == 7) {
+        left = (left > right);
+    } else if (op == 8) {
+        left = (left >= right);
+    } else if (op == 9) {
+        left = (left == right);
+    } else if (op == 10) {
+        left = (left != right);
+    } else if (op == 11) {
+        left = ((left != 0) && (right != 0));
+    } else if (op == 12) {
+        left = ((left != 0) || (right != 0));
+    }
+    mul_expr_values[mul_expr_value_count] = left;
+    mul_expr_value_count++;
+    return 1;
+}
+
+u16 mul_read_expression_operator(u16 *out_op) {
+    u16 ch = getbyte(mul_expr_buf, mul_expr_pos);
+    u16 next = getbyte(mul_expr_buf, mul_expr_pos + 1);
+    if (ch == 43) {
+        *out_op = 0;
+    } else if (ch == 45) {
+        *out_op = 1;
+    } else if (ch == 42) {
+        *out_op = 2;
+    } else if (ch == 47) {
+        *out_op = 3;
+    } else if (ch == 37) {
+        *out_op = 4;
+    } else if (ch == 60 && next == 61) {
+        *out_op = 6;
+        mul_expr_pos++;
+    } else if (ch == 62 && next == 61) {
+        *out_op = 8;
+        mul_expr_pos++;
+    } else if (ch == 61 && next == 61) {
+        *out_op = 9;
+        mul_expr_pos++;
+    } else if (ch == 33 && next == 61) {
+        *out_op = 10;
+        mul_expr_pos++;
+    } else if (ch == 60) {
+        *out_op = 5;
+    } else if (ch == 62) {
+        *out_op = 7;
+    } else if (ch == 38 && next == 38) {
+        *out_op = 11;
+        mul_expr_pos++;
+    } else if (ch == 124 && next == 124) {
+        *out_op = 12;
+        mul_expr_pos++;
+    } else {
+        return 0;
+    }
+    mul_expr_pos++;
+    return 1;
+}
+
+u16 mul_eval_expression(u16 *text, u16 *out) {
+    u16 ch = 0;
+    u16 digits = 0;
+    u16 number = 0;
+    u16 expect_value = 1;
+    u16 op = 0;
+    u16 prec = 0;
+    u16 top = 0;
+    u16 i = 0;
+
+    mul_copy(mul_expr_buf, text, MUL_TOKEN_BYTES);
+    mul_expr_pos = 0;
+    mul_expr_value_count = 0;
+    mul_expr_op_count = 0;
+    mul_expr_error = 0;
+    while (true) {
+        ch = getbyte(mul_expr_buf, mul_expr_pos);
+        if (ch == 0) {
+            break;
+        }
+        if (ch == 32 || ch == 9) {
+            mul_expr_pos++;
+            continue;
+        }
+        if (expect_value != 0) {
+            if (ch == 45) {
+                if (mul_expr_op_count >= 16) {
+                    return 0;
+                }
+                mul_expr_ops[mul_expr_op_count] = 14;
+                mul_expr_op_count++;
+                mul_expr_pos++;
+                continue;
+            }
+            if (ch == 40) {
+                if (mul_expr_op_count >= 16) {
+                    return 0;
+                }
+                mul_expr_ops[mul_expr_op_count] = 13;
+                mul_expr_op_count++;
+                mul_expr_pos++;
+                continue;
+            }
+            if ((ch < 48 || ch > 57) || mul_expr_value_count >= 16) {
+                return 0;
+            }
+            number = 0;
+            digits = 0;
+            if (ch == 48 &&
+                (getbyte(mul_expr_buf, mul_expr_pos + 1) == 120 ||
+                 getbyte(mul_expr_buf, mul_expr_pos + 1) == 88)) {
+                mul_expr_pos = mul_expr_pos + 2;
+                while (true) {
+                    ch = getbyte(mul_expr_buf, mul_expr_pos);
+                    if (ch >= 48 && ch <= 57) {
+                        i = ch - 48;
+                    } else if (ch >= 65 && ch <= 70) {
+                        i = ch - 55;
+                    } else if (ch >= 97 && ch <= 102) {
+                        i = ch - 87;
+                    } else {
+                        break;
+                    }
+                    number = (number << 4) | i;
+                    digits++;
+                    mul_expr_pos++;
+                }
+            } else {
+                while (true) {
+                    ch = getbyte(mul_expr_buf, mul_expr_pos);
+                    if (ch < 48 || ch > 57) {
+                        break;
+                    }
+                    number = (number * 10) + (ch - 48);
+                    digits++;
+                    mul_expr_pos++;
+                }
+            }
+            if (digits == 0) {
+                return 0;
+            }
+            mul_expr_values[mul_expr_value_count] = number;
+            mul_expr_value_count++;
+            expect_value = 0;
+            continue;
+        }
+
+        if (ch == 41) {
+            while (mul_expr_op_count != 0 &&
+                   mul_expr_ops[mul_expr_op_count - 1] != 13) {
+                if (mul_apply_expression_op() == 0) {
+                    return 0;
+                }
+            }
+            if (mul_expr_op_count == 0) {
+                return 0;
+            }
+            mul_expr_op_count--;
+            mul_expr_pos++;
+            continue;
+        }
+        if (mul_read_expression_operator(&op) == 0) {
+            return 0;
+        }
+        prec = mul_precedence(op);
+        while (mul_expr_op_count != 0) {
+            top = mul_expr_ops[mul_expr_op_count - 1];
+            if (top == 13 || mul_precedence(top) < prec) {
+                break;
+            }
+            if (mul_apply_expression_op() == 0) {
+                return 0;
+            }
+        }
+        if (mul_expr_op_count >= 16) {
+            return 0;
+        }
+        mul_expr_ops[mul_expr_op_count] = op;
+        mul_expr_op_count++;
+        expect_value = 1;
+    }
+    if (expect_value != 0) {
+        return 0;
+    }
+    while (mul_expr_op_count != 0) {
+        if (mul_expr_ops[mul_expr_op_count - 1] == 13 ||
+            mul_apply_expression_op() == 0) {
+            return 0;
+        }
+    }
+    if (mul_expr_value_count != 1) {
+        return 0;
+    }
+    *out = mul_expr_values[0];
+    return 1;
+}
+
+u16 mul_condition(u16 first) {
+    u16 result = 0;
+    mul_expr_error = 0;
+    if (mul_join_tokens(first, mul_expr_buf) == 0) {
+        mul_expr_error = 1;
+        mul_command_error("invalid integer expression");
+        return 0;
+    }
+    if (mul_eval_expression(mul_expr_buf, &result) == 0) {
+        mul_expr_error = 1;
+        mul_command_error("invalid integer expression");
+        return 0;
+    }
+    return result != 0;
+}
+
+u16 mul_copy_line(u16 line_index) {
+    u16 i = 0;
+    u16 pos = mul_line_start[line_index];
+    u16 len = mul_line_len[line_index];
+    if (len >= MUL_LINE_BYTES) {
+        return 0;
+    }
+    while (i < len) {
+        setbyte(mul_line, i, getbyte(mul_source, pos + i));
+        i++;
+    }
+    setbyte(mul_line, len, 0);
+    return 1;
+}
+
+u16 mul_line_kind(u16 line_index) {
+    u16 pos = mul_line_start[line_index];
+    u16 end = pos + mul_line_len[line_index];
+    u16 ch = 0;
+    u16 len = 0;
+    while (pos < end && (getbyte(mul_source, pos) == 32 ||
+                         getbyte(mul_source, pos) == 9)) {
+        pos++;
+    }
+    while (pos < end) {
+        ch = getbyte(mul_source, pos);
+        if (ch == 32 || ch == 9) {
+            break;
+        }
+        pos++;
+        len++;
+    }
+    if (len == 2 && getbyte(mul_source, pos - 2) == 105 &&
+        getbyte(mul_source, pos - 1) == 102) {
+        return 1;
+    }
+    if (len == 5 && getbyte(mul_source, pos - 5) == 119 &&
+        getbyte(mul_source, pos - 4) == 104 &&
+        getbyte(mul_source, pos - 3) == 105 &&
+        getbyte(mul_source, pos - 2) == 108 &&
+        getbyte(mul_source, pos - 1) == 101) {
+        return 2;
+    }
+    if (len == 4 && getbyte(mul_source, pos - 4) == 101 &&
+        getbyte(mul_source, pos - 3) == 108 &&
+        getbyte(mul_source, pos - 2) == 115 &&
+        getbyte(mul_source, pos - 1) == 101) {
+        return 3;
+    }
+    if (len == 3 && getbyte(mul_source, pos - 3) == 101 &&
+        getbyte(mul_source, pos - 2) == 110 &&
+        getbyte(mul_source, pos - 1) == 100) {
+        return 4;
+    }
+    return 0;
+}
+
+u16 mul_build_lines(void) {
+    u16 pos = 0;
+    u16 start = 0;
+    u16 kind = 0;
+    u16 top = 0;
+    u16 open = 0;
+    u16 i = 0;
+
+    mul_line_count = 0;
+    while (pos < mul_source_len) {
+        if (getbyte(mul_source, pos) == 10) {
+            if (mul_line_count >= MUL_MAX_LINES) {
+                return 0;
+            }
+            mul_line_start[mul_line_count] = start;
+            mul_line_len[mul_line_count] = pos - start;
+            if (mul_line_len[mul_line_count] != 0 &&
+                getbyte(mul_source, pos - 1) == 13) {
+                mul_line_len[mul_line_count]--;
+            }
+            mul_line_count++;
+            start = pos + 1;
+        }
+        pos++;
+    }
+    if (start < mul_source_len) {
+        if (mul_line_count >= MUL_MAX_LINES) {
+            return 0;
+        }
+        mul_line_start[mul_line_count] = start;
+        mul_line_len[mul_line_count] = mul_source_len - start;
+        if (mul_line_len[mul_line_count] != 0 &&
+            getbyte(mul_source, mul_source_len - 1) == 13) {
+            mul_line_len[mul_line_count]--;
+        }
+        mul_line_count++;
+    }
+
+    i = 0;
+    while (i < MUL_MAX_LINES) {
+        mul_block_match[i] = 0xFFFF;
+        mul_block_else[i] = 0xFFFF;
+        mul_else_owner[i] = 0xFFFF;
+        i++;
+    }
+    mul_block_depth = 0;
+    i = 0;
+    while (i < mul_line_count) {
+        kind = mul_line_kind(i);
+        if (kind == 1 || kind == 2) {
+            if (mul_block_depth >= MUL_MAX_BLOCKS) {
+                return 0;
+            }
+            mul_block_stack[mul_block_depth] = i;
+            mul_block_stack_kind[mul_block_depth] = kind;
+            mul_block_depth++;
+        } else if (kind == 3) {
+            if (mul_block_depth == 0 ||
+                mul_block_stack_kind[mul_block_depth - 1] != 1 ||
+                mul_block_else[mul_block_stack[mul_block_depth - 1]] != 0xFFFF) {
+                return 0;
+            }
+            open = mul_block_stack[mul_block_depth - 1];
+            mul_block_else[open] = i;
+            mul_else_owner[i] = open;
+        } else if (kind == 4) {
+            if (mul_block_depth == 0) {
+                return 0;
+            }
+            top = mul_block_depth - 1;
+            open = mul_block_stack[top];
+            mul_block_match[open] = i;
+            mul_block_depth--;
+        }
+        i++;
+    }
+    return mul_block_depth == 0;
+}
+
+void mul_print_num(u16 value) {
+    mul_number_to_string(value, mul_value_tmp);
+    sys_puts(mul_value_tmp);
+}
+
+void mul_command_error(u16 *message) {
+    sys_puts("MuL: ");
+    sys_puts(message);
+    sys_puts("\r\n");
+}
+
+u16 mul_command(void) {
+    u16 i = 0;
+    u16 j = 0;
+    u16 ch = 0;
+    u16 status = 0;
+    u16 fd = 0;
+    u16 words = 0;
+    u16 bytes = 0;
+    u16 written = 0;
+    u16 value = 0;
+    u16 value2 = 0;
+    u16 previous = 0;
+    u16 *arg = 0;
+
+    if (mul_token_count == 0) {
+        return 1;
+    }
+    if (mul_equal_token(0, "set") == 1) {
+        if (mul_token_count != 3) {
+            mul_command_error("usage: set name value");
+            return 0;
+        }
+        if (mul_token_len[1] >= MUL_NAME_BYTES) {
+            mul_command_error("variable names are limited to 23 bytes");
+            return 0;
+        }
+        if (mul_var_set(mul_token(1), mul_token(2)) == 0) {
+            mul_command_error("variable table full");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "incr") == 1) {
+        if (mul_token_count < 2 || mul_token_count > 3) {
+            mul_command_error("usage: incr name ?amount?");
+            return 0;
+        }
+        if (mul_token_len[1] >= MUL_NAME_BYTES) {
+            mul_command_error("variable names are limited to 23 bytes");
+            return 0;
+        }
+        status = mul_var_find(mul_token(1));
+        if (status == 0xFFFF) {
+            if (mul_var_set(mul_token(1), "0") == 0) {
+                mul_command_error("variable table full");
+                return 0;
+            }
+            status = mul_var_find(mul_token(1));
+        }
+        if (mul_parse_number(
+                &mul_var_values[status * (MUL_VALUE_BYTES >> 1)], &value) == 0) {
+            mul_command_error("incr requires an integer variable");
+            return 0;
+        }
+        value2 = 1;
+        if (mul_token_count == 3 &&
+            mul_parse_number(mul_token(2), &value2) == 0) {
+            mul_command_error("incr amount must be an integer");
+            return 0;
+        }
+        mul_number_to_string(value + value2, mul_value_tmp);
+        mul_var_set(mul_token(1), mul_value_tmp);
+        return 1;
+    }
+    if (mul_equal_token(0, "puts") == 1) {
+        i = 1;
+        while (i < mul_token_count) {
+            if (i != 1) {
+                sys_putc(32);
+            }
+            sys_puts(mul_token(i));
+            i++;
+        }
+        sys_puts("\r\n");
+        return 1;
+    }
+    if (mul_equal_token(0, "gets") == 1) {
+        if (mul_token_count != 2 || mul_token_len[1] >= MUL_NAME_BYTES) {
+            mul_command_error("usage: gets name");
+            return 0;
+        }
+        sys_puts("MuL input> ");
+        status = mul_read_console_line();
+        if (status == 0xFFFF) {
+            return 0;
+        }
+        if (mul_var_set(mul_token(1), mul_line) == 0) {
+            mul_command_error("variable table full");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "argc") == 1) {
+        if (mul_token_count != 2 || mul_token_len[1] >= MUL_NAME_BYTES) {
+            mul_command_error("usage: argc name");
+            return 0;
+        }
+        mul_number_to_string(mul_arg_count(), mul_value_tmp);
+        if (mul_var_set(mul_token(1), mul_value_tmp) == 0) {
+            mul_command_error("variable table full");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "argv") == 1) {
+        if (mul_token_count != 3 || mul_token_len[2] >= MUL_NAME_BYTES) {
+            mul_command_error("usage: argv index name");
+            return 0;
+        }
+        if (mul_parse_number(mul_token(1), &value) == 0) {
+            mul_command_error("argv index must be an integer");
+            return 0;
+        }
+        if (mul_arg_get(value, mul_value_tmp) == 0) {
+            mul_command_error("argv index out of range");
+            return 0;
+        }
+        if (mul_var_set(mul_token(2), mul_value_tmp) == 0) {
+            mul_command_error("variable table full");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "args") == 1) {
+        if (mul_token_count != 2 || mul_token_len[1] >= MUL_NAME_BYTES) {
+            mul_command_error("usage: args name");
+            return 0;
+        }
+        if (mul_var_set(mul_token(1), mul_argv_raw) == 0) {
+            mul_command_error("variable table full");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "expr") == 1) {
+        if (mul_join_tokens(1, mul_expr_buf) == 0 ||
+            mul_eval_expression(mul_expr_buf, &value) == 0) {
+            mul_command_error("invalid integer expression");
+            return 0;
+        }
+        mul_print_num(value);
+        sys_puts("\r\n");
+        return 1;
+    }
+    if (mul_equal_token(0, "pwd") == 1) {
+        if (mul_token_count != 1) {
+            mul_command_error("usage: pwd");
+            return 0;
+        }
+        if (sys_getcwd(mul_cwd, 32) == 0) {
+            sys_puts(mul_cwd);
+            sys_puts("\r\n");
+        } else {
+            mul_command_error("pwd failed");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "cd") == 1) {
+        if (mul_token_count != 2) {
+            mul_command_error("usage: cd path");
+            return 0;
+        } else if (sys_chdir(mul_token(1)) != 0) {
+            mul_command_error("cd failed");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "ls") == 1) {
+        arg = ".";
+        if (mul_token_count > 2) {
+            mul_command_error("usage: ls ?path?");
+            return 0;
+        }
+        if (mul_token_count == 2) {
+            arg = mul_token(1);
+        }
+        status = sys_opendir(arg, &fd);
+        if (status != 0) {
+            mul_command_error("ls: cannot open directory");
+            return 0;
+        }
+        while (true) {
+            status = sys_readdir(fd, &mul_entry);
+            if (status != 0) {
+                break;
+            }
+            if ((mul_entry.attr & 0x0010) != 0) {
+                sys_puts("<DIR> ");
+            } else {
+                sys_puts("      ");
+            }
+            sys_puts(mul_entry.name);
+            sys_puts("\r\n");
+        }
+        sys_close(fd);
+        if (status != 3) {
+            mul_command_error("ls: directory read failed");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "cat") == 1) {
+        if (mul_token_count != 2) {
+            mul_command_error("usage: cat path");
+            return 0;
+        }
+        status = sys_open(mul_token(1), O_RDONLY, &fd);
+        if (status != 0) {
+            mul_command_error("cat: cannot open file");
+            return 0;
+        }
+        previous = 0;
+        while (true) {
+            status = sys_read(fd, mul_read_buf, 64, &words);
+            if (status != 0) {
+                break;
+            }
+            i = 0;
+            while (i < (words << 1)) {
+                ch = getbyte(mul_read_buf, i);
+                if (ch == 10 && previous != 13) {
+                    sys_putc(13);
+                }
+                if (ch != 0) {
+                    sys_putc(ch);
+                }
+                previous = ch;
+                i++;
+            }
+        }
+        sys_close(fd);
+        if (status != 3) {
+            mul_command_error("cat: read failed");
+            return 0;
+        } else if (previous != 10) {
+            sys_puts("\r\n");
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "write") == 1 ||
+        mul_equal_token(0, "append") == 1) {
+        if (mul_token_count < 3) {
+            mul_command_error("usage: write|append path text");
+            return 0;
+        }
+        bytes = 0;
+        i = 2;
+        while (i < mul_token_count) {
+            if (i != 2) {
+                setbyte(mul_write_buf, bytes, 32);
+                bytes++;
+            }
+            j = 0;
+            while (true) {
+                ch = getbyte(mul_token(i), j);
+                if (ch == 0) {
+                    break;
+                }
+                if (bytes >= 126) {
+                    mul_command_error("write text limit is 126 bytes");
+                    return 0;
+                }
+                setbyte(mul_write_buf, bytes, ch);
+                bytes++;
+                j++;
+            }
+            i++;
+        }
+        setbyte(mul_write_buf, bytes, 10);
+        bytes++;
+        setbyte(mul_write_buf, bytes, 0);
+        if (mul_equal_token(0, "append") == 1) {
+            status = sys_open(mul_token(1), O_APPEND, &fd);
+        } else {
+            status = sys_open(mul_token(1), O_WRONLY, &fd);
+        }
+        if (status != 0) {
+            mul_command_error("write: cannot open file");
+            return 0;
+        }
+        status = sys_write(fd, mul_write_buf, bytes, &written);
+        sys_close(fd);
+        if (status != 0 || written != bytes) {
+            mul_command_error("write failed");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "mkdir") == 1) {
+        if (mul_token_count != 2 || sys_mkdir(mul_token(1)) != 0) {
+            mul_command_error("mkdir failed");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "rmdir") == 1) {
+        if (mul_token_count != 2 || sys_rmdir(mul_token(1)) != 0) {
+            mul_command_error("rmdir failed");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "rm") == 1) {
+        if (mul_token_count != 2 || sys_unlink(mul_token(1)) != 0) {
+            mul_command_error("rm failed");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "mv") == 1) {
+        if (mul_token_count != 3 ||
+            sys_rename(mul_token(1), mul_token(2)) != 0) {
+            mul_command_error("mv failed");
+            return 0;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "run") == 1) {
+        if (mul_token_count < 2 || mul_join_tokens(1, mul_expr_buf) == 0) {
+            mul_command_error("usage: run program ?args?");
+            return 0;
+        }
+        status = sys_spawn(mul_expr_buf, &value);
+        if (status != 0) {
+            mul_command_error("run: could not start program");
+        } else {
+            sys_puts("Started PID ");
+            mul_print_num(value);
+            sys_puts("\r\n");
+        }
+        return status == 0;
+    }
+    if (mul_equal_token(0, "stat") == 1) {
+        if (mul_token_count != 2 || sys_stat(mul_token(1), &mul_entry) != 0) {
+            mul_command_error("stat failed");
+            return 0;
+        }
+        sys_puts("size=");
+        mul_print_num(mul_entry.size_lo);
+        sys_puts(" bytes\r\n");
+        return 1;
+    }
+    if (mul_equal_token(0, "ps") == 1) {
+        i = 0;
+        while (i < 255 && sys_ps(i, &mul_proc) == 0) {
+            mul_print_num(i);
+            sys_puts("  ");
+            sys_puts(mul_proc.name);
+            sys_puts("\r\n");
+            i++;
+        }
+        return 1;
+    }
+    if (mul_equal_token(0, "help") == 1) {
+        sys_puts("MuL: set incr puts expr if else while end argc argv args\r\n");
+        sys_puts("OS: pwd cd ls cat write append mkdir rmdir rm mv stat ps run gets exit\r\n");
+        return 1;
+    }
+    if (mul_equal_token(0, "exit") == 1) {
+        value = 0;
+        if (mul_token_count > 2 ||
+            (mul_token_count == 2 &&
+             mul_parse_number(mul_token(1), &value) == 0)) {
+            mul_command_error("usage: exit ?code?");
+            return 0;
+        }
+        sys_exit(value);
+        return 1;
+    }
+    mul_command_error("unknown command (try help)");
+    return 0;
+}
+
+u16 mul_load_script(u16 *path) {
+    u16 fd = 0;
+    u16 status = 0;
+    u16 words = 0;
+    u16 i = 0;
+    u16 ch = 0;
+    status = sys_open(path, O_RDONLY, &fd);
+    if (status != 0) {
+        mul_error = 1;
+        mul_command_error("cannot open script");
+        return 0;
+    }
+    mul_source_len = 0;
+    while (true) {
+        status = sys_read(fd, mul_read_buf, 64, &words);
+        if (status != 0) {
+            break;
+        }
+        i = 0;
+        while (i < (words << 1)) {
+            ch = getbyte(mul_read_buf, i);
+            if (mul_source_len >= MUL_SOURCE_BYTES - 2) {
+                sys_close(fd);
+                mul_error = 1;
+                mul_command_error("script exceeds 4094 bytes");
+                return 0;
+            }
+            setbyte(mul_source, mul_source_len, ch);
+            mul_source_len++;
+            i++;
+        }
+    }
+    sys_close(fd);
+    if (status != 3) {
+        mul_error = 1;
+        mul_command_error("script read failed");
+        return 0;
+    }
+    if (mul_source_len != 0 && getbyte(mul_source, mul_source_len - 1) == 0) {
+        mul_source_len--;
+    }
+    if (mul_source_len != 0 &&
+        getbyte(mul_source, mul_source_len - 1) != 10) {
+        setbyte(mul_source, mul_source_len, 10);
+        mul_source_len++;
+    }
+    return 1;
+}
+
+u16 mul_run_program(void) {
+    u16 kind = 0;
+    u16 open = 0;
+    u16 cond = 0;
+    u16 loop_top = 0;
+    u16 ok = 0;
+
+    mul_error = 0;
+    if (mul_build_lines() == 0) {
+        mul_error = 1;
+        mul_command_error("invalid or oversized structured block");
+        return 0;
+    }
+    mul_loop_depth = 0;
+    mul_pc = 0;
+    while (mul_pc < mul_line_count) {
+        if (mul_copy_line(mul_pc) == 0) {
+            mul_error = 1;
+            mul_command_error("line exceeds 127 bytes");
+            return 0;
+        }
+        if (mul_tokenize() == 0) {
+            if (mul_token_error == 2) {
+                mul_command_error("undefined variable");
+            } else if (mul_token_error == 3) {
+                mul_command_error("variable names are limited to 23 bytes");
+            } else if (mul_token_error == 4) {
+                mul_command_error("unclosed quote or brace");
+            } else {
+                mul_command_error("token or line too long");
+            }
+            mul_error = 1;
+            mul_pc++;
+            continue;
+        }
+        kind = mul_line_kind(mul_pc);
+        if (kind == 1) {
+            if (mul_token_count < 2) {
+                mul_command_error("if requires an expression");
+                mul_error = 1;
+                mul_pc = mul_block_match[mul_pc] + 1;
+                continue;
+            }
+            cond = mul_condition(1);
+            if (mul_expr_error != 0) {
+                mul_error = 1;
+                mul_pc = mul_block_match[mul_pc] + 1;
+                continue;
+            }
+            if (cond == 0) {
+                open = mul_pc;
+                if (mul_block_else[open] != 0xFFFF) {
+                    mul_pc = mul_block_else[open] + 1;
+                } else {
+                    mul_pc = mul_block_match[open] + 1;
+                }
+            } else {
+                mul_pc++;
+            }
+            continue;
+        }
+        if (kind == 2) {
+            if (mul_token_count < 2) {
+                mul_command_error("while requires an expression");
+                mul_error = 1;
+                mul_pc = mul_block_match[mul_pc] + 1;
+                continue;
+            }
+            cond = mul_condition(1);
+            if (mul_expr_error != 0) {
+                mul_error = 1;
+                mul_pc = mul_block_match[mul_pc] + 1;
+                continue;
+            }
+            if (cond == 0) {
+                if (mul_loop_depth != 0 &&
+                    mul_loop_open[mul_loop_depth - 1] == mul_pc) {
+                    mul_loop_depth--;
+                }
+                mul_pc = mul_block_match[mul_pc] + 1;
+            } else {
+                if (mul_loop_depth >= MUL_MAX_LOOPS) {
+                    mul_error = 1;
+                    mul_command_error("loop nesting limit reached");
+                    return 0;
+                }
+                if (mul_loop_depth == 0 ||
+                    mul_loop_open[mul_loop_depth - 1] != mul_pc) {
+                    mul_loop_open[mul_loop_depth] = mul_pc;
+                    mul_loop_end[mul_loop_depth] = mul_block_match[mul_pc];
+                    mul_loop_depth++;
+                }
+                mul_pc++;
+            }
+            continue;
+        }
+        if (kind == 3) {
+            if (mul_token_count != 1) {
+                mul_command_error("else takes no arguments");
+                mul_error = 1;
+            }
+            open = mul_else_owner[mul_pc];
+            if (open != 0xFFFF) {
+                mul_pc = mul_block_match[open] + 1;
+            } else {
+                mul_pc++;
+            }
+            continue;
+        }
+        if (kind == 4) {
+            if (mul_token_count != 1) {
+                mul_command_error("end takes no arguments");
+                mul_error = 1;
+            }
+            if (mul_loop_depth != 0 &&
+                mul_loop_end[mul_loop_depth - 1] == mul_pc) {
+                loop_top = mul_loop_depth - 1;
+                open = mul_loop_open[loop_top];
+                if (mul_copy_line(open) == 0 || mul_tokenize() == 0) {
+                    mul_error = 1;
+                    mul_command_error("invalid while condition");
+                    return 0;
+                }
+                cond = mul_condition(1);
+                if (mul_expr_error != 0) {
+                    mul_error = 1;
+                }
+                if (cond != 0) {
+                    mul_pc = open + 1;
+                } else {
+                    mul_loop_depth--;
+                    mul_pc++;
+                }
+            } else {
+                mul_pc++;
+            }
+            continue;
+        }
+        ok = mul_command();
+        mul_pc++;
+        if (ok == 0) {
+            mul_error = 1;
+        }
+    }
+    return mul_error == 0;
+}
+
+u16 mul_read_console_line(void) {
+    u16 ch = 0;
+    u16 status = 0;
+    u16 len = 0;
+    mul_input_overflow = 0;
+    setbyte(mul_line, 0, 0);
+    while (true) {
+        status = sys_getc(&ch);
+        if (status != 0) {
+            continue;
+        }
+        if (ch == 13 || ch == 10) {
+            sys_puts("\r\n");
+            setbyte(mul_line, len, 0);
+            if (mul_input_overflow != 0) {
+                mul_command_error("input line exceeds 126 bytes");
+                return 0xFFFF;
+            }
+            return len;
+        }
+        if (ch == 8 || ch == 127) {
+            if (len != 0) {
+                len--;
+                setbyte(mul_line, len, 0);
+                sys_puts("\b \b");
+            }
+        } else if (ch >= 32 && ch < 127 && len < MUL_LINE_BYTES - 2) {
+            setbyte(mul_line, len, ch);
+            len++;
+            setbyte(mul_line, len, 0);
+            sys_putc(ch);
+        } else if (ch >= 32 && ch < 127) {
+            mul_input_overflow = 1;
+        }
+    }
+    return 0;
+}
+
+u16 mul_read_console_script(void) {
+    u16 len = 0;
+    u16 block_depth = 0;
+    u16 kind = 0;
+    u16 i = 0;
+    mul_source_len = 0;
+    block_depth = 0;
+    while (true) {
+        if (block_depth == 0) {
+            sys_puts("MuL> ");
+        } else {
+            sys_puts("...> ");
+        }
+        len = mul_read_console_line();
+        if (len == 0xFFFF) {
+            mul_source_len = 0;
+            block_depth = 0;
+            continue;
+        }
+        if (len == 0 && block_depth == 0) {
+            continue;
+        }
+        if (mul_source_len + len + 2 >= MUL_SOURCE_BYTES) {
+            mul_command_error("input exceeds 4094 bytes");
+            mul_source_len = 0;
+            block_depth = 0;
+            continue;
+        }
+        i = 0;
+        while (i < len) {
+            setbyte(mul_source, mul_source_len, getbyte(mul_line, i));
+            mul_source_len++;
+            i++;
+        }
+        setbyte(mul_source, mul_source_len, 10);
+        mul_source_len++;
+        mul_line_start[0] = mul_source_len - len - 1;
+        mul_line_len[0] = len;
+        i = 0;
+        while (i < len) {
+            setbyte(mul_line, i,
+                    getbyte(mul_source, mul_line_start[0] + i));
+            i++;
+        }
+        setbyte(mul_line, len, 0);
+        kind = mul_line_kind(0);
+        if (kind == 1 || kind == 2) {
+            block_depth++;
+        } else if (kind == 4 && block_depth != 0) {
+            block_depth--;
+        }
+        if (block_depth == 0) {
+            mul_run_program();
+            mul_source_len = 0;
+        }
+    }
+    return 0;
+}
+
+void main(void) {
+    u16 i = 0;
+    u16 ch = 0;
+    mul_args[0] = 0;
+    mul_argv_raw[0] = 0;
+    sys_getargs(mul_args, 32);
+    while (i < 64) {
+        ch = getbyte(mul_args, i);
+        setbyte(mul_argv_raw, i, ch);
+        if (ch == 0) {
+            break;
+        }
+        i++;
+    }
+    i = 0;
+    while (i < 64) {
+        ch = getbyte(mul_args, i);
+        if (ch == 32 || ch == 9) {
+            setbyte(mul_args, i, 0);
+            break;
+        }
+        if (ch == 0) {
+            break;
+        }
+        i++;
+    }
+    if (getbyte(mul_args, 0) == 0) {
+        mul_read_console_script();
+    } else {
+        if (mul_load_script(mul_args) != 0) {
+            mul_run_program();
+        }
+        sys_exit(mul_error);
+    }
+}

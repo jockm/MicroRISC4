@@ -28,6 +28,7 @@
    - [3.8 Worker Crash & Fault Diagnostics](#38-worker-crash--fault-diagnostics)
 4. [Developer & API Reference](#4-developer--api-reference)
    - [4.1 Writing & Building Userland Applications](#41-writing--building-userland-applications)
+     - [MuL scripting interpreter](#mul-scripting-interpreter)
    - [4.2 Kernel Syscall Table (`0x01`–`0x25`)](#42-kernel-syscall-table-0x010x25)
    - [4.3 `lib/sys.a4` — System Call Client Library](#43-libsysa4--system-call-client-library)
    - [4.4 `lib/term.a4` — ANSI Terminal & Keyboard Library](#44-libterma4--ansi-terminal--keyboard-library)
@@ -225,7 +226,7 @@ Fibers are **purely an in-process library** — there are no OS shell commands f
 From the repository root:
 
 ```bash
-# Build Core 0 kernel, worker_stub, and userland apps (LS, PS, CAT, FIBERS)
+# Build Core 0 kernel, worker_stub, and userland apps (LS, PS, CAT, XI, FIBERS, MUL)
 make os-build
 
 # Pack apps and README.TXT into a 16 MB FAT32 SD image (/tmp/mr4_sd.img)
@@ -395,6 +396,48 @@ python3 tools/mksdimage.py build/sd_root -o /tmp/mr4_sd.img --size-mb 16 --spc 1
 Because MiniRISC4 is word-addressed (16 bits per word), strings are **packed 2 bytes per 16-bit word** in little-endian byte order (low byte = even index, high byte = odd index), NUL-terminated. Always access individual characters via ACT4's built-in `getbyte(buf, byte_idx)` and `setbyte(buf, byte_idx, ch)` intrinsics rather than indexing `buf[i]` directly.
 
 ---
+
+#### MuL scripting interpreter
+
+For a complete tutorial and command/language reference, see the
+[MuL Tutorial and Reference](mul_tutorial_and_reference.md). MuL is pronounced
+“Mule”.
+
+`MUL.PRG` is a small Picol-inspired interpreter with structured `if`/`else` and
+`while` blocks. Unlike Picol, MuL closes blocks with `end`. Picol is credited
+in the [MuL source header](../mr4src/act4/apps/mul.a4).
+Build and package it with the other userland apps:
+
+```text
+! MUL.PRG              # Start the interactive prompt
+! MUL.PRG HELLO.MUL    # Run a script from the current directory
+```
+
+Each command occupies one line; quotes and braces group arguments, and `$name`
+expands a variable. Variables are set with `set name value` and incremented
+with `incr name [amount]`. `puts` prints text, and `expr` evaluates unsigned
+16-bit integer expressions using
+parentheses, arithmetic, comparisons, `&&`, and `||`. Structured blocks use
+`if {expression}`, optional `else`, `while {expression}`, and `end`:
+
+```text
+set n 0
+while {$n < 3}
+puts $n
+incr n
+end
+```
+
+The OS commands are `pwd`, `cd`, `ls`, `cat`, `write`, `append`, `mkdir`,
+`rmdir`, `rm`, `mv`, `stat`, `ps`, and `run`. `gets name` reads a line from the
+foreground console. `help` lists commands and `exit` ends MuL. File writes
+accept up to 126 bytes of text per command and append a newline.
+
+This initial version uses bounded storage: scripts are limited to 4094 bytes
+and 128 lines, lines to 127 bytes, and the variable table to 16 entries (with
+names limited to 23 bytes).
+Blocks may nest 16 levels; loops may nest 8 levels.
+User-defined procedures and nested command substitution are not implemented.
 
 ### 4.2 Kernel Syscall Table (`0x01`–`0x25`)
 

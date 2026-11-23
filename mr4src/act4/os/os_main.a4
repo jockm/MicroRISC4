@@ -27,12 +27,16 @@ const u16 SYS_UNLINK    = 0x15;
 const u16 SYS_MKDIR     = 0x16;
 const u16 SYS_RMDIR     = 0x17;
 const u16 SYS_CHDIR     = 0x18;
+const u16 SYS_RENAME    = 0x19;
+const u16 SYS_STAT_PATH = 0x1A;
 
 // Class C: Buffer In (0x20..0x2F)
 const u16 SYS_READ      = 0x20;
 const u16 SYS_READDIR   = 0x21;
 const u16 SYS_PS        = 0x22;
 const u16 SYS_GETARGS   = 0x23;
+const u16 SYS_STAT_GET  = 0x24;
+const u16 SYS_GETCWD    = 0x25;
 
 // Error & Fault Exit Codes
 const u16 ERR_OK          = 0x0000;
@@ -228,11 +232,13 @@ void handle_syscall(void) {
     }
 
     if (id == SYS_OPEN) {
-        extra = fifo_in;                // mode: 0 = read, non-zero = create/write
+        extra = fifo_in;                // mode: 0 = read, 1 = write/create, 2 = append
         wlen  = fifo_in;
         read_fifo_str(wlen);
         if (extra == 0) {
             fd = fat32_open(pid, sys_buf);
+        } else if (extra == 2) {
+            fd = fat32_open_append(pid, sys_buf);
         } else {
             fd = fat32_open_write(pid, sys_buf);
         }
@@ -348,6 +354,75 @@ void handle_syscall(void) {
         return;
     }
 
+    if (id == SYS_RENAME) {
+        extra = fifo_in;
+        wlen  = fifo_in;
+        read_fifo_str(wlen);
+        // Split "SRC DST" into sys_buf (SRC) and sh_arg-sized local dst_buf
+        i = 0;
+        arg1 = 0;
+        while (i < ((SYS_BUF_WORDS << 1) - 2)) {
+            ch = getbyte(sys_buf, i);
+            if (ch == 0) {
+                break;
+            }
+            if (ch == 32) {
+                setbyte(sys_buf, i, 0);
+                i++;
+                while (getbyte(sys_buf, i) == 32) {
+                    i++;
+                }
+                arg1 = i;
+                break;
+            }
+            i++;
+        }
+        if (arg1 == 0) {
+            fifo_out = ERR_IO;
+            fifo_out = 2;
+            return;
+        }
+        // Copy DST to word-aligned second half of sys_buf (words 32..63)
+        i = 0;
+        while (i < 63) {
+            ch = getbyte(sys_buf, arg1 + i);
+            setbyte(&sys_buf[32], i, ch);
+            if (ch == 0) {
+                break;
+            }
+            i++;
+        }
+        setbyte(&sys_buf[32], 63, 0);
+        arg2 = fat32_rename(sys_buf, &sys_buf[32]);
+        if (arg2 == 0) {
+            fifo_out = ERR_OK;
+        } else {
+            fifo_out = ERR_IO;
+        }
+        fifo_out = arg2;
+        return;
+    }
+
+    if (id == SYS_STAT_PATH) {
+        extra = fifo_in;
+        wlen  = fifo_in;
+        read_fifo_str(wlen);
+        if (pid >= MAX_CORES) {
+            fifo_out = ERR_IO;
+            fifo_out = 1;
+            return;
+        }
+        arg2 = fat32_stat(sys_buf, &stat_cache[pid]);
+        if (arg2 == 0) {
+            fifo_out = ERR_OK;
+            fifo_out = stat_cache[pid].size_lo;
+        } else {
+            fifo_out = ERR_IO;
+            fifo_out = arg2;
+        }
+        return;
+    }
+
     if (id == SYS_READ) {
         extra = fifo_in;                // fd
         wlen  = fifo_in;                // max_words
@@ -442,6 +517,62 @@ void handle_syscall(void) {
                 arg2 = arg2 & 0x00FF;   // Guarantee NUL termination on truncation
             }
             fifo_out = arg2;
+            extra++;
+        }
+        return;
+    }
+
+    if (id == SYS_STAT_GET) {
+        extra = fifo_in;
+        wlen  = fifo_in;
+        if (pid >= MAX_CORES) {
+            fifo_out = ERR_IO;
+            fifo_out = 0;
+            return;
+        }
+        fifo_out = ERR_OK;
+        fifo_out = 11;
+        fifo_out = stat_cache[pid].attr;
+        fifo_out = stat_cache[pid].size_lo;
+        fifo_out = stat_cache[pid].size_hi;
+        i = 0;
+        while (i < 8) {
+            fifo_out = stat_cache[pid].name[i];
+            i++;
+        }
+        return;
+    }
+
+    if (id == SYS_GETCWD) {
+        extra = fifo_in;
+        wlen  = fifo_in;
+        if (wlen == 0) {
+            fifo_out = ERR_IO;
+            fifo_out = 0;
+            return;
+        }
+        if (wlen > SYS_BUF_WORDS) {
+            wlen = SYS_BUF_WORDS;
+        }
+        if (fat32_getcwd_path(sys_buf, wlen << 1) != 0) {
+            fifo_out = ERR_IO;
+            fifo_out = 0;
+            return;
+        }
+        i = 0;
+        while (i < wlen) {
+            arg2 = sys_buf[i];
+            if ((arg2 & 0x00FF) == 0 || (arg2 >> 8) == 0) {
+                i++;
+                break;
+            }
+            i++;
+        }
+        fifo_out = ERR_OK;
+        fifo_out = i;
+        extra = 0;
+        while (extra < i) {
+            fifo_out = sys_buf[extra];
             extra++;
         }
         return;

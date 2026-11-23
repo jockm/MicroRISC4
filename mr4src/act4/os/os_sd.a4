@@ -122,11 +122,17 @@ u16 sd_read_sector(u16 lba_hi, u16 lba_lo, u16 *buf) {
         return 2;
     }
 
-    // Read 512 bytes packed into 256 little-endian u16 words
+    // Read 512 bytes packed into 256 little-endian u16 words (inlined SPI xfer)
     i = 0;
     while (i < 256) {
-        lo = sd_xfer(0xFF);
-        hi = sd_xfer(0xFF);
+        spi_data = 0xFF;
+        while ((spi_stat & 0x0001) != 0) {
+        }
+        lo = spi_data & 0x00FF;
+        spi_data = 0xFF;
+        while ((spi_stat & 0x0001) != 0) {
+        }
+        hi = spi_data & 0x00FF;
         buf[i] = lo | (hi << 8);
         i++;
     }

@@ -19,14 +19,19 @@ const u16 SYS_UNLINK    = 0x15;
 const u16 SYS_MKDIR     = 0x16;
 const u16 SYS_RMDIR     = 0x17;
 const u16 SYS_CHDIR     = 0x18;
+const u16 SYS_RENAME    = 0x19;
+const u16 SYS_STAT_PATH = 0x1A;
 
 const u16 SYS_READ      = 0x20;
 const u16 SYS_READDIR   = 0x21;
 const u16 SYS_PS        = 0x22;
 const u16 SYS_GETARGS   = 0x23;
+const u16 SYS_STAT_GET  = 0x24;
+const u16 SYS_GETCWD    = 0x25;
 
 const u16 O_RDONLY      = 0;
 const u16 O_WRONLY      = 1;
+const u16 O_APPEND      = 2;
 
 type DirEntry {
     u16 attr;
@@ -391,6 +396,107 @@ u16 sys_getargs(u16 *dst_buf, u16 max_words) {
         LD0     R0
         INC     R0
         TRAP    R0, 0x23
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+        LOAD16  R0, __sys_r2
+        LD      (R0), R2
+    }
+    return _sys_r1;
+}
+
+u16 sys_rename(u16 *src, u16 *dst) {
+    u16 pair[32];
+    u16 o  = 0;
+    u16 i  = 0;
+    u16 ch = 0;
+
+    while (o < 30) {
+        ch = getbyte(src, i);
+        if (ch == 0) {
+            break;
+        }
+        setbyte(pair, o, ch);
+        o++;
+        i++;
+    }
+    setbyte(pair, o, 32);
+    o++;
+    i = 0;
+    while (o < 63) {
+        ch = getbyte(dst, i);
+        setbyte(pair, o, ch);
+        if (ch == 0) {
+            break;
+        }
+        o++;
+        i++;
+    }
+    setbyte(pair, 63, 0);
+
+    _sys_p1 = pair;
+    _sys_p2 = str_word_len(pair);
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LD0     R3
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x19
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+    }
+    return _sys_r1;
+}
+
+u16 sys_stat(u16 *path, DirEntry *out_ent) {
+    _sys_p1 = path;
+    _sys_p2 = str_word_len(path);
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LD0     R3
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x1A
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+    }
+    if (_sys_r1 != 0) {
+        return _sys_r1;
+    }
+    _sys_p1 = out_ent;
+    _sys_p2 = 11;
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LD0     R3
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x24
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+    }
+    return _sys_r1;
+}
+
+u16 sys_getcwd(u16 *dst_buf, u16 max_words) {
+    _sys_p1 = dst_buf;
+    _sys_p2 = max_words;
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LD0     R3
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x25
         LOAD16  R0, __sys_r1
         LD      (R0), R1
         LOAD16  R0, __sys_r2

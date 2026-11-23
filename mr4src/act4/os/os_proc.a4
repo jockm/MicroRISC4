@@ -39,6 +39,7 @@ u16 proc_con_out[MAX_CORES];        // 1 = allowed to write to UART console
 u16 proc_args[PROC_ARG_TOTAL];      // Per-core packed NUL-terminated argument string
 u16 proc_cwd_hi[MAX_CORES];         // Per-core CWD cluster high word
 u16 proc_cwd_lo[MAX_CORES];         // Per-core CWD cluster low word
+DirEntry stat_cache[MAX_CORES];     // Per-core SYS_STAT result cache
 u16 fg_pid = 0;                     // 0 = Core 0 shell owns UART RX, else worker PID
 u16 proc_last_words = 0;            // Word count of last streamed binary
 u16 proc_last_err   = 0;            // Last spawn error (SPAWN_*)

@@ -264,14 +264,37 @@ void shell_cmd_rm(void) {
     }
 }
 
-void shell_cmd_write(void) {
+// Copy second argument token from sh_line[sh_rest_idx..] into dst (max_bytes-1 chars).
+// Returns length copied (0 if missing).
+u16 shell_get_arg2(u16 *dst, u16 max_bytes) {
+    u16 i  = sh_rest_idx;
+    u16 j  = 0;
+    u16 ch = 0;
+    while (j < (max_bytes - 1)) {
+        ch = getbyte(sh_line, i);
+        if (ch == 0 || ch == 32) {
+            break;
+        }
+        setbyte(dst, j, ch);
+        i++;
+        j++;
+    }
+    setbyte(dst, j, 0);
+    return j;
+}
+
+void shell_cmd_write_mode(u16 append_mode) {
     u16 fd = 0;
     u16 i  = sh_rest_idx;
     u16 o  = 0;
     u16 ch = 0;
 
     if (getbyte(sh_arg, 0) == 0) {
-        uart_puts("Usage: write <file> <text>\r\n");
+        if (append_mode != 0) {
+            uart_puts("Usage: append <file> <text>\r\n");
+        } else {
+            uart_puts("Usage: write <file> <text>\r\n");
+        }
         return;
     }
     if (fat_mounted == 0) {
@@ -291,9 +314,13 @@ void shell_cmd_write(void) {
     setbyte(sys_buf, o, 10);        // append '\n'
     o++;
 
-    fd = fat32_open_write(0, sh_arg);
+    if (append_mode != 0) {
+        fd = fat32_open_append(0, sh_arg);
+    } else {
+        fd = fat32_open_write(0, sh_arg);
+    }
     if (fd == 0xFFFF) {
-        uart_puts("Failed to create: ");
+        uart_puts("Failed to open: ");
         uart_puts(sh_arg);
         uart_nl();
         return;
@@ -306,9 +333,102 @@ void shell_cmd_write(void) {
         return;
     }
     fat32_close(fd);
-    uart_puts("Wrote ");
+    if (append_mode != 0) {
+        uart_puts("Appended ");
+    } else {
+        uart_puts("Wrote ");
+    }
     uart_puts(sh_arg);
     uart_nl();
+}
+
+void shell_cmd_mv(void) {
+    u16 dst[16];
+    u16 err = 0;
+
+    if (getbyte(sh_arg, 0) == 0 || shell_get_arg2(dst, 32) == 0) {
+        uart_puts("Usage: mv <src> <dst>\r\n");
+        return;
+    }
+    if (fat_mounted == 0) {
+        uart_puts("SD/FAT32 not mounted\r\n");
+        return;
+    }
+    err = fat32_rename(sh_arg, dst);
+    if (err == 0) {
+        uart_puts("Moved ");
+        uart_puts(sh_arg);
+        uart_puts(" -> ");
+        uart_puts(dst);
+        uart_nl();
+    } else if (err == 3) {
+        uart_puts("Destination exists: ");
+        uart_puts(dst);
+        uart_nl();
+    } else {
+        uart_puts("Failed to move: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    }
+}
+
+void shell_cmd_cp(void) {
+    u16 dst[16];
+    u16 err = 0;
+
+    if (getbyte(sh_arg, 0) == 0 || shell_get_arg2(dst, 32) == 0) {
+        uart_puts("Usage: cp <src> <dst>\r\n");
+        return;
+    }
+    if (fat_mounted == 0) {
+        uart_puts("SD/FAT32 not mounted\r\n");
+        return;
+    }
+    err = fat32_copy(sh_arg, dst, sys_buf, SYS_BUF_WORDS << 1);
+    if (err == 0) {
+        uart_puts("Copied ");
+        uart_puts(sh_arg);
+        uart_puts(" -> ");
+        uart_puts(dst);
+        uart_nl();
+    } else if (err == 2) {
+        uart_puts("File not found: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else {
+        uart_puts("Failed to copy: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    }
+}
+
+void shell_cmd_df(void) {
+    u16 free_kb = 0;
+    u16 tot     = 0;
+
+    if (fat_mounted == 0) {
+        uart_puts("SD/FAT32 not mounted\r\n");
+        return;
+    }
+    if (fat32_df() != 0) {
+        uart_puts("df failed\r\n");
+        return;
+    }
+    tot = df_used_lo + df_free_lo;
+    if (sec_per_clus == 1) {
+        free_kb = df_free_lo >> 1;
+    } else {
+        free_kb = df_free_lo * (sec_per_clus >> 1);
+    }
+    uart_puts("Clusters: ");
+    uart_put_dec16(df_used_lo);
+    uart_puts(" used, ");
+    uart_put_dec16(df_free_lo);
+    uart_puts(" free (");
+    uart_put_dec16(tot);
+    uart_puts(" total, ");
+    uart_put_dec16(free_kb);
+    uart_puts(" KB free)\r\n");
 }
 
 void shell_cmd_stat(void) {
@@ -508,7 +628,7 @@ void shell_exec(void) {
     }
 
     if (str_eq(sh_cmd, "help") == 1) {
-        uart_puts("Commands: ps, ! <file> [args], run <file> [args], fg [--fgoutput] <pid>, bg <pid>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write <file> <text>, rm <file>, echo <text>, clear\r\n");
+        uart_puts("Commands: ps, ! <file> [args], run <file> [args], fg [--fgoutput] <pid>, bg <pid>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write/append <file> <text>, cp/mv <src> <dst>, rm <file>, df, echo <text>, clear\r\n");
     } else if (str_eq(sh_cmd, "ps") == 1) {
         proc_print_ps();
     } else if (str_eq(sh_cmd, "fg") == 1) {
@@ -542,7 +662,15 @@ void shell_exec(void) {
     } else if (str_eq(sh_cmd, "rm") == 1) {
         shell_cmd_rm();
     } else if (str_eq(sh_cmd, "write") == 1) {
-        shell_cmd_write();
+        shell_cmd_write_mode(0);
+    } else if (str_eq(sh_cmd, "append") == 1) {
+        shell_cmd_write_mode(1);
+    } else if (str_eq(sh_cmd, "mv") == 1) {
+        shell_cmd_mv();
+    } else if (str_eq(sh_cmd, "cp") == 1) {
+        shell_cmd_cp();
+    } else if (str_eq(sh_cmd, "df") == 1) {
+        shell_cmd_df();
     } else if (str_eq(sh_cmd, "stat") == 1) {
         shell_cmd_stat();
     } else if (str_eq(sh_cmd, "echo") == 1) {

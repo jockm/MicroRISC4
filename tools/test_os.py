@@ -1718,6 +1718,160 @@ void main(void) {
         assert worker_sim.mem[0x0005] == 0xFAFF, f"Core 1 ASP leaked: 0x{worker_sim.mem[0x0005]:04X}"
 
 
+# ------------------------------------------------------------------------------
+# Test 13: Everyday FS ops & syscalls (append, cp, mv, df, O_APPEND, SYS_RENAME, SYS_STAT, SYS_GETCWD)
+# ------------------------------------------------------------------------------
+def test_os_fs_ops_syscalls(_args):
+    fsapp_src = """
+import "sys.a4";
+
+DirEntry st;
+u16 cwd_buf[32];
+u16 rd_buf[32];
+
+void fail(u16 code) {
+    sys_puts("FSAPP_FAIL:");
+    sys_putc(code);
+    sys_puts("\\r\\n");
+    sys_exit(code);
+}
+
+void main(void) {
+    u16 fd = 0;
+    u16 wr = 0;
+    u16 nw = 0;
+
+    if (sys_open("A.TXT", O_WRONLY, &fd) != 0) {
+        fail(65);               // 'A'
+    }
+    if (sys_write(fd, "hello_", 6, &wr) != 0 || wr != 6) {
+        fail(66);               // 'B'
+    }
+    sys_close(fd);
+
+    if (sys_open("A.TXT", O_APPEND, &fd) != 0) {
+        fail(67);               // 'C'
+    }
+    if (sys_write(fd, "world\\n", 6, &wr) != 0 || wr != 6) {
+        fail(68);               // 'D'
+    }
+    sys_close(fd);
+
+    if (sys_stat("A.TXT", &st) != 0 || st.size_lo != 12) {
+        fail(69);               // 'E'
+    }
+    if (sys_rename("A.TXT", "/BOX2/B.TXT") != 0) {
+        fail(70);               // 'F'
+    }
+    if (sys_chdir("/BOX2") != 0) {
+        fail(71);               // 'G'
+    }
+    if (sys_getcwd(cwd_buf, 32) != 0) {
+        fail(72);               // 'H'
+    }
+    sys_puts("CWD:");
+    sys_puts(cwd_buf);
+    sys_puts("\\r\\n");
+
+    if (sys_open("B.TXT", O_RDONLY, &fd) != 0) {
+        fail(73);               // 'I'
+    }
+    if (sys_read(fd, rd_buf, 16, &nw) != 0 || nw == 0) {
+        fail(74);               // 'J'
+    }
+    rd_buf[nw] = 0;
+    sys_close(fd);
+    sys_puts("READ:");
+    sys_puts(rd_buf);
+    sys_puts("FSAPP_OK\\r\\n");
+    sys_exit(0);
+}
+"""
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td)
+        sd_root = p / "sd_root"
+        sd_root.mkdir()
+        a4 = p / "fsapp.a4"
+        app_bin = sd_root / "FSAPP.BIN"
+        a4.write_text(fsapp_src, encoding="utf-8")
+        compile_and_assemble(a4, app_bin, org=0x0400, nopreamble=True, sparsebin=True)
+
+        sd_img = p / "fsops_test.img"
+        subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
+             "-o", str(sd_img), "--size-mb", "16", "--spc", "1"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
+        os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
+        os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+        os_sim.pc = 0x0100
+        uart_out, bad_writes = attach_uart_and_watch(os_sim)
+
+        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+        worker_sim.pc = 0x0100
+        worker_sim._poll_stdin = lambda: None
+        mr4sim.connect_os_worker(os_sim, worker_sim)
+
+        assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
+
+        def send_cmd(cmd_str, max_steps=16000000):
+            start = len(uart_out)
+            for ch in cmd_str:
+                os_sim.rx_queue.append(ord(ch))
+            ok = run_until_prompt(os_sim, uart_out, max_steps, worker=worker_sim)
+            assert ok, f"Command {cmd_str!r} timed out; out={''.join(uart_out[start:])!r}"
+            return "".join(uart_out[start:])
+
+        # 1. Shell write + append + cp + mv across directories
+        assert "Wrote log.txt" in send_cmd("write log.txt line1\r")
+        assert "Appended log.txt" in send_cmd("append log.txt line2\r")
+        out_log = send_cmd("cat log.txt\r")
+        assert "line1\r\nline2" in out_log, f"append mismatch:\n{out_log}"
+
+        assert "Copied log.txt -> copy.txt" in send_cmd("cp log.txt copy.txt\r")
+        assert "line1\r\nline2" in send_cmd("cat copy.txt\r")
+
+        assert "Created box" in send_cmd("mkdir box\r")
+        assert "Moved copy.txt -> box/moved.txt" in send_cmd("mv copy.txt box/moved.txt\r")
+        assert "File not found: copy.txt" in send_cmd("cat copy.txt\r")
+        assert "line1\r\nline2" in send_cmd("cat box/moved.txt\r")
+
+        # 2. Cross-directory mv of a directory updates ".." cleanly
+        assert "Created box2" in send_cmd("mkdir box2\r")
+        assert "Moved box -> box2/mdir" in send_cmd("mv box box2/mdir\r")
+        send_cmd("cd box2/mdir\r")
+        assert "line1\r\nline2" in send_cmd("cat moved.txt\r")
+        send_cmd("cd ..\r")
+        assert "\r\n/BOX2\r\n" in send_cmd("pwd\r")
+        send_cmd("cd /\r")
+
+        # 3. Shell `df` scans FAT1 and reports clusters & KB free
+        out_df = send_cmd("df\r", max_steps=35000000)
+        assert "Clusters:" in out_df and "used," in out_df and "KB free)" in out_df, f"Unexpected df:\n{out_df}"
+
+        # 4. Userland FSAPP.BIN exercising O_APPEND, SYS_STAT, SYS_RENAME, SYS_GETCWD
+        procs_addr = os_sim.sym_to_addr["_procs"]
+        pid1_state = procs_addr + 10
+        out_app = send_cmd("! FSAPP.BIN\r", max_steps=20000000)
+        assert "CWD:/BOX2" in out_app, f"SYS_GETCWD mismatch:\n{out_app}"
+        assert "READ:hello_world" in out_app, f"O_APPEND/SYS_RENAME readback mismatch:\n{out_app}"
+        assert "FSAPP_OK" in out_app, f"FSAPP.BIN failed:\n{out_app}"
+        assert os_sim.mem[pid1_state] == 0 and os_sim.mem[pid1_state + 1] == 0
+
+        fds_addr = os_sim.sym_to_addr["_fds"]
+        assert not [i for i in range(8) if os_sim.mem[fds_addr + i * 15] != 0], "Leaked FDs"
+        assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
+        assert os_sim.mem[0x0005] == 0xFAFF
+        assert worker_sim.mem[0x0004] == 0xFEFF
+        assert worker_sim.mem[0x0005] == 0xFAFF
+
+
 TESTS = [
     ("compiler_runtime", test_compiler_runtime),
     ("trap_isr", test_trap_isr),
@@ -1731,6 +1885,7 @@ TESTS = [
     ("os_fat32_subdirs", test_os_fat32_subdirs),
     ("os_console_fg_bg", test_os_console_fg_bg),
     ("os_worker_fault_reporting", test_os_worker_fault_reporting),
+    ("os_fs_ops_syscalls", test_os_fs_ops_syscalls),
 ]
 
 

@@ -1,0 +1,32 @@
+// ==============================================================================
+// FILE: mr4src/act4/apps/ps.a4
+// Standalone User-Space Process Listing App (loads at 0x0400)
+// ==============================================================================
+
+import "sys.a4";
+
+ProcEntry proc_ent;
+
+void main(void) {
+    u16 pid = 0;
+
+    sys_puts("PID  STATE  NAME\r\n");
+    while (sys_ps(pid, &proc_ent) == 0) {
+        sys_putc(pid + 48);
+        sys_puts("    ");
+        if (proc_ent.state == 0) {
+            sys_puts("FREE   -\r\n");
+        } else if (proc_ent.state == 1) {
+            sys_puts("LOAD   ");
+            sys_puts(proc_ent.name);
+            sys_puts("\r\n");
+        } else {
+            sys_puts("RUN    ");
+            sys_puts(proc_ent.name);
+            sys_puts("\r\n");
+        }
+        pid++;
+    }
+
+    sys_exit(0);
+}

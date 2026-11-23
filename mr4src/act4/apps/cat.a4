@@ -1,0 +1,45 @@
+// ==============================================================================
+// FILE: mr4src/act4/apps/cat.a4
+// Standalone User-Space File Reader App (loads at 0x0400)
+// Demonstrates SYS_OPEN / SYS_READ / SYS_WRITE_CON / SYS_CLOSE on README.TXT
+// ==============================================================================
+
+import "sys.a4";
+
+u16 read_buf[65];
+
+void main(void) {
+    u16 fd = 0;
+    u16 nwords = 0;
+    u16 i = 0;
+    u16 ch = 0;
+    u16 prev = 0;
+
+    if (sys_open("README.TXT", 0, &fd) != 0) {
+        sys_puts("cat: failed to open README.TXT\r\n");
+        sys_exit(1);
+    }
+
+    while (sys_read(fd, read_buf, 64, &nwords) == 0) {
+        read_buf[nwords] = 0;
+        i = 0;
+        while (i < (nwords << 1)) {
+            ch = getbyte(read_buf, i);
+            if (ch == 0) {
+                break;
+            }
+            if (ch == 10 && prev != 13) {
+                sys_putc(13);
+            }
+            sys_putc(ch);
+            prev = ch;
+            i++;
+        }
+    }
+    if (prev != 10) {
+        sys_puts("\r\n");
+    }
+
+    sys_close(fd);
+    sys_exit(0);
+}

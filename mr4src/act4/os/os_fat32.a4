@@ -221,6 +221,165 @@ void fat32_close(u16 fd) {
     }
 }
 
+void fat32_close_owner(u16 owner_core) {
+    u16 fd = 0;
+    while (fd < 8) {
+        if (fds[fd].in_use != 0 && fds[fd].owner_core == owner_core) {
+            fds[fd].in_use = 0;
+        }
+        fd++;
+    }
+}
+
+// Open an 8.3 file (case-insensitive) in root directory for streaming reads.
+// Returns fd (0..7) or 0xFFFF on error / not found.
+u16 fat32_open_root(u16 owner_core, u16 *filename) {
+    u16 fd           = 0;
+    u16 slot         = 0xFFFF;
+    u16 off          = 0;
+    u16 first        = 0;
+    u16 attr         = 0;
+    u16 sec_idx      = 0;
+    u16 scan_clus_lo = root_clus_lo;
+    u16 scan_clus_hi = root_clus_hi;
+    u16 entry_name[8];
+
+    if (fat_mounted == 0) {
+        return 0xFFFF;
+    }
+
+    while (fd < 8) {
+        if (fds[fd].in_use == 0) {
+            slot = fd;
+            break;
+        }
+        fd++;
+    }
+    if (slot == 0xFFFF) {
+        return 0xFFFF;
+    }
+
+    while (true) {
+        sec_idx = 0;
+        while (sec_idx < sec_per_clus) {
+            cluster_to_lba(scan_clus_hi, scan_clus_lo);
+            add32(tmp32_hi, tmp32_lo, 0, sec_idx);
+            if (sd_read_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
+                return 0xFFFF;
+            }
+            off = 0;
+            while (off < 512) {
+                first = getbyte(sec_buf, off);
+                attr  = getbyte(sec_buf, off + 11);
+                if (first == 0x00) {
+                    return 0xFFFF;
+                }
+                if (first != 0xE5 && attr != 0x0F && (attr & 0x08) == 0 && (attr & 0x10) == 0) {
+                    format_83_name(off, entry_name);
+                    if (str_eq_ci(entry_name, filename) == 1) {
+                        fds[slot].in_use      = 1;
+                        fds[slot].is_dir      = 0;
+                        fds[slot].owner_core  = owner_core;
+                        fds[slot].cur_clus_lo = rd_u16(sec_buf, off + 26);
+                        fds[slot].cur_clus_hi = rd_u16(sec_buf, off + 20);
+                        fds[slot].sec_in_clus = 0;
+                        fds[slot].byte_in_sec = 0;
+                        fds[slot].size_lo     = rd_u16(sec_buf, off + 28);
+                        fds[slot].size_hi     = rd_u16(sec_buf, off + 30);
+                        fds[slot].pos_lo      = 0;
+                        fds[slot].pos_hi      = 0;
+                        return slot;
+                    }
+                }
+                off = off + 32;
+            }
+            sec_idx++;
+        }
+        if (fat32_next_cluster(scan_clus_hi, scan_clus_lo) != 0) {
+            return 0xFFFF;
+        }
+        scan_clus_hi = tmp32_hi;
+        scan_clus_lo = tmp32_lo;
+    }
+    return 0xFFFF;
+}
+
+// Read up to max_bytes from an open file fd into packed dst_buf.
+// Returns exact byte count read (0 on EOF or error).
+u16 fat32_read_bytes(u16 fd, u16 *dst_buf, u16 max_bytes) {
+    u16 out_idx = 0;
+    u16 boff    = 0;
+    u16 b       = 0;
+    u16 p_lo    = 0;
+    u16 p_hi    = 0;
+    u16 s_lo    = 0;
+    u16 s_hi    = 0;
+
+    if (fd >= 8 || fds[fd].in_use == 0 || fds[fd].is_dir != 0 || max_bytes == 0) {
+        return 0;
+    }
+
+    p_lo = fds[fd].pos_lo;
+    p_hi = fds[fd].pos_hi;
+    s_lo = fds[fd].size_lo;
+    s_hi = fds[fd].size_hi;
+
+    while (out_idx < max_bytes) {
+        if (p_hi > s_hi || (p_hi == s_hi && p_lo >= s_lo)) {
+            break;
+        }
+        if (fds[fd].cur_clus_hi == 0 && fds[fd].cur_clus_lo < 2) {
+            break;
+        }
+
+        cluster_to_lba(fds[fd].cur_clus_hi, fds[fd].cur_clus_lo);
+        add32(tmp32_hi, tmp32_lo, 0, fds[fd].sec_in_clus);
+        if (sd_read_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
+            break;
+        }
+
+        boff = fds[fd].byte_in_sec;
+        while (boff < 512 && out_idx < max_bytes) {
+            if (p_hi > s_hi || (p_hi == s_hi && p_lo >= s_lo)) {
+                break;
+            }
+            b = getbyte(sec_buf, boff);
+            setbyte(dst_buf, out_idx, b);
+            out_idx++;
+            boff++;
+            p_lo++;
+            if (p_lo == 0) {
+                p_hi++;
+            }
+        }
+
+        fds[fd].byte_in_sec = boff;
+        if (boff >= 512) {
+            fds[fd].byte_in_sec = 0;
+            fds[fd].sec_in_clus++;
+            if (fds[fd].sec_in_clus >= sec_per_clus) {
+                fds[fd].sec_in_clus = 0;
+                if (fat32_next_cluster(fds[fd].cur_clus_hi, fds[fd].cur_clus_lo) != 0) {
+                    fds[fd].cur_clus_hi = 0;
+                    fds[fd].cur_clus_lo = 0;
+                    break;
+                }
+                fds[fd].cur_clus_hi = tmp32_hi;
+                fds[fd].cur_clus_lo = tmp32_lo;
+            }
+        }
+    }
+
+    fds[fd].pos_lo = p_lo;
+    fds[fd].pos_hi = p_hi;
+
+    // Zero-pad upper byte of final word if an odd number of bytes was read
+    if ((out_idx & 0x0001) != 0) {
+        setbyte(dst_buf, out_idx, 0);
+    }
+    return out_idx;
+}
+
 // Read next valid 8.3 directory entry into *out (0 = OK, 1 = EOF)
 u16 fat32_readdir(u16 fd, DirEntry *out) {
     u16 off   = 0;

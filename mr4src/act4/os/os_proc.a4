@@ -57,7 +57,7 @@ void proc_mark_exited(u16 pid, u16 code) {
     }
     procs[pid].state = PROC_FREE;
     procs[pid].exit_code = code;
-    // TODO: close any open FileHandles owned by pid
+    fat32_close_owner(pid);
 }
 
 // Force-kill a running worker core via Mailbox Trap 14
@@ -71,7 +71,7 @@ u16 proc_kill(u16 pid) {
     mailbox = (pid << 8) | TRAP_KILL;
     procs[pid].state = PROC_FREE;
     procs[pid].exit_code = 0xFFFF;
-    // TODO: close any open FileHandles owned by pid
+    fat32_close_owner(pid);
     return 0;
 }
 

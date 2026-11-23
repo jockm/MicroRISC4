@@ -28,6 +28,12 @@ type DirEntry {
     u16 name[8];
 };
 
+type ProcEntry {
+    u16 state;
+    u16 exit_code;
+    u16 name[8];
+};
+
 u16 _sys_p1 = 0;
 u16 _sys_p2 = 0;
 u16 _sys_p3 = 0;
@@ -149,6 +155,94 @@ u16 sys_readdir(u16 dir_fd, DirEntry *ent) {
         LD0     R0
         INC     R0
         TRAP    R0, 0x21
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+        LOAD16  R0, __sys_r2
+        LD      (R0), R2
+    }
+    return _sys_r1;
+}
+
+u16 sys_open(u16 *path, u16 mode, u16 *out_fd) {
+    _sys_p1 = path;
+    _sys_p2 = str_word_len(path);
+    _sys_p3 = mode;
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LOAD16  R0, __sys_p3
+        LD      R3, (R0)
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x12
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+        LOAD16  R0, __sys_r2
+        LD      (R0), R2
+    }
+    _sys_w = out_fd;
+    _sys_w[0] = _sys_r2;
+    return _sys_r1;
+}
+
+u16 sys_unlink(u16 *path) {
+    _sys_p1 = path;
+    _sys_p2 = str_word_len(path);
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LD0     R3
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x15
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+    }
+    return _sys_r1;
+}
+
+u16 sys_read(u16 fd, u16 *dst_buf, u16 max_words, u16 *out_words) {
+    _sys_p1 = dst_buf;
+    _sys_p2 = max_words;
+    _sys_p3 = fd;
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LOAD16  R0, __sys_p3
+        LD      R3, (R0)
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x20
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+        LOAD16  R0, __sys_r2
+        LD      (R0), R2
+    }
+    _sys_w = out_words;
+    _sys_w[0] = _sys_r2;
+    return _sys_r1;
+}
+
+u16 sys_ps(u16 idx, ProcEntry *out_proc) {
+    _sys_p1 = out_proc;
+    _sys_p2 = 10;
+    _sys_p3 = idx;
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LOAD16  R0, __sys_p3
+        LD      R3, (R0)
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x22
         LOAD16  R0, __sys_r1
         LD      (R0), R1
         LOAD16  R0, __sys_r2

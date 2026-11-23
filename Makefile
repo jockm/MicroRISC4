@@ -267,6 +267,18 @@ LS_ASM      := $(OS_BUILD)/ls.asm
 LS_BIN      := $(OS_BUILD)/ls.bin
 LS_LST      := $(OS_BUILD)/ls.lst
 
+PS_A4       := $(OS_SRC_DIR)/apps/ps.a4
+PS_ASM      := $(OS_BUILD)/ps.asm
+PS_BIN      := $(OS_BUILD)/ps.bin
+PS_LST      := $(OS_BUILD)/ps.lst
+
+CAT_A4      := $(OS_SRC_DIR)/apps/cat.a4
+CAT_ASM     := $(OS_BUILD)/cat.asm
+CAT_BIN     := $(OS_BUILD)/cat.bin
+CAT_LST     := $(OS_BUILD)/cat.lst
+
+OS_APP_BINS := $(LS_BIN) $(PS_BIN) $(CAT_BIN)
+
 .PHONY: os-build sd-img sim-os clean-os
 
 $(OS_BUILD):
@@ -278,17 +290,19 @@ $(OS_MAIN_ASM): $(OS_MAIN_A4) $(wildcard $(OS_SRC_DIR)/os/*.a4) | $(OS_BUILD)
 $(OS_MAIN_BIN) $(OS_MAIN_LST): $(OS_MAIN_ASM)
 	$(MR4ASM) -I $(LIB_DIR) "$<" -o "$(OS_MAIN_BIN)" -l "$(OS_MAIN_LST)"
 
-$(LS_ASM): $(LS_A4) lib/sys.a4 | $(OS_BUILD)
-	$(COMPILE) $(LS_A4) -o $(LS_ASM) -I $(OS_SRC_DIR)/os -I lib --org 0x0400 --nopreamble
+$(OS_BUILD)/%.asm: $(OS_SRC_DIR)/apps/%.a4 lib/sys.a4 | $(OS_BUILD)
+	$(COMPILE) $< -o $@ -I $(OS_SRC_DIR)/os -I lib --org 0x0400 --nopreamble
 
-$(LS_BIN) $(LS_LST): $(LS_ASM)
-	$(MR4ASM) -I $(LIB_DIR) --sparsebin "$<" -o "$(LS_BIN)" -l "$(LS_LST)"
+$(OS_BUILD)/%.bin: $(OS_BUILD)/%.asm
+	$(MR4ASM) -I $(LIB_DIR) --sparsebin "$<" -o "$@" -l "$(@:.bin=.lst)"
 
-os-build: $(OS_MAIN_BIN) $(LS_BIN) $(BUILD_DIR)/worker_stub.bin
+os-build: $(OS_MAIN_BIN) $(OS_APP_BINS) $(BUILD_DIR)/worker_stub.bin
 
-$(SD_SRC_DIR): $(LS_BIN)
+$(SD_SRC_DIR): $(OS_APP_BINS)
 	mkdir -p $(SD_SRC_DIR)
 	cp $(LS_BIN) $(SD_SRC_DIR)/LS.BIN
+	cp $(PS_BIN) $(SD_SRC_DIR)/PS.BIN
+	cp $(CAT_BIN) $(SD_SRC_DIR)/CAT.BIN
 	printf "Hello from MiniRISC4 FAT32 SD card!\n" > $(SD_SRC_DIR)/README.TXT
 
 sd-img: $(SD_SRC_DIR)

@@ -136,6 +136,29 @@ void handle_syscall(void) {
         return;
     }
 
+    if (id == SYS_OPEN) {
+        extra = fifo_in;                // mode (0 = read)
+        wlen  = fifo_in;
+        i = 0;
+        while (i < wlen) {
+            arg1 = fifo_in;
+            if (i < 63) {
+                sys_buf[i] = arg1;
+            }
+            i++;
+        }
+        sys_buf[63] = 0;
+        fd = fat32_open_root(pid, sys_buf);
+        if (fd == 0xFFFF) {
+            fifo_out = ERR_IO;
+            fifo_out = 0;
+        } else {
+            fifo_out = ERR_OK;
+            fifo_out = fd;
+        }
+        return;
+    }
+
     if (id == SYS_OPENDIR) {
         extra = fifo_in;
         wlen  = fifo_in;
@@ -173,6 +196,29 @@ void handle_syscall(void) {
         return;
     }
 
+    if (id == SYS_READ) {
+        extra = fifo_in;                // fd
+        wlen  = fifo_in;                // max_words
+        if (wlen > 64) {
+            wlen = 64;
+        }
+        arg1 = fat32_read_bytes(extra, sys_buf, wlen << 1);
+        if (arg1 == 0) {
+            fifo_out = ERR_EOF;
+            fifo_out = 0;
+        } else {
+            arg2 = (arg1 + 1) >> 1;     // word count
+            fifo_out = ERR_OK;
+            fifo_out = arg2;
+            i = 0;
+            while (i < arg2) {
+                fifo_out = sys_buf[i];
+                i++;
+            }
+        }
+        return;
+    }
+
     if (id == SYS_READDIR) {
         extra = fifo_in;                // dir_fd
         wlen  = fifo_in;                // max_words (11)
@@ -188,6 +234,26 @@ void handle_syscall(void) {
             i = 0;
             while (i < 8) {
                 fifo_out = sys_ent.name[i];
+                i++;
+            }
+        }
+        return;
+    }
+
+    if (id == SYS_PS) {
+        extra = fifo_in;                // pid index (0..3)
+        wlen  = fifo_in;                // max_words (10)
+        if (extra >= 4) {
+            fifo_out = ERR_EOF;
+            fifo_out = 0;
+        } else {
+            fifo_out = ERR_OK;
+            fifo_out = 10;
+            fifo_out = procs[extra].state;
+            fifo_out = procs[extra].exit_code;
+            i = 0;
+            while (i < 8) {
+                fifo_out = procs[extra].name[i];
                 i++;
             }
         }

@@ -245,7 +245,8 @@ class CpuCore extends Module {
         ? ~portBAddr.slice(15, config.addrWidth).eq(
             Const(0, width: 16 - config.addrWidth))
         : Const(0);
-    final ramBWe = portBWe & ~isMmio & ~isExtPortB;
+    final ramBWe =
+        useExtCache ? (portBWe & ~isMmio & ~isExtPortB) : (portBWe & ~isMmio);
 
     // Instantiate Synthesizable True Dual-Port BRAM
     ram = TdpBram(
@@ -379,14 +380,19 @@ class CpuCore extends Module {
         [addA, decArithSubQ].swizzle() + [addBInv, decArithSubQ].swizzle();
     final arithRes = arithSum17.slice(16, 1);
 
-    // External SDRAM-cached address detectors (slice check -> zero CCU2C carry chains)
+    // External SDRAM-cached address detectors (slice check -> zero CCU2C carry chains).
+    // Note: isExtPredec checks regR (BEFORE the 16-bit CCU2C adder) rather than
+    // arithRes so the carry chain never feeds FSM state/PC enable control!
+    // The single boundary case regR==memWords (regR-1 local) resolves cleanly in _stMemWait.
     Logic isExtAddr(Logic addr) => ~addr
         .slice(15, config.addrWidth)
         .eq(Const(0, width: 16 - config.addrWidth));
     final isExtPc = useExtCache ? isExtAddr(pc) : Const(0);
     final isExtNextPc = useExtCache ? isExtAddr(pcPlus1) : Const(0);
     final isExtPoke = useExtCache ? isExtAddr(regR) : Const(0);
-    final isExtPredec = useExtCache ? isExtAddr(arithRes) : Const(0);
+    final isExtPredec = useExtCache
+        ? (isExtAddr(regR) | regR.eq(Const(0, width: 16)))
+        : Const(0);
 
     if (useExtCache) {
       icReqValidOut! <= state.eq(Const(_stFetch, width: 3)) & isExtPc;
@@ -846,7 +852,35 @@ class CpuCore extends Module {
                   ], orElse: [
                     portBEn < 0,
                     portBWe < 0,
-                    state < Const(_stMemWait2, width: 3),
+                    If(extWrPendingQ, then: [
+                      // Boundary case: pre-decrement crossed memWords -> memWords-1 (local BRAM);
+                      // TdpBram already committed the write on this posedge, so advance directly.
+                      extWrPendingQ < 0,
+                      _advanceFromExec(
+                        slot,
+                        instReg,
+                        nextInstReg,
+                        portAAddr,
+                        portAAddrPlus1,
+                        portAEn,
+                        state,
+                        pc,
+                        pcPlus1,
+                        decOpQ,
+                        decRrQ,
+                        decRlQ,
+                        decImm4Q,
+                        decUseRegLAsAddAQ,
+                        decUseOneAsAddBQ,
+                        decArithSubQ,
+                        illegalSlot1,
+                        useExtCache: useExtCache,
+                        isExtPc: isExtPc,
+                        isExtNextPc: isExtNextPc,
+                      ),
+                    ], orElse: [
+                      state < Const(_stMemWait2, width: 3),
+                    ]),
                   ])
                 else ...[
                   portBEn < 0,

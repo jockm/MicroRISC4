@@ -80,3 +80,35 @@ module $definitionType (
 endmodule
 ''';
 }
+
+/// Hardware ECP5 DDR clock forwarding primitive (`ODDRX1F`) that drives an
+/// external clock pin (`sdram_clk`) at 180° phase shift (`~clk_in`) directly
+/// from the dedicated IOLOGIC block — zero fabric LUT4, zero routing skew.
+class Ecp5OddrClkInv extends Module with SystemVerilog {
+  Ecp5OddrClkInv({
+    required Logic clkIn,
+    super.name = 'ecp5_oddr_clk_inv',
+  }) {
+    clkIn = addInput('clk_in', clkIn);
+    final clkOut = addOutput('clk_out');
+    clkOut <= ~clkIn;
+  }
+
+  Logic get clkOut => output('clk_out');
+
+  @override
+  String definitionVerilog(String definitionType) => '''
+module $definitionType (
+  input  logic clk_in,
+  output logic clk_out
+);
+  ODDRX1F oddr_inst (
+    .D0(1'b0),
+    .D1(1'b1),
+    .SCLK(clk_in),
+    .RST(1'b0),
+    .Q(clk_out)
+  );
+endmodule
+''';
+}

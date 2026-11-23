@@ -6,6 +6,43 @@
 
 import 'package:rohd/rohd.dart';
 
+/// 16-bit falling-edge input capture register (`always_ff @(negedge clk)`).
+///
+/// Captures SDRAM read data `sdram_dq_in` in the center of the IS42S16160G
+/// `CL=2` valid window when `sdram_clk` is 180° phase-shifted via `ODDRX1F`,
+/// giving >8 ns setup and >7 ns hold margin even with unconstrained fabric
+/// routing from distant ECP5 PIO pins (`sdram_d[15]`/`sdram_d[13]`).
+class NegedgeReg16 extends Module with SystemVerilog {
+  NegedgeReg16({
+    required Logic clk,
+    required Logic d,
+    super.name = 'sdram_dq_negedge_reg',
+  }) {
+    clk = addInput('clk', clk);
+    d = addInput('d', d, width: 16);
+    final q = addOutput('q', width: 16);
+    q.put(0);
+    clk.negedge.listen((_) {
+      q.put(d.value);
+    });
+  }
+
+  Logic get q => output('q');
+
+  @override
+  String definitionVerilog(String definitionType) => '''
+module $definitionType (
+  input  logic clk,
+  input  logic [15:0] d,
+  output logic [15:0] q
+);
+  always_ff @(negedge clk) begin
+    q <= d;
+  end
+endmodule
+''';
+}
+
 /// Synthesizable JEDEC SDRAM controller targeting the ULX3S-85F 32 MB
 /// `IS42S16160G` (16M x 16-bit: 4 banks x 8192 rows x 512 cols).
 ///
@@ -21,6 +58,7 @@ class SdramController extends Module {
   final int burstLen;
   final int initWaitCycles;
   final int refreshCycles;
+  final bool captureOnNegedge;
 
   static const int _stWait = 0;
   static const int _stInitPre = 1;
@@ -63,10 +101,11 @@ class SdramController extends Module {
     this.clkFreqMhz = 48,
     this.casLatency = 2,
     this.burstLen = 8,
+    this.captureOnNegedge = true,
     int? initWaitCycles,
     int? refreshCycles,
     super.name = 'sdram_controller',
-  })  : initWaitCycles = initWaitCycles ?? 10,
+  })  : initWaitCycles = initWaitCycles ?? (clkFreqMhz * 120),
         refreshCycles = refreshCycles ?? ((clkFreqMhz * 75) ~/ 10) {
     assert(casLatency == 2 || casLatency == 3, 'casLatency must be 2 or 3');
     final lmrVal = ((casLatency & 0x7) << 4) | _burstCode(burstLen);
@@ -91,6 +130,10 @@ class SdramController extends Module {
     wdata = addInput('wdata', wdata, width: 16);
     wdataValid = addInput('wdata_valid', wdataValid);
     sdramDqIn = addInput('sdram_dq_in', sdramDqIn, width: 16);
+    final sampledDqIn = captureOnNegedge
+        ? NegedgeReg16(clk: clk, d: sdramDqIn, name: '${name}_dq_cap').q
+        : sdramDqIn;
+    final effCasWait = captureOnNegedge ? (casLatency + 1) : casLatency;
 
     final cmdReady = addOutput('cmd_ready');
     final busy = addOutput('busy');
@@ -288,7 +331,7 @@ class SdramController extends Module {
               sdramCasN < 0, // READ
               sdramBa < reqBank,
               sdramA < [Const(0, width: 4), reqCol].swizzle(),
-              casTimer < Const(casLatency, width: 4),
+              casTimer < Const(effCasWait, width: 4),
               state < Const(_stRd, width: 4),
             ], orElse: [
               state < Const(_stWrStart, width: 4),
@@ -303,7 +346,7 @@ class SdramController extends Module {
           If(casTimer.gt(0), then: [
             casTimer < casTimer - Const(1, width: 4),
           ], orElse: [
-            rdata < sdramDqIn,
+            rdata < sampledDqIn,
             rdataValid < 1,
             burstCnt < burstCnt - Const(1, width: 8),
             If(burstCnt.lte(1), then: [

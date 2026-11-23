@@ -654,7 +654,7 @@ void main() {
 
       final sdramModel = JedecSdramSimModel()
         ..attachPins(
-          clk: clk,
+          clk: top.cpu.input('clk'),
           csN: top.sdramCsn,
           rasN: top.sdramRasn,
           casN: top.sdramCasn,
@@ -781,7 +781,7 @@ void main() {
 
       final sdramModel = JedecSdramSimModel()
         ..attachPins(
-          clk: clk,
+          clk: top.cpu.input('clk'),
           csN: top.sdramCsn,
           rasN: top.sdramRasn,
           casN: top.sdramCasn,

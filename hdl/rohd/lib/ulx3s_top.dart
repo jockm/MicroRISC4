@@ -314,8 +314,9 @@ class Ulx3sTop extends Module {
         dcRespDataPerCore[c] <= cacheCluster.output('dc_resp_data_$c');
       }
 
-      // 180-degree phase-shifted SDRAM clock gives >10 ns setup & hold margin at 48 MHz
-      sdramClkOut <= ~clk48mhz;
+      // Hardware ODDRX1F 180-degree phase-shifted SDRAM clock (zero fabric LUT4 skew)
+      final sdramOddr = Ecp5OddrClkInv(clkIn: clk48mhz, name: 'sdram_clk_oddr');
+      sdramClkOut <= sdramOddr.clkOut;
       sdramCkeOut <= cacheCluster.output('sdram_cke');
       sdramCsnOut <= cacheCluster.output('sdram_cs_n');
       sdramRasnOut <= cacheCluster.output('sdram_ras_n');

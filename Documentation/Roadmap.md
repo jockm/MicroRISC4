@@ -110,11 +110,11 @@ make ulx3s-timing
 - [x] Timing & Pipeline Bottlenecks (`>100 MHz` — **107.25 MHz** on full 65K words / `64 DP16KD` / `1189 LUT4`; **110.74 MHz** on 2K core / `2 DP16KD` / `977 LUT4`; **106.48 MHz** on `nocCores=4, 2K`; 1 cycle/slot sequential throughput).
 - [x] Multi-word per-channel RX FIFOs, multi-word TX FIFO, multi-word MBOX RX FIFO, and full/empty backpressure (`netInReady` / `netOutReady`) in `NocRouterNi` (`hdl/rohd/lib/noc_router.dart`) — **108.11 MHz** on `nocCores=4, 2K` (`1607 LUT4`, `652 TRELLIS_FF`, `72 TRELLIS_DPR16X4`, `2 DP16KD`).
 - [x] Multi-hop elastic ring routing (`RegisteredNocHop` 2-slot primary+skid buffer with lookahead route tags, transit-priority arbitration, lossless backpressure, `srcCh` preservation, and invalid-core drop) in `NocMultiCoreCacheWrapper` (`hdl/rohd/lib/noc_cache_wrapper.dart`) — **102.87 MHz** on `nocCores=4, 2K` (`2267 LUT4`, `1273 TRELLIS_FF`, `83 TRELLIS_DPR16X4`, `2 DP16KD`).
+- [x] Topology discovery register (`NOC_INFO` at `0x002A`: `{numChannels[7:0], numCores[7:0]}`) in `NocRouterNi`, `CpuCore`, `Ulx3sTop`, and `tools/mr4sim.py` — **102.64 MHz** on `nocCores=4, 2K` (`2214 LUT4`, `1273 TRELLIS_FF`, `83 TRELLIS_DPR16X4`, `2 DP16KD`), **107.25 MHz** unchanged on 65K ULX3S.
 
 ### In Progress / Pending Verification
 - [ ] Integration of I-Cache, D-Cache, and ULX3S SDRAM controller.
 - [ ] Multi-core top-level instantiation and cross-trap wiring in `Ulx3sTop` (`hdl/rohd/lib/ulx3s_top.dart`).
-- [ ] Topology discovery register (`NOC_INFO` at `0x002A`).
 
 ---
 
@@ -135,7 +135,7 @@ make ulx3s-timing
 ### Priority 3: Hardware NoC MMIO Transport (`0x0020`–`0x002A`)
 - [x] Implement multi-word FIFO buffers in `NocRouterNi` with full/empty backpressure flags (shared 1W1R `NocFifoRam` distributed RAM backing per-channel RX FIFOs, TX FIFO, and priority MBOX RX FIFO; `netInReady`/`netOutReady` backpressure; `NOC_RX_STAT` flags; `activeRxRdPtrQ` + `mmioRdataReg` pipelining: **108.11 MHz** on `nocCores=4, 2K` and **107.25 MHz** unchanged on 65K ULX3S).
 - [x] Add multi-hop ring packet forwarding in `NocMulticoreCacheWrapper` (2-slot elastic primary+skid `RegisteredNocHop` with purely registered `outValid`/`inReady`, lookahead route tags, transit-priority arbitration, lossless backpressure, `srcCh` propagation, and invalid `dstCore` drop: **102.87 MHz** on `nocCores=4, 2K`).
-- [ ] Implement `NOC_INFO` hardware register at `0x002A` for dynamic core discovery.
+- [x] Implement `NOC_INFO` hardware register at `0x002A` for dynamic core discovery (`{numChannels[7:0], numCores[7:0]}` read-only across `NocRouterNi`, `NocMultiCoreCacheWrapper`, `CpuCore`, `Ulx3sTop`, and `tools/mr4sim.py`; verified end-to-end from `CpuCore` + Icarus Verilog: **102.64 MHz** on `nocCores=4, 2K` and **107.25 MHz** on 65K ULX3S).
 - [ ] Wire worker `CpuCore`s (`1..N`) and `mboxTrapReq` cross-traps in `Ulx3sTop`.
 
 ### Priority 4: I/D Cache & SDRAM Controller Integration

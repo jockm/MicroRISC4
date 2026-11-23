@@ -178,7 +178,7 @@ class CpuCore extends Module {
     final isNocMatch = config.enableNoc
         ? (isMmioPage &
             mmioOff.gte(Const(MiniRISC4Constants.addrNocTxData, width: 6)) &
-            mmioOff.lte(Const(MiniRISC4Constants.addrNocChCfg1, width: 6)))
+            mmioOff.lte(Const(MiniRISC4Constants.addrNocInfo, width: 6)))
         : Const(0);
     final isMmio = isMmioCpuid |
         isMmioRx |

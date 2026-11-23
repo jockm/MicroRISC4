@@ -450,7 +450,20 @@ void main() {
       reset.put(0);
       await step();
 
-      // Configure ch 2 -> (dstCore=3, dstCh=1), verify readback
+      // Configure ch 2 -> (dstCore=3, dstCh=1), verify readback & NOC_INFO (0x002A)
+      mmioAddr.put(MiniRISC4Constants.addrNocInfo);
+      mmioRe.put(1);
+      expect(dut.output('mmioRdata').value.toInt(), equals((4 << 8) | 1));
+      mmioRe.put(0);
+      // Writes to read-only NOC_INFO must be ignored
+      mmioWdata.put(0xFFFF);
+      mmioWe.put(1);
+      await step();
+      mmioWe.put(0);
+      mmioRe.put(1);
+      expect(dut.output('mmioRdata').value.toInt(), equals((4 << 8) | 1));
+      mmioRe.put(0);
+
       mmioAddr.put(MiniRISC4Constants.addrNocSelCh);
       mmioWdata.put(2);
       mmioWe.put(1);

@@ -258,6 +258,7 @@ class NocMultiCoreCacheWrapper extends Module {
         netInPayload: niInP[c],
         netOutReady: niOutReady[c],
         coreId: c,
+        numCores: numCores,
         numChannels: numChannels,
         fifoDepth: fifoDepth,
         name: 'noc_ni_core_$c',

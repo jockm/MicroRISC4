@@ -249,6 +249,18 @@ void main() {
       reset.put(0);
       await step();
 
+      // Verify NOC_INFO (0x002A) reports {numChannels=4, numCores=4} = 0x0404 on every core
+      for (var c = 0; c < numCores; c++) {
+        mmioAddr[c].put(MiniRISC4Constants.addrNocInfo);
+        mmioRe[c].put(1);
+        expect(top.output('mmioRdata_$c').value.toInt(), equals((4 << 8) | 4));
+      }
+      await step();
+      for (var c = 0; c < numCores; c++) {
+        mmioRe[c].put(0);
+        expect(top.output('mmioRdataReg_$c').value.toInt(), equals((4 << 8) | 4));
+      }
+
       // Configure routes:
       //   Core 0 ch 2 -> Core 3 ch 1 (3 hops: 0->1->2->3)
       //   Core 1 ch 3 -> Core 3 ch 1 (2 hops: 1->2->3, contends with Core 0!)

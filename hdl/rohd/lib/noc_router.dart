@@ -105,11 +105,13 @@ endmodule
 ''';
 }
 
-/// Per-core NoC Network Interface (`0x0020`–`0x0029`) with multi-word
+/// Per-core NoC Network Interface (`0x0020`–`0x002A`) with multi-word
 /// per-channel RX FIFOs, multi-word TX FIFO, multi-word priority MBOX queue,
-/// and full/empty backpressure signaling (`netInReady` / `netOutReady`).
+/// topology discovery (`NOC_INFO` at `0x002A`), and full/empty backpressure
+/// signaling (`netInReady` / `netOutReady`).
 class NocRouterNi extends Module {
   final int coreId;
+  final int numCores;
   final int numChannels;
   final int fifoDepth;
   final int txFifoDepth;
@@ -130,6 +132,7 @@ class NocRouterNi extends Module {
     required Logic netInPayload,
     required Logic netOutReady,
     this.coreId = 0,
+    this.numCores = 1,
     this.numChannels = 4,
     this.fifoDepth = 4,
     int? txFifoDepth,
@@ -137,6 +140,7 @@ class NocRouterNi extends Module {
     super.name = 'noc_router_ni',
   })  : txFifoDepth = txFifoDepth ?? (fifoDepth <= 8 ? fifoDepth : 8),
         mboxFifoDepth = mboxFifoDepth ?? (fifoDepth <= 4 ? fifoDepth : 4) {
+    assert(numCores >= 1, 'numCores must be >= 1');
     assert(numChannels >= 1, 'numChannels must be >= 1');
     assert(fifoDepth >= 1, 'fifoDepth must be >= 1');
     assert(this.txFifoDepth >= 1, 'txFifoDepth must be >= 1');
@@ -478,6 +482,16 @@ class NocRouterNi extends Module {
         CaseItem(
           Const(MiniRISC4Constants.addrNocChCfg1, width: MiniRISC4Constants.addrWidth),
           [readMux < activeChValid.zeroExtend(MiniRISC4Constants.dataWidth)],
+        ),
+        CaseItem(
+          Const(MiniRISC4Constants.addrNocInfo, width: MiniRISC4Constants.addrWidth),
+          [
+            readMux <
+                Const(
+                  ((numChannels & 0xFF) << 8) | (numCores & 0xFF),
+                  width: MiniRISC4Constants.dataWidth,
+                ),
+          ],
         ),
       ]),
     ]);

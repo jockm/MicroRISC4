@@ -134,7 +134,7 @@ class Ulx3sTop extends Module {
       final busWdata = cpu.output('port_b_wdata_out');
       final inNocRange =
           busAddr.gte(Const(MiniRISC4Constants.addrNocTxData, width: 16)) &
-              busAddr.lte(Const(MiniRISC4Constants.addrNocChCfg1, width: 16));
+              busAddr.lte(Const(MiniRISC4Constants.addrNocInfo, width: 16));
 
       final mmioAddr = List.generate(
         nocCores,

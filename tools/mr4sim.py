@@ -207,6 +207,7 @@ ADDR_NOC_MBOX_DATA  = 0x0026  # R: pop oldest incoming MBOX payload word (0x0000
 ADDR_NOC_MBOX_SRC   = 0x0027  # R: {src_core[7:0], src_ch[7:0]} of last/queued MBOX
 ADDR_NOC_CFG_CH_IDX = 0x0028  # W: select channel table entry local_ch to configure
 ADDR_NOC_CFG_CH_MAP = 0x0029  # R/W: {dst_core[7:0], dst_ch[7:0]} for selected local_ch
+ADDR_NOC_INFO       = 0x002A  # R: {num_channels[7:0], num_cores[7:0]} topology discovery
 
 class NocPacket:
     __slots__ = ("pkt_type", "src_core", "src_ch", "dst_core", "dst_ch", "payload", "hops", "_stage_node")
@@ -224,8 +225,9 @@ class NocPacket:
 class CoreNetworkInterface:
     """Per-core NI with channel table, per-channel RX FIFOs, and priority MBOX queue."""
     def __init__(self, core_id: int, num_ch: int = 8, fifo_depth: int = 32,
-                 mbox_trap_vec_offset: int = 0x0E):
+                 mbox_trap_vec_offset: int = 0x0E, num_cores: int = 1):
         self.core_id = core_id
+        self.num_cores = num_cores
         self.num_ch = num_ch
         self.fifo_depth = fifo_depth
         self.mbox_trap_vec_offset = mbox_trap_vec_offset & 0x0F
@@ -336,7 +338,7 @@ class NocCluster:
 
         self.sdram_cache = sdram_cache
         for cid in range(num_cores):
-            ni = CoreNetworkInterface(cid, num_ch=num_ch, fifo_depth=fifo_depth)
+            ni = CoreNetworkInterface(cid, num_ch=num_ch, fifo_depth=fifo_depth, num_cores=num_cores)
             use_cache = (sdram_cache is not None) and (cache_core_id is None or cid == cache_core_id)
             sim = MiniRISC4Sim(
                 core_id=cid,
@@ -559,6 +561,8 @@ class MiniRISC4Sim:
         if addr == ADDR_NOC_CFG_CH_MAP:
             dst_c, dst_ch, _ = self.noc_ni.channel_table[self.noc_ni.cfg_ch_idx % self.noc_ni.num_ch]
             return ((dst_c & 0xFF) << 8) | (dst_ch & 0xFF)
+        if addr == ADDR_NOC_INFO:
+            return ((self.noc_ni.num_ch & 0xFF) << 8) | (self.noc_ni.num_cores & 0xFF)
         if self._uses_sdram_cache(addr):
             val, lat = self.sdram_cache.read_data_word(addr)
             if lat > 1:

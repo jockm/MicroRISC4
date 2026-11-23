@@ -15,7 +15,7 @@ abstract class MiniRISC4Constants {
   static const int addrUartRx = 0x000E;
   static const int addrUartTx = 0x000F;
 
-  // NoC & Network Interface MMIO Registers (0x0020-0x0029)
+  // NoC & Network Interface MMIO Registers (0x0020-0x002A)
   static const int addrNocTxData    = 0x0020;
   static const int addrNocSelCh     = 0x0021;
   static const int addrNocRxData    = 0x0022;
@@ -26,6 +26,7 @@ abstract class MiniRISC4Constants {
   static const int addrNocMboxSrc   = 0x0027;
   static const int addrNocChCfg0    = 0x0028;
   static const int addrNocChCfg1    = 0x0029;
+  static const int addrNocInfo      = 0x002A;
 
   // Primary Opcodes (Bits [7:4])
   static const int opLdReg      = 0x0;

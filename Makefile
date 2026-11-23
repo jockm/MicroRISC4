@@ -296,7 +296,7 @@ $(OS_MAIN_ASM): $(OS_MAIN_A4) $(wildcard $(OS_SRC_DIR)/os/*.a4) | $(OS_BUILD)
 $(OS_MAIN_BIN) $(OS_MAIN_LST): $(OS_MAIN_ASM)
 	$(MR4ASM) -I $(LIB_DIR) "$<" -o "$(OS_MAIN_BIN)" -l "$(OS_MAIN_LST)"
 
-$(OS_BUILD)/%.asm: $(OS_SRC_DIR)/apps/%.a4 lib/sys.a4 lib/fiber.a4 | $(OS_BUILD)
+$(OS_BUILD)/%.asm: $(OS_SRC_DIR)/apps/%.a4 lib/sys.a4 lib/fiber.a4 lib/term.a4 | $(OS_BUILD)
 	$(COMPILE) $< -o $@ -I $(OS_SRC_DIR)/os -I lib --org 0x0400 --nopreamble
 
 $(OS_BUILD)/%.bin: $(OS_BUILD)/%.asm

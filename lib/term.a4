@@ -1,0 +1,400 @@
+// ==============================================================================
+// FILE: lib/term.a4
+// ANSI / VT100 Terminal Control & Escape-Sequence Keyboard Library
+// Requires: import "sys.a4"; before import "term.a4";
+// ==============================================================================
+
+// Standard ANSI Colors (0..7 = normal, 8..15 = bright)
+const u16 TERM_BLACK          = 0;
+const u16 TERM_RED            = 1;
+const u16 TERM_GREEN          = 2;
+const u16 TERM_YELLOW         = 3;
+const u16 TERM_BLUE           = 4;
+const u16 TERM_MAGENTA        = 5;
+const u16 TERM_CYAN           = 6;
+const u16 TERM_WHITE          = 7;
+
+const u16 TERM_BRIGHT_BLACK   = 8;
+const u16 TERM_BRIGHT_RED     = 9;
+const u16 TERM_BRIGHT_GREEN   = 10;
+const u16 TERM_BRIGHT_YELLOW  = 11;
+const u16 TERM_BRIGHT_BLUE    = 12;
+const u16 TERM_BRIGHT_MAGENTA = 13;
+const u16 TERM_BRIGHT_CYAN    = 14;
+const u16 TERM_BRIGHT_WHITE   = 15;
+
+// Decoded Keycodes returned by term_poll_key() / term_get_key()
+const u16 KEY_NONE            = 0x0000;
+const u16 KEY_BACKSPACE       = 0x0008;
+const u16 KEY_TAB             = 0x0009;
+const u16 KEY_ENTER           = 0x000D;
+const u16 KEY_ESC             = 0x001B;
+
+const u16 KEY_UP              = 0x0101;
+const u16 KEY_DOWN            = 0x0102;
+const u16 KEY_RIGHT           = 0x0103;
+const u16 KEY_LEFT            = 0x0104;
+const u16 KEY_HOME            = 0x0105;
+const u16 KEY_END             = 0x0106;
+const u16 KEY_INSERT          = 0x0107;
+const u16 KEY_DELETE          = 0x0108;
+const u16 KEY_PGUP            = 0x0109;
+const u16 KEY_PGDN            = 0x010A;
+const u16 KEY_F1              = 0x0111;
+const u16 KEY_F2              = 0x0112;
+const u16 KEY_F3              = 0x0113;
+const u16 KEY_F4              = 0x0114;
+
+// Internal buffer and key-decoder state
+const u16 TERM_OUT_WORDS      = 16;     // 32-byte atomic ANSI escape buffer
+const u16 TERM_ESC_IDLE_POLLS = 8;      // Empty polls before standalone KEY_ESC
+
+u16 _term_out[TERM_OUT_WORDS];
+u16 _term_olen        = 0;
+
+u16 _term_kstate      = 0;              // 0=idle, 1=ESC, 2=CSI, 3=SS3
+u16 _term_csi_num     = 0;
+u16 _term_csi_first   = 1;              // 1 while parsing first numeric CSI param
+u16 _term_esc_polls   = 0;
+u16 _term_pending_ch  = 0;
+
+// ==============================================================================
+// Internal ANSI Escape Builder Helpers
+// ==============================================================================
+
+void _term_buf_reset(void) {
+    _term_olen = 0;
+}
+
+void _term_buf_putc(u16 ch) {
+    if (_term_olen < ((TERM_OUT_WORDS << 1) - 1)) {
+        setbyte(_term_out, _term_olen, ch);
+        _term_olen++;
+    }
+}
+
+void _term_buf_put_dec(u16 v) {
+    u16 digits[5];
+    u16 n = 0;
+    if (v == 0) {
+        _term_buf_putc(48);
+        return;
+    }
+    while (v > 0) {
+        digits[n] = (v % 10) + 48;
+        v = v / 10;
+        n++;
+    }
+    while (n > 0) {
+        n--;
+        _term_buf_putc(digits[n]);
+    }
+}
+
+void _term_buf_flush(void) {
+    setbyte(_term_out, _term_olen, 0);
+    if ((_term_olen & 0x0001) == 0 && (_term_olen + 1) < (TERM_OUT_WORDS << 1)) {
+        setbyte(_term_out, _term_olen + 1, 0);
+    }
+    sys_puts(_term_out);
+    _term_olen = 0;
+}
+
+void _term_csi_start(void) {
+    _term_buf_reset();
+    _term_buf_putc(27);
+    _term_buf_putc(91);                 // '['
+}
+
+void _term_csi_num_cmd(u16 n, u16 suffix) {
+    _term_csi_start();
+    _term_buf_put_dec(n);
+    _term_buf_putc(suffix);
+    _term_buf_flush();
+}
+
+u16 _term_fg_sgr(u16 color) {
+    if (color >= 8) {
+        return 90 + (color & 0x0007);
+    }
+    return 30 + (color & 0x0007);
+}
+
+u16 _term_bg_sgr(u16 color) {
+    if (color >= 8) {
+        return 100 + (color & 0x0007);
+    }
+    return 40 + (color & 0x0007);
+}
+
+// ==============================================================================
+// Screen & Cursor Control
+// ==============================================================================
+
+void term_clear(void) {
+    sys_puts("\x1b[2J\x1b[H");
+}
+
+void term_clear_line(void) {
+    sys_puts("\x1b[2K");
+}
+
+void term_clear_eol(void) {
+    sys_puts("\x1b[K");
+}
+
+// Move cursor to 1-based (row, col)
+void term_goto(u16 row, u16 col) {
+    _term_csi_start();
+    _term_buf_put_dec(row);
+    _term_buf_putc(59);                 // ';'
+    _term_buf_put_dec(col);
+    _term_buf_putc(72);                 // 'H'
+    _term_buf_flush();
+}
+
+void term_cursor_up(u16 n) {
+    if (n > 0) {
+        _term_csi_num_cmd(n, 65);       // 'A'
+    }
+}
+
+void term_cursor_down(u16 n) {
+    if (n > 0) {
+        _term_csi_num_cmd(n, 66);       // 'B'
+    }
+}
+
+void term_cursor_right(u16 n) {
+    if (n > 0) {
+        _term_csi_num_cmd(n, 67);       // 'C'
+    }
+}
+
+void term_cursor_left(u16 n) {
+    if (n > 0) {
+        _term_csi_num_cmd(n, 68);       // 'D'
+    }
+}
+
+void term_cursor_hide(void) {
+    sys_puts("\x1b[?25l");
+}
+
+void term_cursor_show(void) {
+    sys_puts("\x1b[?25h");
+}
+
+// ==============================================================================
+// Colors & Text Attributes (ANSI SGR)
+// ==============================================================================
+
+void term_fg(u16 color) {
+    _term_csi_num_cmd(_term_fg_sgr(color), 109);    // 'm'
+}
+
+void term_bg(u16 color) {
+    _term_csi_num_cmd(_term_bg_sgr(color), 109);    // 'm'
+}
+
+void term_color(u16 fg, u16 bg) {
+    _term_csi_start();
+    _term_buf_put_dec(_term_fg_sgr(fg));
+    _term_buf_putc(59);                 // ';'
+    _term_buf_put_dec(_term_bg_sgr(bg));
+    _term_buf_putc(109);                // 'm'
+    _term_buf_flush();
+}
+
+void term_bold(void) {
+    sys_puts("\x1b[1m");
+}
+
+void term_dim(void) {
+    sys_puts("\x1b[2m");
+}
+
+void term_underline(void) {
+    sys_puts("\x1b[4m");
+}
+
+void term_reverse(void) {
+    sys_puts("\x1b[7m");
+}
+
+void term_reset(void) {
+    sys_puts("\x1b[0m");
+}
+
+// ==============================================================================
+// Text & Numeric Output Helpers
+// ==============================================================================
+
+void term_putc(u16 ch) {
+    sys_putc(ch);
+}
+
+void term_puts(u16 *s) {
+    sys_puts(s);
+}
+
+void term_puts_at(u16 row, u16 col, u16 *s) {
+    term_goto(row, col);
+    sys_puts(s);
+}
+
+void term_put_dec(u16 v) {
+    _term_buf_reset();
+    _term_buf_put_dec(v);
+    _term_buf_flush();
+}
+
+void term_put_hex(u16 w) {
+    u16 d = 0;
+    u16 shift = 12;
+    _term_buf_reset();
+    while (true) {
+        d = (w >> shift) & 0x000F;
+        if (d < 10) {
+            _term_buf_putc(d + 48);
+        } else {
+            _term_buf_putc(d + 55);
+        }
+        if (shift == 0) {
+            break;
+        }
+        shift = shift - 4;
+    }
+    _term_buf_flush();
+}
+
+// ==============================================================================
+// Keyboard Input & Escape-Sequence Decoder
+// ==============================================================================
+
+u16 _term_normalize_basic(u16 ch) {
+    if (ch == 127) {
+        return KEY_BACKSPACE;
+    }
+    if (ch == 10) {
+        return KEY_ENTER;
+    }
+    return ch;
+}
+
+u16 _term_decode_tilde(u16 code) {
+    if (code == 1 || code == 7) { return KEY_HOME; }
+    if (code == 2)              { return KEY_INSERT; }
+    if (code == 3)              { return KEY_DELETE; }
+    if (code == 4 || code == 8) { return KEY_END; }
+    if (code == 5)              { return KEY_PGUP; }
+    if (code == 6)              { return KEY_PGDN; }
+    if (code == 11)             { return KEY_F1; }
+    if (code == 12)             { return KEY_F2; }
+    if (code == 13)             { return KEY_F3; }
+    if (code == 14)             { return KEY_F4; }
+    return KEY_NONE;
+}
+
+u16 _term_decode_ss3(u16 ch) {
+    if (ch == 65) { return KEY_UP; }
+    if (ch == 66) { return KEY_DOWN; }
+    if (ch == 67) { return KEY_RIGHT; }
+    if (ch == 68) { return KEY_LEFT; }
+    if (ch == 72) { return KEY_HOME; }
+    if (ch == 70) { return KEY_END; }
+    if (ch == 80) { return KEY_F1; }
+    if (ch == 81) { return KEY_F2; }
+    if (ch == 82) { return KEY_F3; }
+    if (ch == 83) { return KEY_F4; }
+    return KEY_NONE;
+}
+
+// Non-blocking keyboard poll. Returns KEY_NONE (0) when no complete key is ready,
+// ASCII (1..255) for normal characters, or KEY_* (0x0100+) for special keys.
+u16 term_poll_key(void) {
+    u16 ch  = 0;
+    u16 res = 0;
+
+    if (_term_pending_ch != 0) {
+        ch = _term_pending_ch;
+        _term_pending_ch = 0;
+        return _term_normalize_basic(ch);
+    }
+
+    if (sys_getc(&ch) != 0) {
+        if (_term_kstate == 1) {
+            _term_esc_polls++;
+            if (_term_esc_polls >= TERM_ESC_IDLE_POLLS) {
+                _term_kstate = 0;
+                _term_esc_polls = 0;
+                return KEY_ESC;
+            }
+        }
+        return KEY_NONE;
+    }
+
+    if (_term_kstate == 0) {
+        if (ch == 27) {
+            _term_kstate = 1;
+            _term_esc_polls = 0;
+            return KEY_NONE;
+        }
+        return _term_normalize_basic(ch);
+    }
+
+    if (_term_kstate == 1) {
+        _term_esc_polls = 0;
+        if (ch == 91) {                 // '[' -> CSI sequence
+            _term_kstate = 2;
+            _term_csi_num = 0;
+            _term_csi_first = 1;
+            return KEY_NONE;
+        }
+        if (ch == 79) {                 // 'O' -> SS3 sequence
+            _term_kstate = 3;
+            return KEY_NONE;
+        }
+        // Standalone ESC followed by another key: return ESC now, replay ch next
+        _term_kstate = 0;
+        _term_pending_ch = ch;
+        return KEY_ESC;
+    }
+
+    if (_term_kstate == 2) {
+        if (ch >= 48 && ch <= 57) {     // Digit
+            if (_term_csi_first != 0) {
+                _term_csi_num = (_term_csi_num * 10) + (ch - 48);
+            }
+            return KEY_NONE;
+        }
+        if (ch == 59) {                 // ';' -> modifier param follows, keep first num
+            _term_csi_first = 0;
+            return KEY_NONE;
+        }
+        _term_kstate = 0;
+        if (ch == 126) {                // '~'
+            return _term_decode_tilde(_term_csi_num);
+        }
+        if (ch == 65) { return KEY_UP; }
+        if (ch == 66) { return KEY_DOWN; }
+        if (ch == 67) { return KEY_RIGHT; }
+        if (ch == 68) { return KEY_LEFT; }
+        if (ch == 72) { return KEY_HOME; }
+        if (ch == 70) { return KEY_END; }
+        return KEY_NONE;
+    }
+
+    // _term_kstate == 3 (SS3)
+    _term_kstate = 0;
+    return _term_decode_ss3(ch);
+}
+
+// Blocking keyboard read: spins on term_poll_key() until a key is decoded.
+u16 term_get_key(void) {
+    u16 k = KEY_NONE;
+    while (k == KEY_NONE) {
+        k = term_poll_key();
+    }
+    return k;
+}

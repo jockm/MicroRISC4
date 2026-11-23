@@ -1954,6 +1954,151 @@ def test_os_path_and_history(args):
     assert worker_sim.mem[0x0005] == 0xFAFF
 
 
+# ------------------------------------------------------------------------------
+# Test 15: Terminal control & key-decoding library (lib/term.a4)
+# ------------------------------------------------------------------------------
+def test_os_term_lib(_args):
+    termapp_src = """
+import "sys.a4";
+import "term.a4";
+
+void main(void) {
+    u16 k = 0;
+
+    term_clear();
+    term_cursor_hide();
+    term_color(TERM_BRIGHT_GREEN, TERM_BLUE);
+    term_puts_at(3, 5, "TERM_HDR:");
+    term_put_dec(42);
+    term_putc(47);
+    term_put_hex(0x0BEE);
+    term_reset();
+    term_cursor_show();
+    term_puts("\\r\\nREADY\\r\\n");
+
+    while (true) {
+        k = term_get_key();
+        if (k == 113) {             // 'q' quits
+            term_puts("TERM_OK\\r\\n");
+            sys_exit(0);
+        } else if (k == KEY_UP) {
+            term_puts("K:UP\\r\\n");
+        } else if (k == KEY_DOWN) {
+            term_puts("K:DN\\r\\n");
+        } else if (k == KEY_LEFT) {
+            term_puts("K:LT\\r\\n");
+        } else if (k == KEY_RIGHT) {
+            term_puts("K:RT\\r\\n");
+        } else if (k == KEY_PGUP) {
+            term_puts("K:PU\\r\\n");
+        } else if (k == KEY_PGDN) {
+            term_puts("K:PD\\r\\n");
+        } else if (k == KEY_HOME) {
+            term_puts("K:HM\\r\\n");
+        } else if (k == KEY_END) {
+            term_puts("K:EN\\r\\n");
+        } else if (k == KEY_DELETE) {
+            term_puts("K:DL\\r\\n");
+        } else if (k == KEY_F1) {
+            term_puts("K:F1\\r\\n");
+        } else if (k == KEY_ESC) {
+            term_puts("K:ESC\\r\\n");
+        } else if (k == KEY_BACKSPACE) {
+            term_puts("K:BS\\r\\n");
+        }
+    }
+}
+"""
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td)
+        sd_root = p / "sd_root"
+        sd_root.mkdir()
+        a4 = p / "termapp.a4"
+        app_bin = sd_root / "TERMAPP.BIN"
+        a4.write_text(termapp_src, encoding="utf-8")
+        compile_and_assemble(a4, app_bin, org=0x0400, nopreamble=True, sparsebin=True)
+
+        sd_img = p / "term_test.img"
+        subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
+             "-o", str(sd_img), "--size-mb", "16", "--spc", "1"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
+        os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
+        os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+        os_sim.pc = 0x0100
+        uart_out, bad_writes = attach_uart_and_watch(os_sim)
+
+        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+        worker_sim.pc = 0x0100
+        worker_sim._poll_stdin = lambda: None
+        mr4sim.connect_os_worker(os_sim, worker_sim)
+
+        assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
+
+        def step_until(max_steps, cond):
+            for _ in range(max_steps):
+                os_sim.step()
+                worker_sim.step()
+                if cond():
+                    return True
+            return False
+
+        start = len(uart_out)
+        for ch in "! termapp\r":
+            os_sim.rx_queue.append(ord(ch))
+        assert step_until(10000000, lambda: "READY\r\n" in "".join(uart_out[start:])), (
+            f"TERMAPP.BIN did not reach READY; out={''.join(uart_out[start:])!r}"
+        )
+
+        hdr = "".join(uart_out[start:])
+        assert "\x1b[2J\x1b[H" in hdr, f"Missing clear screen sequence: {hdr!r}"
+        assert "\x1b[?25l" in hdr and "\x1b[?25h" in hdr, f"Missing cursor hide/show: {hdr!r}"
+        assert "\x1b[92;44m" in hdr, f"Missing bright green on blue SGR: {hdr!r}"
+        assert "\x1b[3;5HTERM_HDR:42/0BEE\x1b[0m" in hdr, f"Missing goto/dec/hex/reset: {hdr!r}"
+
+        # Feed each special key sequence and verify decoded token
+        key_cases = [
+            ("\x1b[A", "K:UP"),
+            ("\x1b[B", "K:DN"),
+            ("\x1b[D", "K:LT"),
+            ("\x1b[C", "K:RT"),
+            ("\x1b[5~", "K:PU"),
+            ("\x1b[6~", "K:PD"),
+            ("\x1b[H", "K:HM"),
+            ("\x1b[4~", "K:EN"),
+            ("\x1b[3~", "K:DL"),
+            ("\x1bOP", "K:F1"),
+            ("\x7f", "K:BS"),
+            ("\x1b", "K:ESC"),
+        ]
+        for seq, expect in key_cases:
+            kstart = len(uart_out)
+            for ch in seq:
+                os_sim.rx_queue.append(ord(ch))
+            ok = step_until(4000000, lambda: expect in "".join(uart_out[kstart:]))
+            assert ok, f"Key {seq!r} did not decode to {expect!r}; out={''.join(uart_out[kstart:])!r}"
+
+        # Quit cleanly with 'q' and confirm return to mr4> prompt
+        qstart = len(uart_out)
+        os_sim.rx_queue.append(ord("q"))
+        assert step_until(
+            4000000,
+            lambda: "TERM_OK" in "".join(uart_out[qstart:]) and "".join(uart_out[qstart:]).endswith("mr4> "),
+        ), f"TERMAPP.BIN quit failed; out={''.join(uart_out[qstart:])!r}"
+
+        assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
+        assert os_sim.mem[0x0005] == 0xFAFF
+        assert worker_sim.mem[0x0004] == 0xFEFF
+        assert worker_sim.mem[0x0005] == 0xFAFF
+
+
 TESTS = [
     ("compiler_runtime", test_compiler_runtime),
     ("trap_isr", test_trap_isr),
@@ -1969,6 +2114,7 @@ TESTS = [
     ("os_worker_fault_reporting", test_os_worker_fault_reporting),
     ("os_fs_ops_syscalls", test_os_fs_ops_syscalls),
     ("os_path_and_history", test_os_path_and_history),
+    ("os_term_lib", test_os_term_lib),
 ]
 
 

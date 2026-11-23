@@ -12,6 +12,9 @@ class CpuConfig {
   final bool enableMathAccel;
   final bool enableSpi; // Configurable Math Engine at 0x0010-0x0016
   final bool enableNoc;
+  final bool enableSdramCache;
+  final int cacheLines;
+  final int cacheLineWords;
   final int nocChannels;
   final int nocFifoDepth;
   final int trapTableBase;
@@ -26,6 +29,9 @@ class CpuConfig {
     this.enableMathAccel = false,
     this.enableSpi = false,
     this.enableNoc = false,
+    this.enableSdramCache = false,
+    this.cacheLines = 64,
+    this.cacheLineWords = 8,
     this.nocChannels = 8,
     this.nocFifoDepth = 32,
     this.trapTableBase = 0x0100,

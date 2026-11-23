@@ -18,6 +18,9 @@ void main(List<String> args) async {
   var nocCores = 0;
   var nocChannels = 1;
   var nocFifoDepth = 16;
+  var sdramCache = false;
+  var cacheLines = 64;
+  int? sdramInitWait;
   var resetHoldBits = 19; // ~10.9 ms POR & btn_pwr_n debounce at 48 MHz
 
   for (var i = 0; i < args.length; i++) {
@@ -38,6 +41,12 @@ void main(List<String> args) async {
       nocChannels = int.tryParse(args[++i]) ?? nocChannels;
     } else if (args[i] == '--noc-fifo-depth' && i + 1 < args.length) {
       nocFifoDepth = int.tryParse(args[++i]) ?? nocFifoDepth;
+    } else if (args[i] == '--sdram-cache') {
+      sdramCache = true;
+    } else if (args[i] == '--cache-lines' && i + 1 < args.length) {
+      cacheLines = int.tryParse(args[++i]) ?? cacheLines;
+    } else if (args[i] == '--sdram-init-wait' && i + 1 < args.length) {
+      sdramInitWait = int.tryParse(args[++i]);
     } else if (args[i] == '--reset-hold-bits' && i + 1 < args.length) {
       resetHoldBits = int.tryParse(args[++i]) ?? resetHoldBits;
     }
@@ -46,7 +55,8 @@ void main(List<String> args) async {
   print(
     'Building MiniRISC4 ULX3S-85F hardware representation in ROHD '
     '(memWords=$memWords, nocCores=$nocCores'
-    '${nocCores >= 2 ? ', workerMemWords=$workerMemWords, nocChannels=$nocChannels, nocFifoDepth=$nocFifoDepth' : ''})...',
+    '${nocCores >= 2 ? ', workerMemWords=$workerMemWords, nocChannels=$nocChannels, nocFifoDepth=$nocFifoDepth' : ''}'
+    '${sdramCache ? ', sdramCache=on, cacheLines=$cacheLines' : ''})...',
   );
 
   final clk25 = Logic(name: 'clk_25mhz');
@@ -60,6 +70,8 @@ void main(List<String> args) async {
     enableCrossTraps: nocCores >= 2,
     enableMathAccel: false,
     enableNoc: nocCores >= 2,
+    enableSdramCache: sdramCache,
+    cacheLines: cacheLines,
     nocChannels: nocChannels,
     nocFifoDepth: nocFifoDepth,
     trapTableBase: 0x0100,
@@ -74,6 +86,7 @@ void main(List<String> args) async {
     nocCores: nocCores,
     workerMemWords: workerMemWords,
     resetHoldBits: resetHoldBits,
+    sdramInitWaitCycles: sdramInitWait,
     initHexFile: hexPath,
     workerInitHexFile: workerHexPath,
   );

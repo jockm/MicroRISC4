@@ -4,6 +4,7 @@
 // ==============================================================================
 
 import 'package:rohd/rohd.dart';
+import 'cache_subsystem_top.dart';
 import 'constants.dart';
 import 'cpu_config.dart';
 import 'cpu_core.dart';
@@ -15,11 +16,16 @@ import 'uart.dart';
 class Ulx3sTop extends Module {
   late final CpuCore cpu;
   late final List<CpuCore> cores;
+  late final bool hasSdram;
+  LogicNet? sdramDNet;
+  Logic? sdramDqOutDebug;
+  Logic? sdramDqOeDebug;
 
   Ulx3sTop({
     required Logic clk25mhz,
     required Logic btnPwrN,
     required Logic ftdiTxd,
+    LogicNet? sdramD,
     CpuConfig config = const CpuConfig(
       coreId: 0,
       enableCpuid: false,
@@ -33,6 +39,8 @@ class Ulx3sTop extends Module {
     int workerMemWords = 2048,
     int mboxTrapVec = 0x0E,
     int resetHoldBits = 2,
+    int? sdramInitWaitCycles,
+    int? sdramRefreshCycles,
     String? initHexFile = 'system_image.hex',
     String? workerInitHexFile,
     Map<int, int>? initialMemory,
@@ -88,6 +96,10 @@ class Ulx3sTop extends Module {
 
     final useNoc = nocCores >= 2;
     final coreCount = useNoc ? nocCores : 1;
+    final useSdramCache = config.enableSdramCache &&
+        (config.memWords < 65536 || (useNoc && workerMemWords < 65536));
+    hasSdram = useSdramCache;
+
     final effectiveConfig = useNoc
         ? CpuConfig(
             coreId: config.coreId,
@@ -98,6 +110,9 @@ class Ulx3sTop extends Module {
             enableMathAccel: config.enableMathAccel,
             enableSpi: config.enableSpi,
             enableNoc: true,
+            enableSdramCache: useSdramCache && config.memWords < 65536,
+            cacheLines: config.cacheLines,
+            cacheLineWords: config.cacheLineWords,
             nocChannels: config.nocChannels,
             nocFifoDepth: config.nocFifoDepth,
             trapTableBase: config.trapTableBase,
@@ -115,12 +130,38 @@ class Ulx3sTop extends Module {
       coreCount,
       (i) => Logic(name: 'core_ext_trap_req_$i'),
     );
+    final icReqReadyPerCore = List.generate(
+      coreCount,
+      (i) => Logic(name: 'ic_req_ready_core$i'),
+    );
+    final icRespValidPerCore = List.generate(
+      coreCount,
+      (i) => Logic(name: 'ic_resp_valid_core$i'),
+    );
+    final icRespDataPerCore = List.generate(
+      coreCount,
+      (i) => Logic(name: 'ic_resp_data_core$i', width: 16),
+    );
+    final dcReqReadyPerCore = List.generate(
+      coreCount,
+      (i) => Logic(name: 'dc_req_ready_core$i'),
+    );
+    final dcRespValidPerCore = List.generate(
+      coreCount,
+      (i) => Logic(name: 'dc_resp_valid_core$i'),
+    );
+    final dcRespDataPerCore = List.generate(
+      coreCount,
+      (i) => Logic(name: 'dc_resp_data_core$i', width: 16),
+    );
     final mboxTrapVecConst = Const(mboxTrapVec & 0x0F, width: 4);
 
     cpuRxData <= [uartRxValid, Const(0, width: 7), uartRxdLatch].swizzle();
     cpuTxStatus <= mux(txBusyLatch, Const(1, width: 16), Const(0, width: 16));
 
     // Core 0: Primary OS / UART / Monitor core
+    final core0ExtCache =
+        effectiveConfig.enableSdramCache && effectiveConfig.memWords < 65536;
     cpu = CpuCore(
       clk: clk48mhz,
       rstN: sysRstN,
@@ -133,6 +174,12 @@ class Ulx3sTop extends Module {
           ? mboxTrapVecConst
           : null,
       nocRdata: useNoc ? nocRdataPerCore[0] : null,
+      icReqReady: core0ExtCache ? icReqReadyPerCore[0] : null,
+      icRespValid: core0ExtCache ? icRespValidPerCore[0] : null,
+      icRespData: core0ExtCache ? icRespDataPerCore[0] : null,
+      dcReqReady: core0ExtCache ? dcReqReadyPerCore[0] : null,
+      dcRespValid: core0ExtCache ? dcRespValidPerCore[0] : null,
+      dcRespData: core0ExtCache ? dcRespDataPerCore[0] : null,
       config: effectiveConfig,
       initHexFile: initHexFile,
       initialMemory: initialMemory,
@@ -144,6 +191,7 @@ class Ulx3sTop extends Module {
     // Worker Cores 1..N-1 (instantiated whenever nocCores >= 2)
     if (useNoc) {
       for (var c = 1; c < nocCores; c++) {
+        final workerExtCache = useSdramCache && workerMemWords < 65536;
         final workerCfg = CpuConfig(
           coreId: c,
           enableCpuid: true,
@@ -153,6 +201,9 @@ class Ulx3sTop extends Module {
           enableMathAccel: effectiveConfig.enableMathAccel,
           enableSpi: false,
           enableNoc: true,
+          enableSdramCache: workerExtCache,
+          cacheLines: effectiveConfig.cacheLines,
+          cacheLineWords: effectiveConfig.cacheLineWords,
           nocChannels: effectiveConfig.nocChannels,
           nocFifoDepth: effectiveConfig.nocFifoDepth,
           trapTableBase: effectiveConfig.trapTableBase,
@@ -173,6 +224,12 @@ class Ulx3sTop extends Module {
                 ? mboxTrapVecConst
                 : null,
             nocRdata: nocRdataPerCore[c],
+            icReqReady: workerExtCache ? icReqReadyPerCore[c] : null,
+            icRespValid: workerExtCache ? icRespValidPerCore[c] : null,
+            icRespData: workerExtCache ? icRespDataPerCore[c] : null,
+            dcReqReady: workerExtCache ? dcReqReadyPerCore[c] : null,
+            dcRespValid: workerExtCache ? dcRespValidPerCore[c] : null,
+            dcRespData: workerExtCache ? dcRespDataPerCore[c] : null,
             config: workerCfg,
             initHexFile: workerMem != null ? null : workerInitHexFile,
             initialMemory: workerMem,
@@ -182,6 +239,110 @@ class Ulx3sTop extends Module {
       }
     }
     cores = List.unmodifiable(instantiatedCores);
+
+    if (useSdramCache) {
+      final sdramClkOut = addOutput('sdram_clk');
+      final sdramCkeOut = addOutput('sdram_cke');
+      final sdramCsnOut = addOutput('sdram_csn');
+      final sdramRasnOut = addOutput('sdram_rasn');
+      final sdramCasnOut = addOutput('sdram_casn');
+      final sdramWenOut = addOutput('sdram_wen');
+      final sdramBaOut = addOutput('sdram_ba', width: 2);
+      final sdramAOut = addOutput('sdram_a', width: 13);
+      final sdramDqmOut = addOutput('sdram_dqm', width: 2);
+      final dqNet = addInOut(
+        'sdram_d',
+        sdramD ?? LogicNet(name: 'sdram_d_net', width: 16),
+        width: 16,
+      );
+      sdramDNet = dqNet;
+
+      final icReqValidList = <Logic>[];
+      final icReqAddrList = <Logic>[];
+      final dcReqValidList = <Logic>[];
+      final dcReqWeList = <Logic>[];
+      final dcReqAddrList = <Logic>[];
+      final dcReqWdataList = <Logic>[];
+
+      for (var c = 0; c < coreCount; c++) {
+        final core = cores[c];
+        final coreHasExt =
+            core.config.enableSdramCache && core.config.memWords < 65536;
+        if (coreHasExt) {
+          icReqValidList.add(core.output('ic_req_valid'));
+          icReqAddrList.add(core.output('ic_req_addr'));
+          dcReqValidList.add(core.output('dc_req_valid'));
+          dcReqWeList.add(core.output('dc_req_we'));
+          dcReqAddrList.add(core.output('dc_req_addr'));
+          dcReqWdataList.add(core.output('dc_req_wdata'));
+        } else {
+          icReqValidList.add(Const(0));
+          icReqAddrList.add(Const(0, width: 16));
+          dcReqValidList.add(Const(0));
+          dcReqWeList.add(Const(0));
+          dcReqAddrList.add(Const(0, width: 16));
+          dcReqWdataList.add(Const(0, width: 16));
+        }
+      }
+
+      final cacheCluster = SdramCacheCluster(
+        clk: clk48mhz,
+        rstN: sysRstN,
+        icReqValid: icReqValidList,
+        icReqAddr: icReqAddrList,
+        dcReqValid: dcReqValidList,
+        dcReqWe: dcReqWeList,
+        dcReqAddr: dcReqAddrList,
+        dcReqWdata: dcReqWdataList,
+        sdramDqIn: dqNet,
+        numCores: coreCount,
+        numLines: effectiveConfig.cacheLines,
+        lineWords: effectiveConfig.cacheLineWords,
+        clkFreqMhz: 48,
+        casLatency: 2,
+        initWaitCycles: sdramInitWaitCycles,
+        refreshCycles: sdramRefreshCycles,
+        name: 'ulx3s_sdram_cluster',
+      );
+
+      for (var c = 0; c < coreCount; c++) {
+        icReqReadyPerCore[c] <= cacheCluster.output('ic_req_ready_$c');
+        icRespValidPerCore[c] <= cacheCluster.output('ic_resp_valid_$c');
+        icRespDataPerCore[c] <= cacheCluster.output('ic_resp_data_$c');
+        dcReqReadyPerCore[c] <= cacheCluster.output('dc_req_ready_$c');
+        dcRespValidPerCore[c] <= cacheCluster.output('dc_resp_valid_$c');
+        dcRespDataPerCore[c] <= cacheCluster.output('dc_resp_data_$c');
+      }
+
+      // 180-degree phase-shifted SDRAM clock gives >10 ns setup & hold margin at 48 MHz
+      sdramClkOut <= ~clk48mhz;
+      sdramCkeOut <= cacheCluster.output('sdram_cke');
+      sdramCsnOut <= cacheCluster.output('sdram_cs_n');
+      sdramRasnOut <= cacheCluster.output('sdram_ras_n');
+      sdramCasnOut <= cacheCluster.output('sdram_cas_n');
+      sdramWenOut <= cacheCluster.output('sdram_we_n');
+      sdramBaOut <= cacheCluster.output('sdram_ba');
+      sdramAOut <= cacheCluster.output('sdram_a');
+      sdramDqmOut <= cacheCluster.output('sdram_dqm');
+
+      sdramDqOutDebug = cacheCluster.output('sdram_dq_out');
+      sdramDqOeDebug = cacheCluster.output('sdram_dq_oe');
+      final dqTri = TriStateBuffer(
+        cacheCluster.output('sdram_dq_out'),
+        enable: cacheCluster.output('sdram_dq_oe'),
+        name: 'sdram_dq_tri',
+      );
+      dqNet <= dqTri.out;
+    } else {
+      for (var c = 0; c < coreCount; c++) {
+        icReqReadyPerCore[c] <= Const(1);
+        icRespValidPerCore[c] <= Const(0);
+        icRespDataPerCore[c] <= Const(0, width: 16);
+        dcReqReadyPerCore[c] <= Const(1);
+        dcRespValidPerCore[c] <= Const(0);
+        dcRespDataPerCore[c] <= Const(0, width: 16);
+      }
+    }
 
     final uart = Uart(
       clk: clk48mhz,
@@ -302,4 +463,13 @@ class Ulx3sTop extends Module {
   Logic get ftdiRxd => output('ftdi_rxd');
   Logic get wifiGpio0 => output('wifi_gpio0');
   Logic get led => output('led');
+  Logic get sdramClk => output('sdram_clk');
+  Logic get sdramCke => output('sdram_cke');
+  Logic get sdramCsn => output('sdram_csn');
+  Logic get sdramRasn => output('sdram_rasn');
+  Logic get sdramCasn => output('sdram_casn');
+  Logic get sdramWen => output('sdram_wen');
+  Logic get sdramBa => output('sdram_ba');
+  Logic get sdramA => output('sdram_a');
+  Logic get sdramDqm => output('sdram_dqm');
 }

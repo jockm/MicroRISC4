@@ -3,6 +3,8 @@ import 'package:rohd/rohd.dart';
 import 'package:test/test.dart';
 import 'package:minirisc4_rohd/cache_controllers.dart';
 import 'package:minirisc4_rohd/cache_subsystem_top.dart';
+import 'package:minirisc4_rohd/cpu_config.dart';
+import 'package:minirisc4_rohd/ulx3s_top.dart';
 import 'sdram_controller_test.dart' show JedecSdramSimModel;
 
 void main() {
@@ -516,18 +518,313 @@ void main() {
         await step();
       }
       await step();
-      // Now Core 0 I-Cache fetch of 0x0103 must MISS (because D-write invalidated it)!
+      // Now Core 0 I-Cache fetch of 0x0103 must MISS, snoop-writeback DCache's
+      // dirty line to SDRAM, and return the freshly written 0xBEEF!
       icA[0].put(0x0103); icV[0].put(1);
       await step();
       icV[0].put(0);
       int? hitAfterInval;
-      for (var cyc = 0; cyc < 80 && hitAfterInval == null; cyc++) {
+      int? dataAfterInval;
+      for (var cyc = 0; cyc < 160 && hitAfterInval == null; cyc++) {
         if (cluster.output('ic_resp_valid_0').value.toInt() == 1) {
           hitAfterInval = cluster.output('ic_resp_hit_0').value.toInt();
+          dataAfterInval = cluster.output('ic_resp_data_0').value.toInt();
         }
         await step();
       }
       expect(hitAfterInval, equals(0));
+      expect(dataAfterInval, equals(0xBEEF));
+      expect(sdramModel.mem[(0 << 16) | 0x0103], equals(0xBEEF));
+
+      Simulator.endSimulation();
+      await Simulator.simulationEnded;
+    });
+
+    test('Live Ulx3sTop (2K local BRAM + I/D Cache + SDRAM): stack, dirty eviction, and SDRAM code execution', () async {
+      // MiniRISC4 encoding helpers
+      int ldReg(int rr, int rl) => (0x0 << 4) | (rr << 2) | rl;
+      int ldi4(int imm) => (0x1 << 4) | (imm & 0xF);
+      int peek(int rr, int rl) => (0x2 << 4) | (rr << 2) | rl;
+      int poke(int rr, int rl) => (0x3 << 4) | (rr << 2) | rl;
+      int pop(int rr, int rl) => (0x4 << 4) | (rr << 2) | rl;
+      int push(int rr, int rl) => (0x5 << 4) | (rr << 2) | rl;
+      int add(int rr, int rl) => (0x6 << 4) | (rr << 2) | rl;
+      int jmp(int rl) => (0xF << 4) | (0x0 << 2) | rl;
+      int push8(int rl, int imm8) =>
+          ((imm8 & 0xFF) << 8) | (0xF << 4) | (0x2 << 2) | rl;
+      int pack(int b0, int b1) => ((b1 & 0xFF) << 8) | (b0 & 0xFF);
+      List<int> load16(int reg, int val) => [
+            push8(reg, (val >> 8) & 0xFF),
+            push8(reg, val & 0xFF),
+          ];
+
+      // Build SDRAM subroutine words to be written by CPU into SDRAM @ 0x5000:
+      //   0x5000: LDI4 R0, 0xA ; LD R1, R0
+      //   0x5001: LDI4 R0, 0x5 ; ADD R0, R1  (R0 = 0x000F)
+      //   0x5002..3: R2 = 0x0202 (local BRAM result slot)
+      //   0x5004: LD (R2), R0 ; NOP (LD R0, R0)
+      //   0x5005..6: R2 = 0x0180 (return to local BRAM done loop)
+      //   0x5007: JMP R2 ; NOP
+      final sdramCode = <int>[
+        pack(ldi4(0xA), ldReg(1, 0)),
+        pack(ldi4(0x5), add(0, 1)),
+        ...load16(2, 0x0202),
+        pack(poke(2, 0), ldReg(0, 0)),
+        ...load16(2, 0x0180),
+        pack(jmp(2), ldReg(0, 0)),
+      ];
+
+      // Local 2K BRAM program starting at reset vector 0x0100:
+      final mem = <int, int>{};
+      var addr = 0x0100;
+      void emit(List<int> words) {
+        for (final w in words) {
+          mem[addr++] = w;
+        }
+      }
+
+      // 1. Test SDRAM stack: R3 = 0xFF00; PUSH 0xCAFE; POP -> R1; store to local 0x0200
+      emit(load16(3, 0xFF00));
+      emit(load16(0, 0xCAFE));
+      emit([pack(push(3, 0), pop(1, 3))]);
+      emit(load16(2, 0x0200));
+      emit([pack(poke(2, 1), ldReg(0, 0))]);
+
+      // 2. Test SDRAM dirty eviction & refill:
+      //    mem[0x4000] = 0x1234; mem[0x8000] = 0x5678 (same cache index 0 -> evicts 0x4000!);
+      //    read back mem[0x4000] -> store to local 0x0201
+      emit(load16(2, 0x4000));
+      emit(load16(0, 0x1234));
+      emit([pack(poke(2, 0), ldReg(0, 0))]);
+      emit(load16(2, 0x8000));
+      emit(load16(0, 0x5678));
+      emit([pack(poke(2, 0), ldReg(0, 0))]);
+      emit(load16(2, 0x4000));
+      emit([pack(peek(1, 2), ldReg(0, 0))]);
+      emit(load16(2, 0x0201));
+      emit([pack(poke(2, 1), ldReg(0, 0))]);
+
+      // 3. Self-modifying code into SDRAM @ 0x5000..0x5007, then jump to 0x5000!
+      for (var i = 0; i < sdramCode.length; i++) {
+        emit(load16(2, 0x5000 + i));
+        emit(load16(0, sdramCode[i]));
+        emit([pack(poke(2, 0), ldReg(0, 0))]);
+      }
+      emit(load16(2, 0x5000));
+      emit([pack(jmp(2), ldReg(0, 0))]);
+
+      // Done spin loop at 0x0180 (sets local 0x0203 = 0xACED, then spins at 0x0185)
+      addr = 0x0180;
+      emit(load16(2, 0x0203));
+      emit(load16(0, 0xACED));
+      emit([pack(poke(2, 0), ldReg(0, 0))]);
+      final spinPc = addr;
+      emit(load16(2, spinPc));
+      emit([pack(jmp(2), ldReg(0, 0))]);
+
+      final clk = SimpleClockGenerator(10).clk;
+      final btnPwrN = Logic(name: 'btn_pwr_n');
+      final ftdiTxd = Logic(name: 'ftdi_txd');
+      final sdramD = LogicNet(name: 'sdram_d', width: 16);
+
+      final top = Ulx3sTop(
+        clk25mhz: clk,
+        btnPwrN: btnPwrN,
+        ftdiTxd: ftdiTxd,
+        sdramD: sdramD,
+        config: const CpuConfig(
+          coreId: 0,
+          enableCpuid: false,
+          enableUart: true,
+          enableCrossTraps: false,
+          enableMathAccel: false,
+          enableSdramCache: true,
+          cacheLines: 32,
+          cacheLineWords: 8,
+          trapTableBase: 0x0100,
+          memWords: 2048,
+        ),
+        resetHoldBits: 2,
+        sdramInitWaitCycles: 6,
+        sdramRefreshCycles: 250,
+        initHexFile: null,
+        initialMemory: mem,
+      );
+      await top.build();
+
+      final sdramModel = JedecSdramSimModel()
+        ..attachPins(
+          clk: clk,
+          csN: top.sdramCsn,
+          rasN: top.sdramRasn,
+          casN: top.sdramCasn,
+          weN: top.sdramWen,
+          ba: top.sdramBa,
+          a: top.sdramA,
+          dqOut: top.sdramDqOutDebug!,
+          dqOe: top.sdramDqOeDebug!,
+          sdramDNet: sdramD,
+        );
+
+      btnPwrN.put(0);
+      ftdiTxd.put(1);
+
+      Simulator.setMaxSimTime(40000);
+      unawaited(Simulator.run());
+
+      Future<void> step() async {
+        await clk.nextPosedge;
+        await clk.nextNegedge;
+      }
+
+      for (var i = 0; i < 4; i++) {
+        await step();
+      }
+      btnPwrN.put(1);
+
+      var reachedDone = false;
+      for (var cyc = 0; cyc < 1800; cyc++) {
+        if (top.cpu.ram.mem[0x0203] == 0xACED) {
+          reachedDone = true;
+          break;
+        }
+        await step();
+      }
+
+      expect(reachedDone, isTrue,
+          reason: 'CPU timed out at PC=0x${top.cpu.debugPc.value.toInt().toRadixString(16)}');
+      // 1. SDRAM stack PUSH/POP verified
+      expect(top.cpu.ram.mem[0x0200], equals(0xCAFE));
+      // 2. SDRAM dirty eviction (0x4000 evicted by 0x8000) & refill verified
+      expect(top.cpu.ram.mem[0x0201], equals(0x1234));
+      expect(sdramModel.mem[(0 << 16) | 0x4000], equals(0x1234));
+      // 3. Self-modifying code in SDRAM @ 0x5000 snooped, executed via ICache, returned!
+      expect(top.cpu.ram.mem[0x0202], equals(0x000F));
+      expect(sdramModel.mem[(0 << 16) | 0x5000], equals(sdramCode[0]));
+
+      Simulator.endSimulation();
+      await Simulator.simulationEnded;
+    });
+
+    test('Live 2-core Ulx3sTop (2x 2K BRAM + shared SDRAM): non-overlapping 64K partitions', () async {
+      int ldReg(int rr, int rl) => (0x0 << 4) | (rr << 2) | rl;
+      int peek(int rr, int rl) => (0x2 << 4) | (rr << 2) | rl;
+      int poke(int rr, int rl) => (0x3 << 4) | (rr << 2) | rl;
+      int jmp(int rl) => (0xF << 4) | (0x0 << 2) | rl;
+      int push8(int rl, int imm8) =>
+          ((imm8 & 0xFF) << 8) | (0xF << 4) | (0x2 << 2) | rl;
+      int pack(int b0, int b1) => ((b1 & 0xFF) << 8) | (b0 & 0xFF);
+      List<int> load16(int reg, int val) => [
+            push8(reg, (val >> 8) & 0xFF),
+            push8(reg, val & 0xFF),
+          ];
+
+      Map<int, int> makeCoreProg(int pattern) {
+        final m = <int, int>{};
+        var a = 0x0100;
+        void emit(List<int> words) {
+          for (final w in words) {
+            m[a++] = w;
+          }
+        }
+
+        // Write pattern to SDRAM 0x4000, evict via 0x8000, read back 0x4000 -> local 0x0200
+        emit(load16(2, 0x4000));
+        emit(load16(0, pattern));
+        emit([pack(poke(2, 0), ldReg(0, 0))]);
+        emit(load16(2, 0x8000));
+        emit(load16(0, pattern ^ 0x00FF));
+        emit([pack(poke(2, 0), ldReg(0, 0))]);
+        emit(load16(2, 0x4000));
+        emit([pack(peek(1, 2), ldReg(0, 0))]);
+        emit(load16(2, 0x0200));
+        emit([pack(poke(2, 1), ldReg(0, 0))]);
+        final spin = a;
+        emit(load16(2, spin));
+        emit([pack(jmp(2), ldReg(0, 0))]);
+        return m;
+      }
+
+      final clk = SimpleClockGenerator(10).clk;
+      final btnPwrN = Logic(name: 'btn_pwr_n');
+      final ftdiTxd = Logic(name: 'ftdi_txd');
+      final sdramD = LogicNet(name: 'sdram_d', width: 16);
+
+      final top = Ulx3sTop(
+        clk25mhz: clk,
+        btnPwrN: btnPwrN,
+        ftdiTxd: ftdiTxd,
+        sdramD: sdramD,
+        config: const CpuConfig(
+          coreId: 0,
+          enableCpuid: true,
+          enableUart: true,
+          enableCrossTraps: true,
+          enableNoc: true,
+          enableSdramCache: true,
+          cacheLines: 32,
+          cacheLineWords: 8,
+          nocFifoDepth: 16,
+          trapTableBase: 0x0100,
+          memWords: 2048,
+        ),
+        nocCores: 2,
+        workerMemWords: 2048,
+        resetHoldBits: 2,
+        sdramInitWaitCycles: 6,
+        sdramRefreshCycles: 250,
+        initHexFile: null,
+        initialMemory: makeCoreProg(0xAAAA),
+        workerInitialMemories: [makeCoreProg(0xBBBB)],
+      );
+      await top.build();
+
+      final sdramModel = JedecSdramSimModel()
+        ..attachPins(
+          clk: clk,
+          csN: top.sdramCsn,
+          rasN: top.sdramRasn,
+          casN: top.sdramCasn,
+          weN: top.sdramWen,
+          ba: top.sdramBa,
+          a: top.sdramA,
+          dqOut: top.sdramDqOutDebug!,
+          dqOe: top.sdramDqOeDebug!,
+          sdramDNet: sdramD,
+        );
+
+      btnPwrN.put(0);
+      ftdiTxd.put(1);
+
+      Simulator.setMaxSimTime(40000);
+      unawaited(Simulator.run());
+
+      Future<void> step() async {
+        await clk.nextPosedge;
+        await clk.nextNegedge;
+      }
+
+      for (var i = 0; i < 4; i++) {
+        await step();
+      }
+      btnPwrN.put(1);
+
+      var bothDone = false;
+      for (var cyc = 0; cyc < 1800; cyc++) {
+        if (top.cores[0].ram.mem[0x0200] == 0xAAAA &&
+            top.cores[1].ram.mem[0x0200] == 0xBBBB) {
+          bothDone = true;
+          break;
+        }
+        await step();
+      }
+
+      expect(bothDone, isTrue,
+          reason:
+              'c0=0x${top.cores[0].ram.mem[0x0200].toRadixString(16)}, c1=0x${top.cores[1].ram.mem[0x0200].toRadixString(16)}');
+      // Verify physical SDRAM partitions {coreId[7:0], addr[15:0]} did not overlap!
+      expect(sdramModel.mem[(0 << 16) | 0x4000], equals(0xAAAA));
+      expect(sdramModel.mem[(1 << 16) | 0x4000], equals(0xBBBB));
 
       Simulator.endSimulation();
       await Simulator.simulationEnded;

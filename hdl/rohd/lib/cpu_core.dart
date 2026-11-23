@@ -33,6 +33,12 @@ class CpuCore extends Module {
     Logic? extTrapNum,
     Logic? spiMiso,
     Logic? nocRdata,
+    Logic? icReqReady,
+    Logic? icRespValid,
+    Logic? icRespData,
+    Logic? dcReqReady,
+    Logic? dcRespValid,
+    Logic? dcRespData,
     this.config = const CpuConfig(),
     String? initHexFile,
     Map<int, int>? initialMemory,
@@ -78,6 +84,51 @@ class CpuCore extends Module {
           width: 16);
     } else {
       nocRdataIn = Const(0, width: 16);
+    }
+
+    final useExtCache = config.enableSdramCache && config.memWords < 65536;
+    final Logic icReqReadyIn;
+    final Logic icRespValidIn;
+    final Logic icRespDataIn;
+    final Logic dcReqReadyIn;
+    final Logic dcRespValidIn;
+    final Logic dcRespDataIn;
+    final Logic? icReqValidOut;
+    final Logic? icReqAddrOut;
+    final Logic? dcReqValidOut;
+    final Logic? dcReqWeOut;
+    final Logic? dcReqAddrOut;
+    final Logic? dcReqWdataOut;
+    if (useExtCache) {
+      icReqReadyIn = addInput('ic_req_ready', icReqReady ?? Const(1));
+      icRespValidIn = addInput('ic_resp_valid', icRespValid ?? Const(0));
+      icRespDataIn = addInput(
+          'ic_resp_data', icRespData ?? Const(0, width: 16),
+          width: 16);
+      dcReqReadyIn = addInput('dc_req_ready', dcReqReady ?? Const(1));
+      dcRespValidIn = addInput('dc_resp_valid', dcRespValid ?? Const(0));
+      dcRespDataIn = addInput(
+          'dc_resp_data', dcRespData ?? Const(0, width: 16),
+          width: 16);
+      icReqValidOut = addOutput('ic_req_valid');
+      icReqAddrOut = addOutput('ic_req_addr', width: 16);
+      dcReqValidOut = addOutput('dc_req_valid');
+      dcReqWeOut = addOutput('dc_req_we');
+      dcReqAddrOut = addOutput('dc_req_addr', width: 16);
+      dcReqWdataOut = addOutput('dc_req_wdata', width: 16);
+    } else {
+      icReqReadyIn = Const(1);
+      icRespValidIn = Const(0);
+      icRespDataIn = Const(0, width: 16);
+      dcReqReadyIn = Const(1);
+      dcRespValidIn = Const(0);
+      dcRespDataIn = Const(0, width: 16);
+      icReqValidOut = null;
+      icReqAddrOut = null;
+      dcReqValidOut = null;
+      dcReqWeOut = null;
+      dcReqAddrOut = null;
+      dcReqWdataOut = null;
     }
 
     final spiSck = config.enableSpi ? addOutput('spi_sck') : null;
@@ -188,11 +239,15 @@ class CpuCore extends Module {
         isSpiMatch |
         isNocMatch;
 
-    // Mask RAM writes when targeting MMIO addresses (portBWe is only asserted when portBEn is high)
-    final ramBWe = portBWe & ~isMmio;
+    // Mask RAM writes when targeting MMIO or external SDRAM-cached addresses
+    final addrHigh = config.addrWidth - 1;
+    final isExtPortB = useExtCache
+        ? ~portBAddr.slice(15, config.addrWidth).eq(
+            Const(0, width: 16 - config.addrWidth))
+        : Const(0);
+    final ramBWe = portBWe & ~isMmio & ~isExtPortB;
 
     // Instantiate Synthesizable True Dual-Port BRAM
-    final addrHigh = config.addrWidth - 1;
     ram = TdpBram(
       clk: clk,
       portAAddr: portAAddr.slice(addrHigh, 0),
@@ -251,6 +306,7 @@ class CpuCore extends Module {
     final decUseOneAsAddBQ = Logic(name: 'dec_use_one_add_b_q');
     final decArithSubQ = Logic(name: 'dec_arith_sub_q');
     final illegalSlot1 = Logic(name: 'dec_illegal_slot1_q');
+    final extWrPendingQ = Logic(name: 'ext_wr_pending_q');
 
     // Staged read-data selection: keeps wide BRAM read path out of the MMIO mux tree
     final effectivePortBData = mux(isMmioRdReg, mmioRdataReg, portBRdata);
@@ -322,6 +378,24 @@ class CpuCore extends Module {
     final arithSum17 =
         [addA, decArithSubQ].swizzle() + [addBInv, decArithSubQ].swizzle();
     final arithRes = arithSum17.slice(16, 1);
+
+    // External SDRAM-cached address detectors (slice check -> zero CCU2C carry chains)
+    Logic isExtAddr(Logic addr) => ~addr
+        .slice(15, config.addrWidth)
+        .eq(Const(0, width: 16 - config.addrWidth));
+    final isExtPc = useExtCache ? isExtAddr(pc) : Const(0);
+    final isExtNextPc = useExtCache ? isExtAddr(pcPlus1) : Const(0);
+    final isExtPoke = useExtCache ? isExtAddr(regR) : Const(0);
+    final isExtPredec = useExtCache ? isExtAddr(arithRes) : Const(0);
+
+    if (useExtCache) {
+      icReqValidOut! <= state.eq(Const(_stFetch, width: 3)) & isExtPc;
+      icReqAddrOut! <= pc;
+      dcReqValidOut! <= state.eq(Const(_stMemWait, width: 3)) & isExtPortB;
+      dcReqWeOut! <= portBWe;
+      dcReqAddrOut! <= portBAddr;
+      dcReqWdataOut! <= portBWdata;
+    }
 
     // Fast (non-adder) writeback paths computed in parallel with arithRes
     final shiftRes = mux(
@@ -446,6 +520,7 @@ class CpuCore extends Module {
       decUseOneAsAddBQ: Const(0, width: 1),
       decArithSubQ: Const(0, width: 1),
       illegalSlot1: Const(0, width: 1),
+      if (useExtCache) extWrPendingQ: Const(0, width: 1),
       txData: Const(0, width: 8),
       txStrobe: Const(0, width: 1),
       for (final reg in r) reg: Const(0, width: 16),
@@ -488,23 +563,73 @@ class CpuCore extends Module {
                 state < Const(_stFetch, width: 3),
               ]),
 
-              // ST_FETCH: Cycle 1 of 2-cycle BRAM read for pc; pipeline prefetch of pc+1
+              // ST_FETCH: Cycle 1 of 2-cycle BRAM read for pc (or I-Cache req if external)
               CaseItem(Const(_stFetch, width: 3), [
-                portAAddr < pcPlus1,
-                portAEn < 1,
-                portBEn < 0,
-                portBWe < 0,
-                slot < MiniRISC4Constants.slotByte0,
-                state < Const(_stFetchWait, width: 3),
+                if (useExtCache)
+                  If(isExtPc, then: [
+                    portAEn < 0,
+                    portBEn < 0,
+                    portBWe < 0,
+                    slot < MiniRISC4Constants.slotByte0,
+                    If(icReqReadyIn, then: [
+                      state < Const(_stFetchWait, width: 3),
+                    ]),
+                  ], orElse: [
+                    portAAddr < pcPlus1,
+                    portAEn < 1,
+                    portBEn < 0,
+                    portBWe < 0,
+                    slot < MiniRISC4Constants.slotByte0,
+                    state < Const(_stFetchWait, width: 3),
+                  ])
+                else ...[
+                  portAAddr < pcPlus1,
+                  portAEn < 1,
+                  portBEn < 0,
+                  portBWe < 0,
+                  slot < MiniRISC4Constants.slotByte0,
+                  state < Const(_stFetchWait, width: 3),
+                ],
               ]),
 
-              // ST_FETCH_WAIT: Cycle 2 of BRAM read for pc (stage1 captures mem[pc+1])
+              // ST_FETCH_WAIT: Cycle 2 of BRAM read (or wait for I-Cache resp if external)
               CaseItem(Const(_stFetchWait, width: 3), [
-                portAEn < 0,
-                portBEn < 0,
-                portBWe < 0,
-                slot < MiniRISC4Constants.slotByte0,
-                state < Const(_stFetchLatch, width: 3),
+                if (useExtCache)
+                  If(isExtPc, then: [
+                    portAEn < 0,
+                    portBEn < 0,
+                    portBWe < 0,
+                    slot < MiniRISC4Constants.slotByte0,
+                    If(icRespValidIn, then: [
+                      instReg < icRespDataIn,
+                      ..._latchExecByte(
+                        icRespDataIn.slice(7, 0),
+                        decOpQ,
+                        decRrQ,
+                        decRlQ,
+                        decImm4Q,
+                        decUseRegLAsAddAQ,
+                        decUseOneAsAddBQ,
+                        decArithSubQ,
+                        illegalSlot1,
+                        isSlot1: false,
+                      ),
+                      state < Const(_stExec, width: 3),
+                    ]),
+                  ], orElse: [
+                    portAEn < 0,
+                    portBEn < 0,
+                    portBWe < 0,
+                    slot < MiniRISC4Constants.slotByte0,
+                    state < Const(_stFetchLatch, width: 3),
+                  ])
+                else ...[
+                  portAEn < 0,
+                  portBEn < 0,
+                  portBWe < 0,
+                  slot < MiniRISC4Constants.slotByte0,
+                  state < Const(_stFetchLatch, width: 3),
+                ],
               ]),
 
               // ST_FETCH_LATCH: Latch mem[pc] into instReg; portARdata advances to mem[pc+1];
@@ -553,8 +678,11 @@ class CpuCore extends Module {
                         decUseOneAsAddBQ,
                         decArithSubQ,
                         illegalSlot1,
+                        useExtCache: useExtCache,
+                        isExtPc: isExtPc,
+                        isExtNextPc: isExtNextPc,
                       );
-                  return [If(Const(1, width: 1), then: [
+                  return [
                 portBEn < 0,
                 portBWe < 0,
                 portBWdata < regL,
@@ -586,7 +714,16 @@ class CpuCore extends Module {
                           txData < regL.slice(7, 0),
                           txStrobe < 1,
                         ]),
-                      advance(),
+                      if (useExtCache)
+                        If(isExtPoke, then: [
+                          portAEn < 0,
+                          extWrPendingQ < 1,
+                          state < Const(_stMemWait, width: 3),
+                        ], orElse: [
+                          advance(),
+                        ])
+                      else
+                        advance(),
                     ]),
 
                     // 0x4: LD Rr, (Rl++) - Pop (Full Descending)
@@ -610,7 +747,16 @@ class CpuCore extends Module {
                               txData < regL.slice(7, 0),
                               txStrobe < 1,
                             ]),
-                      advance(),
+                      if (useExtCache)
+                        If(isExtPredec, then: [
+                          portAEn < 0,
+                          extWrPendingQ < 1,
+                          state < Const(_stMemWait, width: 3),
+                        ], orElse: [
+                          advance(),
+                        ])
+                      else
+                        advance(),
                     ]),
 
                     // 0xD: JMP.Z
@@ -646,9 +792,20 @@ class CpuCore extends Module {
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subPush8, width: 2), [
                           pc < pcPlus1,
-                          portAEn < 0,
                           slot < MiniRISC4Constants.slotByte0,
-                          state < Const(_stFetchLatch, width: 3),
+                          if (useExtCache)
+                            If(isExtPc | isExtNextPc, then: [
+                              portAAddr < pcPlus1,
+                              portAEn < 1,
+                              state < Const(_stFetch, width: 3),
+                            ], orElse: [
+                              portAEn < 0,
+                              state < Const(_stFetchLatch, width: 3),
+                            ])
+                          else ...[
+                            portAEn < 0,
+                            state < Const(_stFetchLatch, width: 3),
+                          ],
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subTrap, width: 2), [
                           _branchTo(
@@ -672,26 +829,79 @@ class CpuCore extends Module {
                     advance(),
                   ]),
                 ]),
-                    ]),
                   ];
                 }(),
               ),
 
-              // ST_MEM_WAIT: Cycle 1 of Port B BRAM read (raw/bank stage)
+              // ST_MEM_WAIT: Cycle 1 of Port B BRAM read (or D-Cache req handshake)
               CaseItem(Const(_stMemWait, width: 3), [
                 portAEn < 0,
-                portBEn < 0,
-                portBWe < 0,
-                state < Const(_stMemWait2, width: 3),
+                if (useExtCache)
+                  If(isExtPortB, then: [
+                    If(dcReqReadyIn, then: [
+                      portBEn < 0,
+                      portBWe < 0,
+                      state < Const(_stMemWait2, width: 3),
+                    ]),
+                  ], orElse: [
+                    portBEn < 0,
+                    portBWe < 0,
+                    state < Const(_stMemWait2, width: 3),
+                  ])
+                else ...[
+                  portBEn < 0,
+                  portBWe < 0,
+                  state < Const(_stMemWait2, width: 3),
+                ],
               ]),
 
-              // ST_MEM_WAIT2: Cycle 2 of Port B BRAM read (stage MMIO read bus)
+              // ST_MEM_WAIT2: Cycle 2 of Port B BRAM read (or wait for D-Cache resp)
               CaseItem(Const(_stMemWait2, width: 3), [
                 portBEn < 0,
                 portBWe < 0,
-                mmioRdataReg < mmioOnlyData,
-                isMmioRdReg < isMmio,
-                state < Const(_stMemRd, width: 3),
+                if (useExtCache)
+                  If(isExtPortB, then: [
+                    If(dcRespValidIn, then: [
+                      If(extWrPendingQ, then: [
+                        extWrPendingQ < 0,
+                        _advanceFromExec(
+                          slot,
+                          instReg,
+                          nextInstReg,
+                          portAAddr,
+                          portAAddrPlus1,
+                          portAEn,
+                          state,
+                          pc,
+                          pcPlus1,
+                          decOpQ,
+                          decRrQ,
+                          decRlQ,
+                          decImm4Q,
+                          decUseRegLAsAddAQ,
+                          decUseOneAsAddBQ,
+                          decArithSubQ,
+                          illegalSlot1,
+                          useExtCache: useExtCache,
+                          isExtPc: isExtPc,
+                          isExtNextPc: isExtNextPc,
+                        ),
+                      ], orElse: [
+                        mmioRdataReg < dcRespDataIn,
+                        isMmioRdReg < 1,
+                        state < Const(_stMemRd, width: 3),
+                      ]),
+                    ]),
+                  ], orElse: [
+                    mmioRdataReg < mmioOnlyData,
+                    isMmioRdReg < isMmio,
+                    state < Const(_stMemRd, width: 3),
+                  ])
+                else ...[
+                  mmioRdataReg < mmioOnlyData,
+                  isMmioRdReg < isMmio,
+                  state < Const(_stMemRd, width: 3),
+                ],
               ]),
 
               // ST_MEM_RD: Advance after unified writeback latches Port B / MMIO data
@@ -716,6 +926,9 @@ class CpuCore extends Module {
                   decUseOneAsAddBQ,
                   decArithSubQ,
                   illegalSlot1,
+                  useExtCache: useExtCache,
+                  isExtPc: isExtPc,
+                  isExtNextPc: isExtNextPc,
                 ),
               ]),
             ], defaultItem: [
@@ -799,25 +1012,12 @@ class CpuCore extends Module {
     Logic decUseRegLAsAddAQ,
     Logic decUseOneAsAddBQ,
     Logic decArithSubQ,
-    Logic decIllegalSlot1Q,
-  ) {
-    return If(slot.eq(MiniRISC4Constants.slotByte0), then: [
-      slot < MiniRISC4Constants.slotByte1,
-      portAEn < 0,
-      state < Const(_stExec, width: 3),
-      ..._latchExecByte(
-        instReg.slice(15, 8),
-        decOpQ,
-        decRrQ,
-        decRlQ,
-        decImm4Q,
-        decUseRegLAsAddAQ,
-        decUseOneAsAddBQ,
-        decArithSubQ,
-        decIllegalSlot1Q,
-        isSlot1: true,
-      ),
-    ], orElse: [
+    Logic decIllegalSlot1Q, {
+    bool useExtCache = false,
+    Logic? isExtPc,
+    Logic? isExtNextPc,
+  }) {
+    final slot1LocalAdvance = <Conditional>[
       pc < pcPlus1,
       instReg < nextInstReg,
       ..._latchExecByte(
@@ -836,6 +1036,35 @@ class CpuCore extends Module {
       portAEn < 1,
       slot < MiniRISC4Constants.slotByte0,
       state < Const(_stExec, width: 3),
+    ];
+
+    return If(slot.eq(MiniRISC4Constants.slotByte0), then: [
+      slot < MiniRISC4Constants.slotByte1,
+      portAEn < 0,
+      state < Const(_stExec, width: 3),
+      ..._latchExecByte(
+        instReg.slice(15, 8),
+        decOpQ,
+        decRrQ,
+        decRlQ,
+        decImm4Q,
+        decUseRegLAsAddAQ,
+        decUseOneAsAddBQ,
+        decArithSubQ,
+        decIllegalSlot1Q,
+        isSlot1: true,
+      ),
+    ], orElse: [
+      if (useExtCache && isExtPc != null && isExtNextPc != null)
+        If(isExtPc | isExtNextPc, then: [
+          pc < pcPlus1,
+          portAAddr < pcPlus1,
+          portAEn < 1,
+          slot < MiniRISC4Constants.slotByte0,
+          state < Const(_stFetch, width: 3),
+        ], orElse: slot1LocalAdvance)
+      else
+        ...slot1LocalAdvance,
     ]);
   }
 

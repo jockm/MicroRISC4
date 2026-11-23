@@ -89,9 +89,9 @@ make ulx3s-timing
 
 - [ ] **Scalable Multi-Core / Heterogeneous Architecture (`nocCores = 3..4` -> up to 255 Cores):**
   - Independent MiniRISC4 cores with localized `memWords` communicating over ring/mesh NoC.
-- [ ] **Internal Memory & Caches (`memWords`):**
+- [x] **Internal Memory & Caches (`memWords`):**
   - Local SRAM (`2048` words per worker core) backed by I-Cache/D-Cache and ULX3S SDRAM controller rather than monolithic 64k BRAM per core.
-- [ ] **True Pipelined Execution & High Clock Speed (`>100 MHz`):**
+- [x] **True Pipelined Execution & High Clock Speed (`>100 MHz`):**
   - Eliminate multi-cycle BRAM read mux bottlenecks to allow `nextpnr` to pass timing above 100 MHz.
 - [ ] **Verified End-to-End I/O on Hardware:**
   - Robust 3 Mbaud bidirectional UART, cross-traps, and hardware debugging capabilities.
@@ -110,9 +110,10 @@ make ulx3s-timing
 - [x] Timing & Pipeline Bottlenecks (`>100 MHz` — **107.25 MHz** on full 65K words / `64 DP16KD` / `1189 LUT4`; **110.74 MHz** on 2K core / `2 DP16KD` / `977 LUT4`; **106.48 MHz** on `nocCores=4, 2K`; 1 cycle/slot sequential throughput).
 - [x] Ultra-lean direct-addressed packet + doorbell ring (`NocRouterNi` + `RegisteredNocHop` + `NocMultiCoreCacheWrapper`): 1 shared 16-word RX FIFO (`4 DPR16X4`/core), 1-entry 1.0 word/cycle TX flit, 1-entry Doorbell/MBOX (`Trap 14`), direct `NOC_DST_CORE` (`0x0021`, zero channel tables), narrow `coreIdWidth`-bit elastic 2-slot hops, and `NOC_INFO` (`0x002A`: `{fifoDepth[7:0], numCores[7:0]}`) — **only `126 LUT4 / 115 FF / 4 DPR16X4` per NoC node** (4.75× fewer LUTs vs channel-table NoC).
 - [x] Configurable multi-core `Ulx3sTop` instantiation (`ULX3S_NOC_CORES`, `ULX3S_MEM_WORDS`, `ULX3S_WORKER_MEM_WORDS`, `ULX3S_WORKER_PROGRAM`, `ULX3S_NOC_FIFO_DEPTH` in `Makefile` & `generate.dart`) with worker `CpuCore`s (`1..N-1`) and one-shot-per-burst `mboxTrapReq` cross-trap handshake (`ext_trap_ack` + `mbox_trap_inflight`) — **107.25 MHz** (1-core 65K), **106.15 MHz** (4-CPU `4×2K`, `4216 LUT4`, `1712 FF`, `16 DPR16X4`, `8 DP16KD`), **102.06 MHz** (8-CPU `8×2K`, `8381 LUT4`, `3400 FF`, `32 DPR16X4`, `16 DP16KD`).
+- [x] 2K local BRAM + BRAM I/D Cache + ULX3S SDRAM backing storage (`ULX3S_SDRAM_CACHE=1`, `ULX3S_MEM_WORDS=2048`) with transparent per-core 64K-word non-overlapping SDRAM partitions `{coreId[7:0], addr[15:0]}` and hardware D-write → I-invalidate + I-miss snoop-clean coherency — **94.93 MHz** (`4 DP16KD` vs `64 DP16KD` — 16× BRAM reduction, `1953 LUT4`, `831 FF`, `16 DPR16X4`) for 1-core; **88.75 MHz** (`16 DP16KD`, `8137 LUT4`, `3219 FF`, `80 DPR16X4`) for 4-core + NoC + shared SDRAM.
 
 ### In Progress / Pending Verification
-- [ ] Integration of I-Cache, D-Cache, and ULX3S SDRAM controller.
+- [ ] Full software regression (`make apps`, `make test-rohd`, `make os-test`), hardware multi-core IPC cross-trap validation, and long-duration ULX3S-85F stress testing (Priority 5).
 
 ---
 
@@ -136,10 +137,10 @@ make ulx3s-timing
 - [x] Implement `NOC_INFO` hardware register at `0x002A` for dynamic core discovery (`{fifoDepth[7:0], numCores[7:0]}` read-only across `NocRouterNi`, `NocMultiCoreCacheWrapper`, `CpuCore`, `Ulx3sTop`).
 - [x] Wire worker `CpuCore`s (`1..N`) and `mboxTrapReq` cross-traps in `Ulx3sTop` (configurable via `Makefile` `ULX3S_NOC_CORES` & `generate.dart`; `ext_trap_ack` + `mbox_trap_inflight` handshake; live 3-CPU multi-hop IPC + Trap 14 round-trip verified in ROHD Dart & Icarus Verilog: **107.25 MHz** 1-core 65K, **106.15 MHz** 4-CPU `4×2K`, **102.06 MHz** 8-CPU `8×2K`).
 
-### Priority 4: I/D Cache & SDRAM Controller Integration
+### Priority 4: I/D Cache & SDRAM Controller Integration — COMPLETE
 - [x] Develop I-Cache and D-Cache controllers in ROHD (`hdl/rohd/lib/cache_controllers.dart`: BRAM-backed direct-mapped `ICache` with 1-cycle `flushAll`/single-line `invalValid` + write-back/write-allocate `DCache` with zero-buffer burst writeback; private non-overlapping 64K-word SDRAM partition `{coreId[7:0], addr[15:0]}` per core; verified in ROHD Dart & Icarus Verilog: **`125.98 MHz`**, `859 LUT4`, `336 FF`, `16 DPR16X4`, `2 DP16KD` for 512-word I-Cache + 512-word D-Cache pair).
 - [x] Interface cache controllers with external ULX3S SDRAM memory controller (`hdl/rohd/lib/sdram_controller.dart` hardened with JEDEC 8× init refresh, `BL=8` LMR `0x0023`, periodic `tREFI` auto-refresh, `tWR`/`tRP`/`tRCD`/`tRFC`, and ready/valid burst writes; `SdramBurstArbiter` + `SdramCacheCluster` in `hdl/rohd/lib/cache_subsystem_top.dart` with per-core D-write → I-invalidate coherency; verified ULX3S v2.0/v3.0 SDRAM pins added to `ulx3s_v20.lpf`; pin-level JEDEC SDRAM verified in ROHD Dart & Icarus Verilog: **`127.65 MHz`**, `1835 LUT4`, `791 FF`, `32 DPR16X4`, `4 DP16KD` for 2-core cluster).
-- [ ] Reduce local core BRAM size (`memWords = 2048`) while maintaining high-capacity backing storage.
+- [x] Reduce local core BRAM size (`memWords = 2048`) while maintaining high-capacity backing storage (`cpu_core.dart` external I/D cache bus for `addr >= memWords`, `ulx3s_top.dart` `SdramCacheCluster` + bidirectional `TriStateBuffer` `sdram_d[15:0]` + 180° `sdram_clk`, `DCache` I-miss snoop-clean for transparent self-modifying code, `Makefile` `ULX3S_SDRAM_CACHE=1` auto-defaulting `ULX3S_MEM_WORDS=2048`; verified in ROHD Dart & Icarus Verilog booting `monitor.asm` from 2K BRAM with stacks/data/code in SDRAM: **`94.93 MHz`** 1-core `4 DP16KD / 1953 LUT4 / 831 FF / 16 DPR16X4`, **`88.75 MHz`** 4-core + NoC + SDRAM `16 DP16KD / 8137 LUT4 / 3219 FF / 80 DPR16X4`, **`104.31 MHz`** default 65K BRAM baseline).
 
 ### Priority 5: Full System Verification
 - [ ] Run full software regression suite: `make apps`, `make test-rohd`, `make os-test`.

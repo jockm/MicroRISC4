@@ -29,15 +29,22 @@ ACT4_SRCS      := $(filter-out mr4src/act4/._%,$(wildcard mr4src/act4/*.a4))
 ACT4_ASMS      := $(patsubst mr4src/act4/%.a4,$(BUILD_DIR)/act4/%.asm,$(ACT4_SRCS))
 ACT4_BINS      := $(patsubst mr4src/act4/%.a4,$(BUILD_DIR)/act4_%.bin,$(ACT4_SRCS))
 
-# ULX3S-85F FPGA & Multi-Core NoC build settings
+# ULX3S-85F FPGA, Multi-Core NoC & SDRAM Cache build settings
 # Override any of these on the command line, e.g.:
-#   make ulx3s-bit ULX3S_NOC_CORES=4
-#   make ulx3s-bit ULX3S_NOC_CORES=4 ULX3S_MEM_WORDS=16384 ULX3S_WORKER_MEM_WORDS=2048
+#   make ulx3s-bit ULX3S_SDRAM_CACHE=1
+#   make ulx3s-bit ULX3S_SDRAM_CACHE=1 ULX3S_NOC_CORES=4
+#   make ulx3s-bit ULX3S_NOC_CORES=4 ULX3S_MEM_WORDS=2048 ULX3S_WORKER_MEM_WORDS=2048
 ULX3S_BLD              := $(BUILD_DIR)/ulx3s
 ULX3S_PROGRAM          ?= mr4src/asm/monitor.asm
 ULX3S_WORKER_PROGRAM   ?=
 ULX3S_NOC_CORES        ?= 0
+ULX3S_SDRAM_CACHE      ?= 0
+ULX3S_CACHE_LINES      ?= 64
+ifeq ($(ULX3S_SDRAM_CACHE),1)
+ULX3S_MEM_WORDS        ?= 2048
+else
 ULX3S_MEM_WORDS        ?= 65536
+endif
 ULX3S_WORKER_MEM_WORDS ?= 2048
 ULX3S_NOC_CHANNELS     ?= 1
 ULX3S_NOC_FIFO_DEPTH   ?= 16
@@ -87,9 +94,10 @@ help:
 	@echo "  make debug            - Run mr4sim.py in interactive m4db debugger mode"
 	@echo "  make generate         - Alias for generate-ulx3s"
 	@echo "  make generate-ulx3s   - Assemble ULX3S_PROGRAM and generate SV in $(ULX3S_BLD)"
-	@echo "                          Options: ULX3S_NOC_CORES=0|2|3|4... ULX3S_MEM_WORDS=65536"
+	@echo "                          Options: ULX3S_SDRAM_CACHE=0|1 ULX3S_CACHE_LINES=64"
+	@echo "                                   ULX3S_NOC_CORES=0|2|3|4... ULX3S_MEM_WORDS=65536|2048"
 	@echo "                                   ULX3S_WORKER_MEM_WORDS=2048 ULX3S_WORKER_PROGRAM=..."
-	@echo "                                   ULX3S_NOC_CHANNELS=4 ULX3S_NOC_FIFO_DEPTH=8"
+	@echo "                                   ULX3S_NOC_FIFO_DEPTH=16"
 	@echo "  make ulx3s-bit        - Synthesize, place & route, and pack $(ULX3S_BIT)"
 	@echo "  make ulx3s-timing     - Show Fmax and critical path from $(ULX3S_BLD)/nextpnr.log"
 	@echo "  make ulx3s-prog       - Load $(ULX3S_BIT) into ULX3S SRAM ($(OPENFPGALOADER))"
@@ -195,6 +203,7 @@ generate-ulx3s: setup | $(ULX3S_BLD)
 		--noc-cores "$(ULX3S_NOC_CORES)" \
 		--noc-channels "$(ULX3S_NOC_CHANNELS)" \
 		--noc-fifo-depth "$(ULX3S_NOC_FIFO_DEPTH)" \
+		$(if $(filter 1,$(ULX3S_SDRAM_CACHE)),--sdram-cache --cache-lines "$(ULX3S_CACHE_LINES)",) \
 		$(if $(ULX3S_WORKER_PROGRAM),--worker-hex worker_image.hex,)
 	@$(DOT_CLEAN_CMD)
 

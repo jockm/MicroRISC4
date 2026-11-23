@@ -28,45 +28,115 @@ class JedecSdramSimModel {
   int _rdPipe1 = 0;
 
   void attach(Logic clk, Module sdramPins, Logic sdramDqIn) {
-    sdramDqIn.put(0);
+    _attachSignals(
+      clk: clk,
+      csN: sdramPins.output('sdram_cs_n'),
+      rasN: sdramPins.output('sdram_ras_n'),
+      casN: sdramPins.output('sdram_cas_n'),
+      weN: sdramPins.output('sdram_we_n'),
+      ba: sdramPins.output('sdram_ba'),
+      a: sdramPins.output('sdram_a'),
+      dqOut: sdramPins.output('sdram_dq_out'),
+      dqOe: sdramPins.output('sdram_dq_oe'),
+      driveDq: (val, oe) => sdramDqIn.put(val),
+    );
+  }
+
+  /// Attach directly to [Ulx3sTop] physical SDRAM pins (`sdram_csn`, `sdram_d`, etc.).
+  void attachPins({
+    required Logic clk,
+    required Logic csN,
+    required Logic rasN,
+    required Logic casN,
+    required Logic weN,
+    required Logic ba,
+    required Logic a,
+    required Logic dqOut,
+    required Logic dqOe,
+    required LogicNet sdramDNet,
+  }) {
+    final tbDrive = Logic(name: 'tb_sdram_d_drv', width: 16);
+    sdramDNet <= tbDrive;
+    tbDrive.put(LogicValue.filled(16, LogicValue.z));
+    _attachSignals(
+      clk: clk,
+      csN: csN,
+      rasN: rasN,
+      casN: casN,
+      weN: weN,
+      ba: ba,
+      a: a,
+      dqOut: dqOut,
+      dqOe: dqOe,
+      driveDq: (val, isReadDriving) {
+        tbDrive.put(
+          isReadDriving ? LogicValue.ofInt(val & 0xFFFF, 16) : LogicValue.filled(16, LogicValue.z),
+        );
+      },
+    );
+  }
+
+  bool _rdValid0 = false;
+  bool _rdValid1 = false;
+
+  void _attachSignals({
+    required Logic clk,
+    required Logic csN,
+    required Logic rasN,
+    required Logic casN,
+    required Logic weN,
+    required Logic ba,
+    required Logic a,
+    required Logic dqOut,
+    required Logic dqOe,
+    required void Function(int val, bool isReadDriving) driveDq,
+  }) {
+    driveDq(0, false);
     // Sample SDRAM pins at negedge so all Sequential outputs from the preceding
     // posedge are 100% settled (matches real JEDEC sampling at the next posedge).
     clk.negedge.listen((_) {
-      final csN = sdramPins.output('sdram_cs_n').value.toInt();
-      final rasN = sdramPins.output('sdram_ras_n').value.toInt();
-      final casN = sdramPins.output('sdram_cas_n').value.toInt();
-      final weN = sdramPins.output('sdram_we_n').value.toInt();
-      final ba = sdramPins.output('sdram_ba').value.toInt();
-      final a = sdramPins.output('sdram_a').value.toInt();
-      final dqOut = sdramPins.output('sdram_dq_out').value.toInt();
-      final dqOe = sdramPins.output('sdram_dq_oe').value.toInt();
+      if (!csN.value.isValid || !rasN.value.isValid || !casN.value.isValid || !weN.value.isValid) {
+        return;
+      }
+      final csNVal = csN.value.toInt();
+      final rasNVal = rasN.value.toInt();
+      final casNVal = casN.value.toInt();
+      final weNVal = weN.value.toInt();
+      final baVal = ba.value.isValid ? ba.value.toInt() : 0;
+      final aVal = a.value.isValid ? a.value.toInt() : 0;
+      final dqOutVal = dqOut.value.isValid ? dqOut.value.toInt() : 0;
+      final dqOeVal = dqOe.value.isValid ? dqOe.value.toInt() : 0;
 
       // Advance CL=2 read pipeline
       final nextDq = _rdPipe1;
+      final nextDrive = _rdValid1;
       final nextPipe1 = _rdPipe0;
+      final nextValid1 = _rdValid0;
       var nextPipe0 = 0;
+      var nextValid0 = false;
       if (_rdRem > 0) {
         final addr24 = (_rdBank << 22) | (_rdRow << 9) | (_rdCol & 0x1FF);
         nextPipe0 = mem[addr24] ?? 0;
+        nextValid0 = true;
         _rdCol = (_rdCol + 1) & 0x1FF;
         _rdRem--;
       }
 
       // Advance ongoing write burst beats 1..N-1
       if (_wrRem > 0) {
-        if (dqOe == 1) {
+        if (dqOeVal == 1) {
           final addr24 = (_wrBank << 22) | (_wrRow << 9) | (_wrCol & 0x1FF);
-          mem[addr24] = dqOut & 0xFFFF;
+          mem[addr24] = dqOutVal & 0xFFFF;
         }
         _wrCol = (_wrCol + 1) & 0x1FF;
         _wrRem--;
       }
 
       // Decode JEDEC command {cs_n, ras_n, cas_n, we_n}
-      final cmd = (csN << 3) | (rasN << 2) | (casN << 1) | weN;
+      final cmd = (csNVal << 3) | (rasNVal << 2) | (casNVal << 1) | weNVal;
       if (cmd == 0x0) {
         // LMR
-        lmrVal = a;
+        lmrVal = aVal;
         lmrSeen = true;
       } else if (cmd == 0x1) {
         // AUTO REFRESH
@@ -74,36 +144,37 @@ class JedecSdramSimModel {
         if (!lmrSeen) initRefreshCount++;
       } else if (cmd == 0x2) {
         // PRECHARGE
-        if (((a >> 10) & 1) == 1) {
+        if (((aVal >> 10) & 1) == 1) {
           for (var b = 0; b < 4; b++) {
             openRow[b] = -1;
           }
         } else {
-          openRow[ba] = -1;
+          openRow[baVal] = -1;
         }
       } else if (cmd == 0x3) {
         // ACTIVE
-        openRow[ba] = a & 0x1FFF;
+        openRow[baVal] = aVal & 0x1FFF;
       } else if (cmd == 0x4) {
         // WRITE (beat 0 on same clock edge!)
-        final row = openRow[ba];
-        final col = a & 0x1FF;
+        final row = openRow[baVal];
+        final col = aVal & 0x1FF;
         final bl = 1 << (lmrVal & 0x7);
-        if (row >= 0 && dqOe == 1) {
-          mem[(ba << 22) | (row << 9) | col] = dqOut & 0xFFFF;
+        if (row >= 0 && dqOeVal == 1) {
+          mem[(baVal << 22) | (row << 9) | col] = dqOutVal & 0xFFFF;
         }
-        _wrBank = ba;
+        _wrBank = baVal;
         _wrRow = row;
         _wrCol = (col + 1) & 0x1FF;
         _wrRem = bl - 1;
       } else if (cmd == 0x5) {
         // READ
-        final row = openRow[ba];
-        final col = a & 0x1FF;
+        final row = openRow[baVal];
+        final col = aVal & 0x1FF;
         final bl = 1 << (lmrVal & 0x7);
         if (row >= 0) {
-          nextPipe0 = mem[(ba << 22) | (row << 9) | col] ?? 0;
-          _rdBank = ba;
+          nextPipe0 = mem[(baVal << 22) | (row << 9) | col] ?? 0;
+          nextValid0 = true;
+          _rdBank = baVal;
           _rdRow = row;
           _rdCol = (col + 1) & 0x1FF;
           _rdRem = bl - 1;
@@ -112,7 +183,9 @@ class JedecSdramSimModel {
 
       _rdPipe0 = nextPipe0;
       _rdPipe1 = nextPipe1;
-      sdramDqIn.put(nextDq);
+      _rdValid0 = nextValid0;
+      _rdValid1 = nextValid1;
+      driveDq(nextDq, nextDrive && dqOeVal == 0);
     });
   }
 }

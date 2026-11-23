@@ -149,6 +149,7 @@ class ICache extends Module {
     Logic? flushAll,
     Logic? invalValid,
     Logic? invalAddr,
+    Logic? snoopCleanDone,
     this.coreId = 0,
     this.numLines = 64,
     this.lineWords = 8,
@@ -177,11 +178,16 @@ class ICache extends Module {
       invalAddr ?? Const(0, width: MiniRISC4Constants.addrWidth),
       width: MiniRISC4Constants.addrWidth,
     );
+    final useSnoop = snoopCleanDone != null;
+    final snoopDoneIn = useSnoop ? addInput('snoop_clean_done', snoopCleanDone) : Const(1);
 
     final reqReady = addOutput('req_ready');
     final respValid = addOutput('resp_valid');
     final respData = addOutput('resp_data', width: MiniRISC4Constants.dataWidth);
     final respHit = addOutput('resp_hit');
+    final snoopCleanReqOut = addOutput('snoop_clean_req');
+    final snoopCleanAddrOut =
+        addOutput('snoop_clean_addr', width: MiniRISC4Constants.addrWidth);
 
     final memCmdReq = addOutput('mem_cmd_req');
     final memCmdRw = addOutput('mem_cmd_rw');
@@ -190,7 +196,9 @@ class ICache extends Module {
 
     final stateQ = Logic(name: 'state_q', width: 2);
     final reqAddrQ = Logic(name: 'req_addr_q', width: MiniRISC4Constants.addrWidth);
-    final hitQ = Logic(name: 'hit_q');
+    final tagRdataQ = Logic(name: 'tag_rdata_q', width: tagBits);
+    final lineValidQ = Logic(name: 'line_valid_q');
+    final snoopClearedQ = Logic(name: 'snoop_cleared_q');
     final fillBeatQ = Logic(name: 'fill_beat_q', width: offsetBits);
     final fillWordQ = Logic(name: 'fill_word_q', width: MiniRISC4Constants.dataWidth);
     final respValidQ = Logic(name: 'resp_valid_q');
@@ -206,7 +214,6 @@ class ICache extends Module {
 
     final inOffset = reqAddr.slice(offsetBits - 1, 0);
     final inIndex = reqAddr.slice(idxHi, idxLo);
-    final inTag = reqAddr.slice(MiniRISC4Constants.addrWidth - 1, tagLo);
 
     final qOffset = reqAddrQ.slice(offsetBits - 1, 0);
     final qIndex = reqAddrQ.slice(idxHi, idxLo);
@@ -234,7 +241,9 @@ class ICache extends Module {
     final lastBeat = fillBeatQ.eq(Const(lineWords - 1, width: offsetBits));
     final refillDone = isRefillData & memRdataValid & lastBeat;
 
-    // Tag storage in tiny distributed RAM (only 4-8 DPR16X4 slices)
+    // Tag storage in tiny distributed RAM (only 4-8 DPR16X4 slices).
+    // Read on _stIdle into registered tagRdataQ / lineValidQ, then compared in
+    // _stLookup against registered qTag (2-stage balanced pipeline -> >110 MHz).
     final tagRam = NocFifoRam(
       clk: clk,
       waddr: qIndex,
@@ -247,7 +256,10 @@ class ICache extends Module {
     );
 
     final inLineValid = muxBit(validVec, inIndex);
-    final inHit = inLineValid & tagRam.rdata.eq(inTag) & (~flushAll);
+    final lookupHit = lineValidQ &
+        tagRdataQ.eq(qTag) &
+        (~flushAll) &
+        (~(invalValid & invIndex.eq(qIndex)));
 
     // Data storage in 1 single DP16KD Block RAM
     final bramAddr = mux(
@@ -273,8 +285,10 @@ class ICache extends Module {
     respValid <= respValidQ;
     respData <= respDataQ;
     respHit <= respHitQ;
+    snoopCleanReqOut <= (useSnoop ? (isRefillReq & (~snoopClearedQ)) : Const(0));
+    snoopCleanAddrOut <= reqAddrQ;
 
-    memCmdReq <= isRefillReq;
+    memCmdReq <= (useSnoop ? (isRefillReq & snoopClearedQ) : isRefillReq);
     memCmdRw <= Const(0);
     memCmdAddr <= [
       Const(coreId & 0xFF, width: 8),
@@ -287,7 +301,9 @@ class ICache extends Module {
     final resetVals = <Logic, dynamic>{
       stateQ: _stIdle,
       reqAddrQ: 0,
-      hitQ: 0,
+      tagRdataQ: 0,
+      lineValidQ: 0,
+      if (useSnoop) snoopClearedQ: 0,
       fillBeatQ: 0,
       fillWordQ: 0,
       respValidQ: 0,
@@ -316,26 +332,43 @@ class ICache extends Module {
         CaseItem(Const(_stIdle, width: 2), [
           If(reqValid, then: [
             reqAddrQ < reqAddr,
-            hitQ < inHit,
+            tagRdataQ < tagRam.rdata,
+            lineValidQ <
+                (inLineValid &
+                    (~flushAll) &
+                    (~(invalValid & invIndex.eq(inIndex)))),
             stateQ < Const(_stLookup, width: 2),
           ]),
         ]),
         CaseItem(Const(_stLookup, width: 2), [
-          If(hitQ, then: [
+          If(lookupHit, then: [
             respValidQ < 1,
             respDataQ < dataBram.rdata,
             respHitQ < 1,
             stateQ < Const(_stIdle, width: 2),
           ], orElse: [
             fillBeatQ < 0,
+            if (useSnoop) snoopClearedQ < 0,
             stateQ < Const(_stRefillReq, width: 2),
           ]),
         ]),
         CaseItem(Const(_stRefillReq, width: 2), [
-          If(memCmdReady, then: [
-            fillBeatQ < 0,
-            stateQ < Const(_stRefillData, width: 2),
-          ]),
+          if (useSnoop)
+            If(~snoopClearedQ, then: [
+              If(snoopDoneIn, then: [
+                snoopClearedQ < 1,
+              ]),
+            ], orElse: [
+              If(memCmdReady, then: [
+                fillBeatQ < 0,
+                stateQ < Const(_stRefillData, width: 2),
+              ]),
+            ])
+          else
+            If(memCmdReady, then: [
+              fillBeatQ < 0,
+              stateQ < Const(_stRefillData, width: 2),
+            ]),
         ]),
         CaseItem(Const(_stRefillData, width: 2), [
           If(memRdataValid, then: [
@@ -387,6 +420,7 @@ class DCache extends Module {
   static const int _stWbData = 4;
   static const int _stRefillReq = 5;
   static const int _stRefillData = 6;
+  static const int _stSnoop = 7;
 
   DCache({
     required Logic clk,
@@ -399,6 +433,8 @@ class DCache extends Module {
     required Logic memRdata,
     required Logic memRdataValid,
     required Logic memWdataReady,
+    Logic? snoopCleanReq,
+    Logic? snoopCleanAddr,
     this.coreId = 0,
     this.numLines = 64,
     this.lineWords = 8,
@@ -423,11 +459,19 @@ class DCache extends Module {
     memRdata = addInput('mem_rdata', memRdata, width: MiniRISC4Constants.dataWidth);
     memRdataValid = addInput('mem_rdata_valid', memRdataValid);
     memWdataReady = addInput('mem_wdata_ready', memWdataReady);
+    final useSnoop = snoopCleanReq != null && snoopCleanAddr != null;
+    final snoopReqIn =
+        useSnoop ? addInput('snoop_clean_req', snoopCleanReq) : Const(0);
+    final snoopAddrIn = useSnoop
+        ? addInput('snoop_clean_addr', snoopCleanAddr,
+            width: MiniRISC4Constants.addrWidth)
+        : Const(0, width: MiniRISC4Constants.addrWidth);
 
     final reqReady = addOutput('req_ready');
     final respValid = addOutput('resp_valid');
     final respData = addOutput('resp_data', width: MiniRISC4Constants.dataWidth);
     final respHit = addOutput('resp_hit');
+    final snoopDoneOut = addOutput('snoop_clean_done');
 
     final memCmdReq = addOutput('mem_cmd_req');
     final memCmdRw = addOutput('mem_cmd_rw');
@@ -441,9 +485,11 @@ class DCache extends Module {
     final reqWeQ = Logic(name: 'req_we_q');
     final reqWdataQ =
         Logic(name: 'req_wdata_q', width: MiniRISC4Constants.dataWidth);
-    final hitQ = Logic(name: 'hit_q');
-    final evictDirtyQ = Logic(name: 'evict_dirty_q');
-    final evictTagQ = Logic(name: 'evict_tag_q', width: tagBits);
+    final tagRdataQ = Logic(name: 'tag_rdata_q', width: tagBits);
+    final lineValidQ = Logic(name: 'line_valid_q');
+    final lineDirtyQ = Logic(name: 'line_dirty_q');
+    final snoopWbQ = Logic(name: 'snoop_wb_q');
+    final snoopDoneQ = Logic(name: 'snoop_done_q');
     final beatQ = Logic(name: 'beat_q', width: offsetBits);
     final fillWordQ =
         Logic(name: 'fill_word_q', width: MiniRISC4Constants.dataWidth);
@@ -462,7 +508,6 @@ class DCache extends Module {
 
     final inOffset = reqAddr.slice(offsetBits - 1, 0);
     final inIndex = reqAddr.slice(idxHi, idxLo);
-    final inTag = reqAddr.slice(MiniRISC4Constants.addrWidth - 1, tagLo);
 
     final qOffset = reqAddrQ.slice(offsetBits - 1, 0);
     final qIndex = reqAddrQ.slice(idxHi, idxLo);
@@ -490,37 +535,44 @@ class DCache extends Module {
 
     final lastBeat = beatQ.eq(Const(lineWords - 1, width: offsetBits));
     final wbFire = isWbData & memWdataReady;
+    final snoopWbDone = useSnoop ? (wbFire & lastBeat & snoopWbQ) : Const(0);
     final refillDone = isRefillData & memRdataValid & lastBeat;
-    final writeHitFire = isLookup & hitQ & reqWeQ;
 
-    // Tag storage in tiny distributed RAM (only 4-8 DPR16X4 slices)
+    // Tag storage in tiny distributed RAM (only 4-8 DPR16X4 slices).
+    // Stage 1 (_stIdle): read tagRam / validVec / dirtyVec into tagRdataQ /
+    // lineValidQ / lineDirtyQ. Stage 2 (_stLookup / _stSnoop): fast FF-only tag
+    // compare -> writeHitFire -> dataBram.WEA (doubles Fmax headroom to >105 MHz!).
+    final snoopIdx = snoopAddrIn.slice(idxHi, idxLo);
+    final tagRaddr =
+        useSnoop ? mux((~reqValid) & snoopReqIn, snoopIdx, inIndex) : inIndex;
     final tagRam = NocFifoRam(
       clk: clk,
       waddr: qIndex,
       wdata: qTag,
       we: refillDone,
-      raddr: inIndex,
+      raddr: tagRaddr,
       addrWidth: indexBits,
       dataWidth: tagBits,
       name: '${name}_tag_ram',
     );
 
-    final inLineValid = muxBit(validVec, inIndex);
-    final inLineDirty = muxBit(dirtyVec, inIndex);
-    final inHit = inLineValid & tagRam.rdata.eq(inTag);
+    final inLineValid = muxBit(validVec, tagRaddr);
+    final inLineDirty = muxBit(dirtyVec, tagRaddr);
+    final lookupHit = lineValidQ & tagRdataQ.eq(qTag);
+    final lookupEvictDirty = lineValidQ & lineDirtyQ;
+    final snoopDirtyHit = useSnoop ? (lookupHit & lineDirtyQ) : Const(0);
+    final writeHitFire = isLookup & lookupHit & reqWeQ;
 
     // Data BRAM address/write mux:
-    // - Idle lookup: read [inIndex, inOffset]
-    // - Write hit: write reqWdataQ to [qIndex, qOffset]
-    // - Writeback prime/req/data: stream [qIndex, wbNextBeat] at 1 word/cycle
-    // - Refill: write (reqWeQ & beat==qOffset ? reqWdataQ : memRdata) to [qIndex, beatQ]
+    // Use registered `isLookup` (not `writeHitFire`) to select addr/wdata/en so
+    // tagRam -> lookupHit only drives the 1-bit `bramWe` pin (huge Fmax win!).
     final wbNextBeat = mux(
       isWbPrime | isWbReq,
       Const(0, width: offsetBits),
       mux(wbFire, beatQ + Const(1, width: offsetBits), beatQ),
     );
     final bramAddr = mux(
-      writeHitFire,
+      isLookup,
       [qIndex, qOffset].swizzle(),
       mux(
         isRefillData,
@@ -534,10 +586,14 @@ class DCache extends Module {
     );
     final refillWordMerge =
         mux(reqWeQ & beatQ.eq(qOffset), reqWdataQ, memRdata);
-    final bramWdata = mux(writeHitFire, reqWdataQ, refillWordMerge);
+    final bramWdata = mux(isLookup, reqWdataQ, refillWordMerge);
     final bramWe = writeHitFire | (isRefillData & memRdataValid);
-    final bramEn =
-        (isIdle & reqValid) | bramWe | isWbPrime | isWbReq | isWbData;
+    final bramEn = (isIdle & reqValid) |
+        (isLookup & reqWeQ) |
+        (isRefillData & memRdataValid) |
+        isWbPrime |
+        isWbReq |
+        isWbData;
 
     final dataBram = CacheDataBram(
       clk: clk,
@@ -555,12 +611,13 @@ class DCache extends Module {
     respValid <= respValidQ;
     respData <= respDataQ;
     respHit <= respHitQ;
+    snoopDoneOut <= (useSnoop ? snoopDoneQ : Const(1));
 
     memCmdReq <= isWbReq | isRefillReq;
     memCmdRw <= isWbReq;
     memCmdAddr <= [
       Const(coreId & 0xFF, width: 8),
-      mux(isWbReq, evictTagQ, qTag),
+      mux(isWbReq, tagRdataQ, qTag),
       qIndex,
       Const(0, width: offsetBits),
     ].swizzle();
@@ -573,9 +630,11 @@ class DCache extends Module {
       reqAddrQ: 0,
       reqWeQ: 0,
       reqWdataQ: 0,
-      hitQ: 0,
-      evictDirtyQ: 0,
-      evictTagQ: 0,
+      tagRdataQ: 0,
+      lineValidQ: 0,
+      lineDirtyQ: 0,
+      if (useSnoop) snoopWbQ: 0,
+      if (useSnoop) snoopDoneQ: 0,
       beatQ: 0,
       fillWordQ: 0,
       respValidQ: 0,
@@ -588,6 +647,7 @@ class DCache extends Module {
     final seqOps = <Conditional>[
       respValidQ < 0,
       respHitQ < 0,
+      if (useSnoop) snoopDoneQ < 0,
       // Valid & dirty bit maintenance
       for (var i = 0; i < numLines; i++) ...[
         If(refillDone & qIndex.eq(Const(i, width: indexBits)), then: [
@@ -596,6 +656,11 @@ class DCache extends Module {
         ], orElse: [
           If(writeHitFire & qIndex.eq(Const(i, width: indexBits)), then: [
             dirtyVec[i] < 1,
+          ], orElse: [
+            if (useSnoop)
+              If(snoopWbDone & qIndex.eq(Const(i, width: indexBits)), then: [
+                dirtyVec[i] < 0,
+              ]),
           ]),
         ]),
       ],
@@ -605,21 +670,42 @@ class DCache extends Module {
             reqAddrQ < reqAddr,
             reqWeQ < reqWe,
             reqWdataQ < reqWdata,
-            hitQ < inHit,
-            evictDirtyQ < (inLineValid & inLineDirty),
-            evictTagQ < tagRam.rdata,
+            tagRdataQ < tagRam.rdata,
+            lineValidQ < inLineValid,
+            lineDirtyQ < inLineDirty,
+            if (useSnoop) snoopWbQ < 0,
             stateQ < Const(_stLookup, width: 3),
+          ], orElse: [
+            if (useSnoop)
+              If(snoopReqIn & (~snoopDoneQ), then: [
+                reqAddrQ < snoopAddrIn,
+                tagRdataQ < tagRam.rdata,
+                lineValidQ < inLineValid,
+                lineDirtyQ < inLineDirty,
+                snoopWbQ < 1,
+                stateQ < Const(_stSnoop, width: 3),
+              ]),
           ]),
         ]),
+        if (useSnoop)
+          CaseItem(Const(_stSnoop, width: 3), [
+            If(snoopDirtyHit, then: [
+              stateQ < Const(_stWbPrime, width: 3),
+            ], orElse: [
+              snoopWbQ < 0,
+              snoopDoneQ < 1,
+              stateQ < Const(_stIdle, width: 3),
+            ]),
+          ]),
         CaseItem(Const(_stLookup, width: 3), [
-          If(hitQ, then: [
+          If(lookupHit, then: [
             respValidQ < 1,
             respDataQ < mux(reqWeQ, reqWdataQ, dataBram.rdata),
             respHitQ < 1,
             stateQ < Const(_stIdle, width: 3),
           ], orElse: [
             beatQ < 0,
-            If(evictDirtyQ, then: [
+            If(lookupEvictDirty, then: [
               stateQ < Const(_stWbPrime, width: 3),
             ], orElse: [
               stateQ < Const(_stRefillReq, width: 3),
@@ -641,7 +727,16 @@ class DCache extends Module {
           If(memWdataReady, then: [
             If(lastBeat, then: [
               beatQ < 0,
-              stateQ < Const(_stRefillReq, width: 3),
+              if (useSnoop)
+                If(snoopWbQ, then: [
+                  snoopWbQ < 0,
+                  snoopDoneQ < 1,
+                  stateQ < Const(_stIdle, width: 3),
+                ], orElse: [
+                  stateQ < Const(_stRefillReq, width: 3),
+                ])
+              else
+                stateQ < Const(_stRefillReq, width: 3),
             ], orElse: [
               beatQ < beatQ + Const(1, width: offsetBits),
             ]),

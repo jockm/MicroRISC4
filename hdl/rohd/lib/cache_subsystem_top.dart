@@ -258,6 +258,7 @@ class SdramCacheCluster extends Module {
 
       final icIdx = c * 2;
       final dcIdx = c * 2 + 1;
+      final snoopDoneWire = Logic(name: 'snoop_done_core_$c');
 
       final ic = ICache(
         clk: clk,
@@ -271,6 +272,9 @@ class SdramCacheCluster extends Module {
         // Per-core D-Cache write automatically invalidates matching I-Cache line
         invalValid: dV & dWe,
         invalAddr: dA,
+        // On I-Cache miss, snoop D-Cache to write back any dirty line first
+        // so self-modifying code / monitor program loads are 100% coherent.
+        snoopCleanDone: snoopDoneWire,
         coreId: c,
         numLines: numLines,
         lineWords: lineWords,
@@ -288,11 +292,14 @@ class SdramCacheCluster extends Module {
         memRdata: arbRdata,
         memRdataValid: arbRvalid[dcIdx],
         memWdataReady: arbWready[dcIdx],
+        snoopCleanReq: ic.output('snoop_clean_req'),
+        snoopCleanAddr: ic.output('snoop_clean_addr'),
         coreId: c,
         numLines: numLines,
         lineWords: lineWords,
         name: 'dcache_core_$c',
       );
+      snoopDoneWire <= dc.output('snoop_clean_done');
 
       addOutput('ic_req_ready_$c') <= ic.output('req_ready');
       addOutput('ic_resp_valid_$c') <= ic.output('resp_valid');

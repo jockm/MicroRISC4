@@ -1902,8 +1902,28 @@ def test_os_path_and_history(args):
     # 1. Strictly NO implicit launching: bare program name must be Unknown command
     assert "Unknown command: fibers" in send_cmd("fibers\r")
 
-    # 2. Explicit `!` and `run` resolve .BIN, /BIN/<name>.BIN, and /<name>.BIN
+    # 2. Explicit `!` and `run`/`&` resolve .BIN, /BIN/<name>.BIN, and /<name>.BIN
     assert "FIBERS_OK" in send_cmd("! fibers\r")
+
+    # Background `&fibers` and `& fibers` aliases for `run`
+    procs_addr = os_sim.sym_to_addr["_procs"]
+    pid1_state = procs_addr + 10
+    bg_out = send_cmd("&fibers\r")
+    assert "Spawned PID 1" in bg_out and "FIBERS_OK" not in bg_out, f"&fibers unexpected output:\n{bg_out}"
+    for _ in range(8000000):
+        os_sim.step()
+        worker_sim.step()
+        if os_sim.mem[pid1_state] == 0:
+            break
+    assert os_sim.mem[pid1_state] == 0 and os_sim.mem[pid1_state + 1] == 0
+    bg_out2 = send_cmd("& fibers\r")
+    assert "Spawned PID 1" in bg_out2, f"& fibers unexpected output:\n{bg_out2}"
+    for _ in range(8000000):
+        os_sim.step()
+        worker_sim.step()
+        if os_sim.mem[pid1_state] == 0:
+            break
+    assert os_sim.mem[pid1_state] == 0 and os_sim.mem[pid1_state + 1] == 0
 
     assert "Created /bin" in send_cmd("mkdir /bin\r")
     assert "Copied CAT.BIN -> /bin/mycat.bin" in send_cmd("cp CAT.BIN /bin/mycat.bin\r")

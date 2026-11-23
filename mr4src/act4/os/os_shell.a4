@@ -713,8 +713,13 @@ void shell_exec(void) {
         return;
     }
 
-    if (getbyte(sh_cmd, 0) == 33) {
-        // Support both "! APP.BIN [args]" and "!APP.BIN [args]"
+    ch = getbyte(sh_cmd, 0);
+    if (ch == 33 || ch == 38) {
+        // Support "! APP [args]", "!APP [args]" (fg) and "& APP [args]", "&APP [args]" (bg)
+        pid = 0;
+        if (ch == 33) {
+            pid = 1;
+        }
         if (getbyte(sh_cmd, 1) != 0) {
             i = 1;
             while (i < 16) {
@@ -726,15 +731,15 @@ void shell_exec(void) {
                 i++;
             }
             setbyte(sh_arg, 15, 0);
-            shell_cmd_run(1, sh_arg_idx);
+            shell_cmd_run(pid, sh_arg_idx);
         } else {
-            shell_cmd_run(1, sh_rest_idx);
+            shell_cmd_run(pid, sh_rest_idx);
         }
         return;
     }
 
-    if (str_eq(sh_cmd, "help") == 1) {
-        uart_puts("Commands: ps, ! <file> [args], run <file> [args], fg [--fgoutput] <pid>, bg <pid>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write/append <file> <text>, cp/mv <src> <dst>, rm <file>, df, echo <text>, clear\r\n");
+    if (str_eq(sh_cmd, ""&"") == 1) {
+        uart_puts("Commands: ps, ! <file> [args], run/& <file> [args], fg [--fgoutput] <pid>, bg <pid>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write/append <file> <text>, cp/mv <src> <dst>, rm <file>, df, echo <text>, clear\r\n");
     } else if (str_eq(sh_cmd, "ps") == 1) {
         proc_print_ps();
     } else if (str_eq(sh_cmd, "fg") == 1) {

@@ -278,13 +278,13 @@ $(OS_MAIN_ASM): $(OS_MAIN_A4) $(wildcard $(OS_SRC_DIR)/os/*.a4) | $(OS_BUILD)
 $(OS_MAIN_BIN) $(OS_MAIN_LST): $(OS_MAIN_ASM)
 	$(MR4ASM) -I $(LIB_DIR) "$<" -o "$(OS_MAIN_BIN)" -l "$(OS_MAIN_LST)"
 
-$(LS_ASM): $(LS_A4) | $(OS_BUILD)
-	$(COMPILE) $(LS_A4) -o $(LS_ASM) -I $(OS_SRC_DIR)/os -I lib
+$(LS_ASM): $(LS_A4) lib/sys.a4 | $(OS_BUILD)
+	$(COMPILE) $(LS_A4) -o $(LS_ASM) -I $(OS_SRC_DIR)/os -I lib --org 0x0400 --nopreamble
 
 $(LS_BIN) $(LS_LST): $(LS_ASM)
-	$(MR4ASM) -I $(LIB_DIR) "$<" -o "$(LS_BIN)" -l "$(LS_LST)"
+	$(MR4ASM) -I $(LIB_DIR) --sparsebin "$<" -o "$(LS_BIN)" -l "$(LS_LST)"
 
-os-build: $(OS_MAIN_BIN) $(LS_BIN)
+os-build: $(OS_MAIN_BIN) $(LS_BIN) $(BUILD_DIR)/worker_stub.bin
 
 $(SD_SRC_DIR): $(LS_BIN)
 	mkdir -p $(SD_SRC_DIR)
@@ -295,7 +295,7 @@ sd-img: $(SD_SRC_DIR)
 	python3 $(MKSDIMG) $(SD_SRC_DIR) -o $(SD_IMG) --size-mb $(SD_SIZE_MB) --spc $(SD_SPC)
 
 sim-os: os-build sd-img
-	python3 $(SIM) $(OS_MAIN_BIN) --sym $(OS_MAIN_LST) --sd-image $(SD_IMG) --startaddr 0x0100
+	python3 $(SIM) $(OS_MAIN_BIN) --sym $(OS_MAIN_LST) --sd-image $(SD_IMG) --worker $(BUILD_DIR)/worker_stub.bin --startaddr 0x0100
 
 clean-os:
 	rm -rf $(OS_BUILD) $(SD_SRC_DIR)

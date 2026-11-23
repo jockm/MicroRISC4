@@ -991,12 +991,21 @@ class CodeGen:
                     self.emit("JMP     R0")
             self.emit_raw("")
 
-        # Application Code & Global Data (0x0200)
+        # Application Code & Global Data (0x0200 or user --org)
         self.emit_raw("; ==============================================================================")
         self.emit_raw(f"; Application Code & Global Storage (Origin 0x{self.org:04X})")
         self.emit_raw("; ==============================================================================")
         self.emit_raw(f".org 0x{self.org:04X}")
         self.emit_raw("")
+
+        if self.no_preamble and "main" in self.functions:
+            # Place a 3-word entry trampoline at --org so external loaders
+            # (e.g. worker_stub.asm LINK to APP_LOAD_ADDR) enter _main while
+            # preserving caller return address in R0.
+            self.emit_raw("_entry:")
+            self.emit("LOAD16  R1, _main")
+            self.emit("JMP     R1")
+            self.emit_raw("")
 
         # Generate Functions
         for node in self.ast:

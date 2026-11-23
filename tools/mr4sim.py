@@ -430,6 +430,13 @@ class MiniRISC4Sim:
         self.sd_card = None
         self.cycles = 0
 
+        # Optional inter-core FIFO (0x000A/0x000B) & Mailbox (0x000C) bus
+        self.fifo_in_queue = None
+        self.fifo_out_queue = None
+        self.mailbox_handler = None
+        self.pending_traps = deque()
+        self._safe_trap_boundary = False
+
         # Debugger state
         self.breakpoints = set()
         self.watchpoints = set()
@@ -493,6 +500,8 @@ class MiniRISC4Sim:
             return 0x0000
         elif addr == ADDR_UART_TX:
             return 0x0000  # UART TX status: 0x0000 = idle / ready
+        if addr == 0x000A and self.fifo_in_queue is not None:
+            return self.fifo_in_queue.popleft() if self.fifo_in_queue else 0x0000
         if addr == 0x000D and getattr(self, 'enable_cpuid', True):
             return getattr(self, 'core_id', 0) & 0xFFFF
         if addr == 0x0018 and self.sd_card is not None:
@@ -539,6 +548,12 @@ class MiniRISC4Sim:
             char = chr(val & BYTE_MASK)
             sys.stdout.write(char)
             sys.stdout.flush()
+        elif addr == 0x000B and self.fifo_out_queue is not None:
+            self.fifo_out_queue.append(val)
+            self.mem[addr] = val
+        elif addr == 0x000C and self.mailbox_handler is not None:
+            self.mem[addr] = val
+            self.mailbox_handler(val)
         elif addr == 0x0018 and self.sd_card is not None:
             self.sd_card.set_ctrl(val)
             self.mem[addr] = val
@@ -597,6 +612,15 @@ class MiniRISC4Sim:
         if self.halted:
             return
 
+        if self.pending_traps:
+            next_vec = self.pending_traps[0]
+            if next_vec == 14 or self._safe_trap_boundary:
+                self.pending_traps.popleft()
+                self._safe_trap_boundary = False
+                self.trigger_trap(next_vec)
+                return
+
+        self._safe_trap_boundary = False
         current_pc = self.pc
         current_slot = self.slot
         if self.sdram_cache is not None and (self.cache_fetch or self._uses_sdram_cache(current_pc)):
@@ -642,7 +666,13 @@ class MiniRISC4Sim:
             self.r[0] = arg
 
         elif opcode == OP_LD_PEEK:
-            self.r[rr] = self.read_mem(self.r[rl])
+            addr_peek = self.r[rl] & ADDR_MASK
+            if addr_peek == 0x000A and self.fifo_in_queue is not None and not self.fifo_in_queue:
+                # Blocking FIFO_IN pop: stall on this instruction until data arrives
+                self.pc = current_pc
+                self.slot = current_slot
+                return
+            self.r[rr] = self.read_mem(addr_peek)
 
         elif opcode == OP_LD_POKE:
             self.write_mem(self.r[rr], self.r[rl])
@@ -723,6 +753,8 @@ class MiniRISC4Sim:
 
             if rr == SUB_JMP:
                 self._branch_to(self.r[rl])
+                if rl == 0:
+                    self._safe_trap_boundary = True
 
             elif rr == SUB_LINK:
                 target = self.r[rl]
@@ -963,6 +995,28 @@ Control:
 """)
 
 
+def connect_os_worker(os_sim: MiniRISC4Sim, worker_sim: MiniRISC4Sim):
+    """Link Core 0 (OS) and a Worker Core via inter-core FIFO (0x000A/B) and Mailbox (0x000C)."""
+    os_to_worker = deque()
+    worker_to_os = deque()
+    os_sim.fifo_out_queue = os_to_worker
+    worker_sim.fifo_in_queue = os_to_worker
+    worker_sim.fifo_out_queue = worker_to_os
+    os_sim.fifo_in_queue = worker_to_os
+
+    cores = {os_sim.core_id: os_sim, worker_sim.core_id: worker_sim}
+
+    def on_mailbox(val: int):
+        dst_core = (val >> 8) & 0xFF
+        trap_num = val & 0x0F
+        target = cores.get(dst_core)
+        if target is not None and not target.halted:
+            target.pending_traps.append(trap_num)
+
+    os_sim.mailbox_handler = on_mailbox
+    worker_sim.mailbox_handler = on_mailbox
+
+
 def main():
     parser = argparse.ArgumentParser(description="MiniRISC4 Instruction-Level Python Simulator (mr4sim)")
     parser.add_argument("binary", help="Path to binary file (.bin)")
@@ -979,13 +1033,14 @@ def main():
     parser.add_argument("--trace", action="store_true", help="Print PC and register state on every cycle")
     parser.add_argument("--sym", default=None, help="Assembler listing file (.lst) for symbol resolution")
     parser.add_argument("--sd-image", default=None, help="Path to FAT32 SD disk image for SPI SD card emulation")
+    parser.add_argument("--worker", default=None, help="Path to worker_stub.bin to run on Core 1 linked via FIFO/Mailbox")
     args = parser.parse_args()
 
     if not os.path.exists(args.binary):
         print(f"Error: Binary file '{args.binary}' not found.", file=sys.stderr)
         sys.exit(1)
 
-    sim = MiniRISC4Sim(trace=args.trace)
+    sim = MiniRISC4Sim(trace=args.trace, core_id=args.core_id)
     sim.trap_base = args.trapbase & ADDR_MASK
     if args.sd_image:
         sim.sd_card = SpiSdCard(Path(args.sd_image).read_bytes())
@@ -998,6 +1053,17 @@ def main():
         sim.pc = args.startaddr & ADDR_MASK
     else:
         sim.pc = 0x0100
+
+    worker_sim = None
+    if args.worker:
+        if not os.path.exists(args.worker):
+            print(f"Error: Worker binary '{args.worker}' not found.", file=sys.stderr)
+            sys.exit(1)
+        worker_sim = MiniRISC4Sim(trace=False, core_id=1)
+        worker_sim.trap_base = args.trapbase & ADDR_MASK
+        worker_sim.load_binary(args.worker, offset=0)
+        worker_sim.pc = 0x0100
+        connect_os_worker(sim, worker_sim)
 
     if args.debug:
         sim.interactive_cli()
@@ -1021,6 +1087,8 @@ def main():
                             tty.setcbreak(sys.stdin.fileno())
 
                     sim.step()
+                    if worker_sim is not None and not worker_sim.halted:
+                        worker_sim.step()
 
             except KeyboardInterrupt:
                 if old_settings:

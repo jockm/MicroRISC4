@@ -51,7 +51,7 @@ The ultimate objective of this project is a fully functional, stable operating s
 ### Phase 2: OS Kernel Core & Memory Initialization
 - [x] **Kernel Bootstrap & Stacks:** Validated `_reset_slot` (`0x0100`), `RSP`/`ASP` initialization, and zero-leak stack integrity (`ASP=0xFAFF`, `0` low-memory corruptions).
 - [x] **Process Control Block (PCB) Management:** Process table allocation (`_procs`), state transitions (`FREE`, `LOAD`, `RUN`), PID tracking, `ps`, `kill`, and automatic per-owner FD cleanup (`fat32_close_owner`).
-- [x] **Memory & Buffer Layout:** Established clean boundaries for kernel buffers (`_sys_buf`, `_run_img_buf` 4K words), `0x0400` userland `--nopreamble`/`--sparsebin` entry trampoline, and stack regions.
+- [x] **Memory & Buffer Layout:** Established clean boundaries for kernel buffers (`_sys_buf`, sector-streaming loader via `_sec_buf` without a 4K static image buffer), `0x0400` userland `--nopreamble`/`--sparsebin` entry trampoline, and stack regions.
 - [x] **Trap & Interrupt Handling:** Direct-stride `@ trap(N)` ISR prologue/epilogue (`RPUSH`/`RPOP` `R0`–`R3`, nested trap support, early `return;` via `_iret`) aligned across `act4c.py`, `mr4sim.py`, and `cpu_core.dart`.
 
 ### Phase 3: Storage, Drivers & FAT32 Filesystem
@@ -67,7 +67,7 @@ The ultimate objective of this project is a fully functional, stable operating s
 ### Phase 5: Interactive Shell & Userland Application Suite
 - [x] **Shell Interpreter (`os_shell.a4`):** Completed line editor (`_sh_line`), tokenizer (`_sh_cmd`, `_sh_arg`, multi-word payload offsets), console ownership (`! <file>` foreground, `run <file>` background with muted output, `fg [--fgoutput] <pid>`, `bg <pid>`, `Ctrl-Z` detach, `Ctrl-C` Trap 14 kill, foreground `SYS_GETC` routing), and built-ins (`help`, `ps`, `kill`, `pwd`, `cd`, `ls`, `mkdir`, `rmdir`, `cat`, `stat`, `write`, `rm`, `echo`, `clear`).
 - [x] **Built-in & File Utilities:** Built standalone `0x0400` userland binaries (`ls.a4`, `ps.a4`, `cat.a4`, `fibers.a4`) packed onto the FAT32 SD image (`LS.BIN`, `PS.BIN`, `CAT.BIN`, `FIBERS.BIN`).
-- [x] **Application Executable Loading:** Loads raw `--sparsebin` executables from FAT32 into `_run_img_buf`, streams Load Packets to free worker cores (`worker_stub.asm`), executes userland syscalls, and reclaims workers cleanly on exit.
+- [x] **Application Executable Loading:** Streams raw `--sparsebin` executables sector-by-sector directly from FAT32 (`fat32_read_next_sector` → `_sec_buf` → `fifo_out`, up to `0xF600` words / ~126 KB) into free worker cores (`worker_stub.asm`), executes userland syscalls, and reclaims workers cleanly on exit.
 
 ### Phase 6: System Integration, Stress Testing & Verification
 - [x] **Full-System Simulation:** Complete boot sequence verified in `mr4sim.py` (`make sim-os` with 3 worker cores) from reset through FAT32 mount, interactive shell, and multi-core userland execution.

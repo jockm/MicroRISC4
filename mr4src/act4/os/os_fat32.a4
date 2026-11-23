@@ -31,11 +31,7 @@ u16 cwd_clus_lo    = 0;
 u16 cwd_clus_hi    = 0;
 u16 cwd_path[CWD_PATH_WORDS];
 
-// Last lookup / read_file result globals
-u16 fat32_last_found   = 0;
-u16 fat32_last_size_lo = 0;
-u16 fat32_last_size_hi = 0;
-
+// Last directory / entry lookup result globals
 u16 fat_dir_clus_lo    = 0;
 u16 fat_dir_clus_hi    = 0;
 u16 fat_ent_clus_lo    = 0;
@@ -963,83 +959,32 @@ u16 fat32_readdir(u16 fd, DirEntry *out) {
     return 1;
 }
 
-// Find an 8.3 file (relative/absolute path, case-insensitive) and read up to
-// max_words packed 16-bit words into dst_buf. Returns word count (>0) or 0 on error.
-u16 fat32_read_file(u16 *path, u16 *dst_buf, u16 max_words) {
-    u16 clus_lo    = 0;
-    u16 clus_hi    = 0;
-    u16 size_lo    = 0;
-    u16 size_hi    = 0;
-    u16 total_wds  = 0;
-    u16 words_read = 0;
-    u16 sec_idx    = 0;
-    u16 w_idx      = 0;
-
-    fat32_last_found   = 0;
-    fat32_last_size_lo = 0;
-    fat32_last_size_hi = 0;
-
-    if (fat_mounted == 0) {
-        return 0;
+// Read next 512-byte sector of open read-only fd directly into sec_buf[256]
+// and advance the fd's cluster/sector cursor. Returns 0 = OK, 1 = EOF or error.
+u16 fat32_read_next_sector(u16 fd) {
+    if (fd >= FD_MAX || fds[fd].in_use == 0 || fds[fd].is_dir != 0) {
+        return 1;
     }
-
-    if (fat32_resolve_parent(path) != 0) {
-        return 0;
+    if (fds[fd].cur_clus_hi == 0 && fds[fd].cur_clus_lo < 2) {
+        return 1;
     }
-    if (fat32_find_in_dir(fat_dir_clus_hi, fat_dir_clus_lo, fat_leaf_name) != 0) {
-        return 0;
-    }
-    if ((fat_ent_attr & ATTR_DIRECTORY) != 0) {
-        return 0;
-    }
-
-    clus_lo = fat_ent_clus_lo;
-    clus_hi = fat_ent_clus_hi;
-    size_lo = fat_ent_size_lo;
-    size_hi = fat_ent_size_hi;
-
-    fat32_last_found   = 1;
-    fat32_last_size_lo = size_lo;
-    fat32_last_size_hi = size_hi;
-
-    if (size_hi != 0) {
-        total_wds = max_words;
-    } else {
-        total_wds = (size_lo + 1) >> 1;
-        if (total_wds > max_words) {
-            total_wds = max_words;
+    if (fds[fd].sec_in_clus >= sec_per_clus) {
+        fds[fd].sec_in_clus = 0;
+        if (fat32_next_cluster(fds[fd].cur_clus_hi, fds[fd].cur_clus_lo) != 0) {
+            fds[fd].cur_clus_hi = 0;
+            fds[fd].cur_clus_lo = 0;
+            return 1;
         }
+        fds[fd].cur_clus_hi = tmp32_hi;
+        fds[fd].cur_clus_lo = tmp32_lo;
     }
-
-    while (words_read < total_wds) {
-        if (clus_hi == 0 && clus_lo < 2) {
-            break;
-        }
-        sec_idx = 0;
-        while (sec_idx < sec_per_clus && words_read < total_wds) {
-            cluster_to_lba(clus_hi, clus_lo);
-            add32(tmp32_hi, tmp32_lo, 0, sec_idx);
-            if (sd_read_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
-                return 0;
-            }
-            w_idx = 0;
-            while (w_idx < 256 && words_read < total_wds) {
-                dst_buf[words_read] = sec_buf[w_idx];
-                words_read++;
-                w_idx++;
-            }
-            sec_idx++;
-        }
-        if (words_read < total_wds) {
-            if (fat32_next_cluster(clus_hi, clus_lo) != 0) {
-                break;
-            }
-            clus_hi = tmp32_hi;
-            clus_lo = tmp32_lo;
-        }
+    cluster_to_lba(fds[fd].cur_clus_hi, fds[fd].cur_clus_lo);
+    add32(tmp32_hi, tmp32_lo, 0, fds[fd].sec_in_clus);
+    if (sd_read_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
+        return 1;
     }
-
-    return words_read;
+    fds[fd].sec_in_clus++;
+    return 0;
 }
 
 // Delete an 8.3 file (relative/absolute path, case-insensitive) and free its clusters.

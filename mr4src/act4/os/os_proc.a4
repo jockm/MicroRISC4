@@ -15,10 +15,15 @@ const u16 PROC_RUN       = 2;
 
 const u16 CMD_LOAD_MAGIC = 0x4C44;  // "LD" header expected by worker_stub.asm
 const u16 APP_LOAD_ADDR  = 0x0400;
+const u16 APP_MAX_WORDS  = 0xF600;  // Up to ~126 KB (fits below ASP = 0xFAFF)
 const u16 TRAP_KILL      = 14;      // TRAP_CORE_FAULT -> worker_stub reset
 
 const u16 FG_RX_CAP      = 16;      // Power-of-2 ring buffer for fg SYS_GETC
 const u16 FG_RX_MASK     = FG_RX_CAP - 1;
+
+const u16 SPAWN_OK       = 0;
+const u16 SPAWN_ERR_FILE = 1;
+const u16 SPAWN_ERR_CORE = 2;
 
 type ProcEntry {
     u16 state;
@@ -29,6 +34,8 @@ type ProcEntry {
 ProcEntry procs[MAX_CORES];
 u16 proc_con_out[MAX_CORES];        // 1 = allowed to write to UART console
 u16 fg_pid = 0;                     // 0 = Core 0 shell owns UART RX, else worker PID
+u16 proc_last_words = 0;            // Word count of last streamed binary
+u16 proc_last_err   = 0;            // Last spawn error (SPAWN_*)
 
 u16 fg_rx_buf[FG_RX_CAP];
 u16 fg_rx_head = 0;
@@ -180,17 +187,50 @@ u16 proc_kill(u16 pid) {
     return 0;
 }
 
-// Stream a binary image into a free worker core and launch it.
+// Stream a FAT32 binary directly sector-by-sector into a free worker core and launch it.
 // con_mode: 0 = background (muted), 1 = inherit output only, 2 = exclusive foreground.
-u16 proc_spawn_from_buf(u16 *name, u16 *img, u16 word_count, u16 con_mode) {
-    u16 pid = proc_alloc_core();
-    u16 i = 0;
+// Returns allocated PID (1..MAX_CORES-1) on success, or 0 on error (see proc_last_err).
+u16 proc_spawn_from_file(u16 *path, u16 con_mode) {
+    u16 fd         = 0xFFFF;
+    u16 pid        = 0;
+    u16 sz_lo      = 0;
+    u16 sz_hi      = 0;
+    u16 word_count = 0;
+    u16 sent       = 0;
+    u16 w_idx      = 0;
+
+    proc_last_words = 0;
+    proc_last_err   = SPAWN_ERR_FILE;
+
+    fd = fat32_open(0, path);
+    if (fd == 0xFFFF) {
+        return 0;
+    }
+
+    sz_lo = fds[fd].size_lo;
+    sz_hi = fds[fd].size_hi;
+    if ((sz_hi == 0 && sz_lo == 0) || sz_hi > 1) {
+        fat32_close(fd);
+        return 0;
+    }
+    word_count = (sz_lo >> 1) + (sz_lo & 0x0001);
+    if (sz_hi == 1) {
+        if (word_count > (APP_MAX_WORDS - 0x8000)) {
+            fat32_close(fd);
+            return 0;
+        }
+        word_count = word_count + 0x8000;
+    }
+
+    pid = proc_alloc_core();
     if (pid == 0) {
-        return 0;                   // No free cores
+        fat32_close(fd);
+        proc_last_err = SPAWN_ERR_CORE;
+        return 0;
     }
 
     procs[pid].state = PROC_LOAD;
-    str_copy(procs[pid].name, name, 16);
+    str_copy(procs[pid].name, path, 16);
 
     if (con_mode == 2) {
         proc_clear_worker_con_out();
@@ -210,12 +250,27 @@ u16 proc_spawn_from_buf(u16 *name, u16 *img, u16 word_count, u16 con_mode) {
     fifo_out = word_count;
     fifo_out = APP_LOAD_ADDR;
 
-    while (i < word_count) {
-        fifo_out = img[i];
-        i++;
+    while (sent < word_count) {
+        if (fat32_read_next_sector(fd) != 0) {
+            // Pad remaining words on unexpected EOF so worker loader stays framed
+            while (sent < word_count) {
+                fifo_out = 0;
+                sent++;
+            }
+            break;
+        }
+        w_idx = 0;
+        while (w_idx < 256 && sent < word_count) {
+            fifo_out = sec_buf[w_idx];
+            w_idx++;
+            sent++;
+        }
     }
 
+    fat32_close(fd);
     procs[pid].state = PROC_RUN;
+    proc_last_words  = word_count;
+    proc_last_err    = SPAWN_OK;
     return pid;
 }
 

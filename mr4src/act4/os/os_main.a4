@@ -41,11 +41,9 @@ const u16 ERR_EOF       = 0x0003;
 const u16 ERR_UNKNOWN   = 0xFFFF;
 
 const u16 SYS_BUF_WORDS = 64;
-const u16 RUN_BUF_MAX   = 4096;
 
 u16 msg_pending = 0;
 u16 sys_buf[SYS_BUF_WORDS];
-u16 run_img_buf[RUN_BUF_MAX];
 DirEntry sys_ent;
 
 // -----------------------------------------------------------------------------
@@ -167,18 +165,11 @@ void handle_syscall(void) {
             i++;
         }
         sys_buf[63] = 0;
-        arg1 = fat32_read_file(sys_buf, run_img_buf, RUN_BUF_MAX);
-        if (arg1 == 0) {
-            fifo_sel = pid;
-            fifo_out = ERR_IO;
-            fifo_out = 0;
-            return;
-        }
         ch = 0;
         if (pid < MAX_CORES && proc_con_out[pid] != 0) {
             ch = 1;                     // Child inherits console output from parent
         }
-        arg2 = proc_spawn_from_buf(sys_buf, run_img_buf, arg1, ch);
+        arg2 = proc_spawn_from_file(sys_buf, ch);
         fifo_sel = pid;
         if (arg2 == 0) {
             fifo_out = ERR_IO;

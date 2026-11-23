@@ -173,11 +173,14 @@ void shell_cmd_rmdir(void) {
 }
 
 void shell_cmd_cat(void) {
-    u16 wds    = 0;
-    u16 nbytes = 0;
+    u16 fd     = 0xFFFF;
+    u16 rem_lo = 0;
+    u16 rem_hi = 0;
+    u16 chunk  = 0;
     u16 i      = 0;
     u16 ch     = 0;
     u16 prev   = 0;
+    u16 wrote  = 0;
 
     if (getbyte(sh_arg, 0) == 0) {
         uart_puts("Usage: cat <file>\r\n");
@@ -188,32 +191,42 @@ void shell_cmd_cat(void) {
         return;
     }
 
-    wds = fat32_read_file(sh_arg, run_img_buf, RUN_BUF_MAX);
-    if (fat32_last_found == 0) {
+    fd = fat32_open(0, sh_arg);
+    if (fd == 0xFFFF) {
         uart_puts("File not found: ");
         uart_puts(sh_arg);
         uart_nl();
         return;
     }
-    if (wds == 0) {
-        return;
-    }
 
-    nbytes = wds << 1;
-    if (fat32_last_size_hi == 0 && fat32_last_size_lo < nbytes) {
-        nbytes = fat32_last_size_lo;
-    }
-
-    while (i < nbytes) {
-        ch = getbyte(run_img_buf, i);
-        if (ch == 10 && prev != 13) {
-            uart_putc(13);
+    rem_lo = fds[fd].size_lo;
+    rem_hi = fds[fd].size_hi;
+    while (rem_hi != 0 || rem_lo != 0) {
+        if (fat32_read_next_sector(fd) != 0) {
+            break;
         }
-        uart_putc(ch);
-        prev = ch;
-        i++;
+        chunk = 512;
+        if (rem_hi == 0 && rem_lo < 512) {
+            chunk = rem_lo;
+        }
+        i = 0;
+        while (i < chunk) {
+            ch = getbyte(sec_buf, i);
+            if (ch == 10 && prev != 13) {
+                uart_putc(13);
+            }
+            uart_putc(ch);
+            prev = ch;
+            wrote = 1;
+            i++;
+        }
+        if (rem_lo < chunk) {
+            rem_hi--;
+        }
+        rem_lo = rem_lo - chunk;
     }
-    if (prev != 10) {
+    fat32_close(fd);
+    if (wrote != 0 && prev != 10) {
         uart_nl();
     }
 }
@@ -268,11 +281,11 @@ void shell_cmd_write(void) {
         if (ch == 0) {
             break;
         }
-        setbyte(run_img_buf, o, ch);
+        setbyte(sys_buf, o, ch);
         o++;
         i++;
     }
-    setbyte(run_img_buf, o, 10);    // append '\n'
+    setbyte(sys_buf, o, 10);        // append '\n'
     o++;
 
     fd = fat32_open_write(0, sh_arg);
@@ -282,7 +295,7 @@ void shell_cmd_write(void) {
         uart_nl();
         return;
     }
-    if (fat32_write_bytes(fd, run_img_buf, o) != o) {
+    if (fat32_write_bytes(fd, sys_buf, o) != o) {
         fat32_close(fd);
         uart_puts("Write error: ");
         uart_puts(sh_arg);
@@ -362,8 +375,7 @@ void shell_cmd_clear(void) {
 }
 
 void shell_cmd_run(u16 foreground) {
-    u16 pid = 0;
-    u16 err = 0;
+    u16 pid  = 0;
     u16 mode = 0;
 
     if (getbyte(sh_arg, 0) == 0) {
@@ -374,24 +386,23 @@ void shell_cmd_run(u16 foreground) {
         }
         return;
     }
-    err = fat32_read_file(sh_arg, run_img_buf, RUN_BUF_MAX);
-    if (err == 0) {
-        uart_puts("Failed to load file: ");
-        uart_puts(sh_arg);
-        uart_nl();
-        return;
-    }
     if (foreground != 0) {
         mode = 2;
     }
-    pid = proc_spawn_from_buf(sh_arg, run_img_buf, err, mode);
+    pid = proc_spawn_from_file(sh_arg, mode);
     if (pid == 0) {
-        uart_puts("No free worker core\r\n");
+        if (proc_last_err == SPAWN_ERR_CORE) {
+            uart_puts("No free worker core\r\n");
+        } else {
+            uart_puts("Failed to load file: ");
+            uart_puts(sh_arg);
+            uart_nl();
+        }
     } else if (foreground == 0) {
         uart_puts("Spawned PID ");
         uart_putc(pid + 48);
         uart_puts(" (");
-        uart_put_hex16(err);
+        uart_put_hex16(proc_last_words);
         uart_puts(" words)\r\n");
     }
 }

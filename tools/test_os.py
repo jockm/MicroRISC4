@@ -534,12 +534,36 @@ void main(void) {
         a4.write_text(wrtest_src, encoding="utf-8")
         compile_and_assemble(a4, wr_bin, org=0x0400, nopreamble=True, sparsebin=True)
 
+        # >4K-word binary proving streaming loader lifts the old RUN_BUF_MAX=4096 cap
+        big_src = """
+import "sys.a4";
+
+u16 big_pad[4200];
+
+void main(void) {
+    big_pad[0] = 0x1234;
+    big_pad[4199] = 0x5678;
+    if (big_pad[0] == 0x1234 && big_pad[4199] == 0x5678) {
+        sys_puts("BIGAPP_OK\\r\\n");
+        sys_exit(0);
+    }
+    sys_puts("BIGAPP_FAIL\\r\\n");
+    sys_exit(1);
+}
+"""
+        big_a4 = p / "bigapp.a4"
+        big_bin = p / "bigapp.bin"
+        big_a4.write_text(big_src, encoding="utf-8")
+        compile_and_assemble(big_a4, big_bin, org=0x0400, nopreamble=True, sparsebin=True)
+        assert big_bin.stat().st_size > 8192, f"Expected >8KB (>4096-word) binary, got {big_bin.stat().st_size}B"
+
         sd_root = p / "sd_root"
         sd_root.mkdir()
         shutil.copy(OS_BUILD / "ls.bin", sd_root / "LS.BIN")
         shutil.copy(OS_BUILD / "ps.bin", sd_root / "PS.BIN")
         shutil.copy(OS_BUILD / "cat.bin", sd_root / "CAT.BIN")
         shutil.copy(wr_bin, sd_root / "WRTEST.BIN")
+        shutil.copy(big_bin, sd_root / "BIGAPP.BIN")
         (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
         sd_img = p / "mc_test.img"
         subprocess.run(
@@ -584,6 +608,8 @@ void main(void) {
         seg_ps = run_app("!PS.BIN", "1    RUN    PS.BIN")
         seg_cat = run_app("! CAT.BIN", "Hello from MiniRISC4 FAT32 SD card!")
         seg_wr = run_app("! WRTEST.BIN", "READBACK:Userland write OK!")
+        seg_big = run_app("! BIGAPP.BIN", "BIGAPP_OK")
+        assert "BIGAPP_OK" in seg_big
 
         # Confirm Core 0 shell reads back APP.TXT written by Worker Core 1
         for ch in "cat APP.TXT\r":

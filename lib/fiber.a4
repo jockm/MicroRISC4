@@ -4,30 +4,33 @@
 //
 // Design:
 //   - Fiber 0 is the caller's main context (uses default hardware RSP/ASP).
-//   - Fibers 1..3 get private 32-word RSP and 64-word ASP slices with 0xDEAD
+//   - Fibers 1..(FIBER_MAX - 1) get private RSP and ASP slices with 0xDEAD
 //     stack-overflow canaries at the bottom of every stack.
 //   - Voluntary round-robin switching via fiber_yield(); zero HDL changes.
 //   - Rule for ACT4 static locals: only yield from distinct top-level fiber
 //     functions; shared helper functions should run to completion without yielding.
 // ==============================================================================
 
-const u16 FIBER_MAX       = 4;
-const u16 FIBER_FREE      = 0;
-const u16 FIBER_READY     = 1;
-const u16 FIBER_RSP_WORDS = 32;
-const u16 FIBER_ASP_WORDS = 64;
-const u16 FIBER_CANARY    = 0xDEAD;
+const u16 FIBER_MAX          = 4;
+const u16 FIBER_SLOTS        = FIBER_MAX - 1;
+const u16 FIBER_FREE         = 0;
+const u16 FIBER_READY        = 1;
+const u16 FIBER_RSP_WORDS    = 32;
+const u16 FIBER_ASP_WORDS    = 64;
+const u16 FIBER_RSTACK_TOTAL = FIBER_SLOTS * FIBER_RSP_WORDS;
+const u16 FIBER_ASTACK_TOTAL = FIBER_SLOTS * FIBER_ASP_WORDS;
+const u16 FIBER_CANARY       = 0xDEAD;
 
-u16 _fib_state[4];
-u16 _fib_rsp[4];
-u16 _fib_asp[4];
+u16 _fib_state[FIBER_MAX];
+u16 _fib_rsp[FIBER_MAX];
+u16 _fib_asp[FIBER_MAX];
 u16 _fib_cur     = 0;
 u16 _fib_tmp_rsp = 0;
 u16 _fib_tmp_asp = 0;
 
-// Private stacks for Fibers 1..3 (index (fid - 1) * stride)
-u16 _fib_rstack[96];            // 3 * 32 words
-u16 _fib_astack[192];           // 3 * 64 words
+// Private stacks for Fibers 1..(FIBER_MAX - 1) (index (fid - 1) * stride)
+u16 _fib_rstack[FIBER_RSTACK_TOTAL];
+u16 _fib_astack[FIBER_ASTACK_TOTAL];
 
 void fiber_init(void) {
     u16 i = 0;
@@ -51,7 +54,10 @@ void _fiber_exit_current(void) {
     _fib_state[_fib_cur] = FIBER_FREE;
 
     while (step < FIBER_MAX) {
-        next = (_fib_cur + step) & 0x0003;
+        next = _fib_cur + step;
+        if (next >= FIBER_MAX) {
+            next -= FIBER_MAX;
+        }
         if (_fib_state[next] == FIBER_READY) {
             break;
         }
@@ -92,7 +98,7 @@ void _fiber_boot(void) {
     _fiber_exit_current();
 }
 
-// Spawn a cooperative fiber running entry_addr. Returns fiber ID (1..3) or 0 if full.
+// Spawn a cooperative fiber running entry_addr. Returns fiber ID (1..FIBER_SLOTS) or 0 if full.
 u16 fiber_spawn(u16 entry_addr) {
     u16 fid   = 1;
     u16 rbase = 0;
@@ -126,7 +132,10 @@ void fiber_yield(void) {
     u16 step = 1;
 
     while (step < FIBER_MAX) {
-        next = (_fib_cur + step) & 0x0003;
+        next = _fib_cur + step;
+        if (next >= FIBER_MAX) {
+            next -= FIBER_MAX;
+        }
         if (_fib_state[next] == FIBER_READY) {
             break;
         }
@@ -179,7 +188,7 @@ u16 fiber_active_count(void) {
     return n;
 }
 
-// Return 0 if all fiber stack canaries are intact, else failing fiber ID (1..3).
+// Return 0 if all fiber stack canaries are intact, else failing fiber ID (1..FIBER_SLOTS).
 u16 fiber_check_canaries(void) {
     u16 fid = 1;
     while (fid < FIBER_MAX) {

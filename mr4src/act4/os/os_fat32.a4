@@ -14,6 +14,9 @@ u16 root_clus_lo   = 0;
 u16 root_clus_hi   = 0;
 u16 sec_per_clus   = 0;
 u16 fat_mounted    = 0;
+u16 fat32_last_found   = 0;
+u16 fat32_last_size_lo = 0;
+u16 fat32_last_size_hi = 0;
 
 type DirEntry {
     u16 attr;
@@ -277,6 +280,10 @@ u16 fat32_read_file_root(u16 *filename, u16 *dst_buf, u16 max_words) {
     u16 scan_clus_hi = root_clus_hi;
     u16 entry_name[8];
 
+    fat32_last_found   = 0;
+    fat32_last_size_lo = 0;
+    fat32_last_size_hi = 0;
+
     if (fat_mounted == 0) {
         return 0;
     }
@@ -298,7 +305,7 @@ u16 fat32_read_file_root(u16 *filename, u16 *dst_buf, u16 max_words) {
                 }
                 if (first != 0xE5 && attr != 0x0F && (attr & 0x08) == 0 && (attr & 0x10) == 0) {
                     format_83_name(off, entry_name);
-                    if (str_eq(entry_name, filename) == 1) {
+                    if (str_eq_ci(entry_name, filename) == 1) {
                         clus_lo = rd_u16(sec_buf, off + 26);
                         clus_hi = rd_u16(sec_buf, off + 20);
                         size_lo = rd_u16(sec_buf, off + 28);
@@ -318,6 +325,10 @@ u16 fat32_read_file_root(u16 *filename, u16 *dst_buf, u16 max_words) {
             scan_clus_lo = tmp32_lo;
         }
     }
+
+    fat32_last_found   = 1;
+    fat32_last_size_lo = size_lo;
+    fat32_last_size_hi = size_hi;
 
     if (size_hi != 0) {
         total_wds = max_words;

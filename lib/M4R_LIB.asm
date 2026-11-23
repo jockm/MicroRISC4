@@ -80,13 +80,8 @@ MULT:
     XCHG    R3                  ; shadow_r[3] = caller R3
     LD0     R3                  ; R3 = 0x0000 (accumulator initialized to zero)
 
-    ; Initialize 16-iteration loop counter in shadow_r[0]
-    XCHG    R0                  ; shadow_r[0] = caller R0
-    LOAD16  R0, 16              ; Loop counter = 16 bits
-    XCHG    R0                  ; R0 restored; shadow_r[0] = 16
-
 _MULT_LOOP:
-    ; Optimization: check if remaining Multiplier bits are zero -> exit early
+    ; Exit as soon as all remaining Multiplier bits are zero (at most 16 iterations)
     LOAD16  R0, _MULT_DONE
     JMP.Z   R0, R2              ; If R2 == 0, multiplication complete
 
@@ -99,27 +94,16 @@ _MULT_LOOP:
     ROT.L   R2                  ; Restore original bit alignment of R2
     SHIFT.R R2                  ; Multiplier >>= 1 (logical right shift)
     SHIFT.L R1                  ; Multiplicand <<= 1 (logical left shift)
-    LOAD16  R0, _MULT_DEC
-    JMP     R0                  ; Decrement iteration counter
+    LOAD16  R0, _MULT_LOOP
+    JMP     R0
 
 _MULT_ADD:
     ROT.L   R2                  ; Restore original bit alignment of R2
     ADD     R3, R1              ; Accumulator += Multiplicand
     SHIFT.R R2                  ; Multiplier >>= 1
     SHIFT.L R1                  ; Multiplicand <<= 1
-
-_MULT_DEC:
-    XCHG    R0                  ; Access loop counter from shadow_r[0]
-    DEC     R0                  ; counter--
-    LOAD16  R1, _MULT_DONE_CTR  ; Scratch jump target in R1 (Multiplicand dead here)
-    JMP.Z   R1, R0              ; If counter == 0, loop finished
-    XCHG    R0                  ; Save updated counter back to shadow_r[0]
-
-    LOAD16  R0, _MULT_LOOP      ; Branch back to process next bit
+    LOAD16  R0, _MULT_LOOP
     JMP     R0
-
-_MULT_DONE_CTR:
-    XCHG    R0                  ; Restore shadow_r[0] / caller R0
 
 _MULT_DONE:
     LD      R1, R3              ; R1 = Final 16-bit Product
@@ -147,12 +131,6 @@ _MULT_DONE:
 ;
 ; Special Cases:
 ;   Division by Zero: If D == 0, returns Quotient = 0xFFFF, Remainder = Dividend (N).
-;
-; Registers:
-;   R1 = Dividend (shifts left; quotient bits shifted into LSB) -> returns Quotient
-;   R2 = Divisor (preserved in shadow_r[2] during loop)
-;   R3 = Remainder accumulator -> returns Remainder
-;   shadow_r[0] = 16-iteration loop counter
 ; ==============================================================================
 DIVMOD_CORE:
     RPUSH   R0                  ; Save return link onto Return Stack (0x0004)
@@ -163,23 +141,19 @@ DIVMOD_CORE:
 
     LD0     R3                  ; R3 = 0x0000 (Remainder initialized to zero)
 
-    ; Preserve Divisor in shadow_r[2] so R2 is available for branch scratch
-    XCHG    R2
-
-    ; Initialize 16-bit loop counter in shadow_r[0]
-    XCHG    R0
-    LOAD16  R0, 16              ; 16 iterations for 16-bit division
-    XCHG    R0
+    ; Push 16-bit iteration counter onto Argument Stack
+    LOAD16  R0, 16
+    APUSH   R0
 
 _DIV_BIT_LOOP:
     SHIFT.L R3                  ; Remainder <<= 1
 
     ; Shift MSB of Dividend into LSB of Remainder
-    LOAD16  R2, _DIV_CARRY_IN
-    JMP.M   R2, R1              ; Test bit 15 (MSB) of Dividend
+    LOAD16  R0, _DIV_CARRY_IN
+    JMP.M   R0, R1              ; Test bit 15 (MSB) of Dividend
 
-    LOAD16  R2, _DIV_SHIFT_CONT
-    JMP     R2
+    LOAD16  R0, _DIV_SHIFT_CONT
+    JMP     R0
 
 _DIV_CARRY_IN:
     INC     R3                  ; Remainder |= 1 (MSB shifted out of Dividend was 1)
@@ -187,49 +161,52 @@ _DIV_CARRY_IN:
 _DIV_SHIFT_CONT:
     SHIFT.L R1                  ; Dividend <<= 1 (shifts quotient bit into LSB)
 
-    ; Compare current Remainder (R3) with Divisor (held in shadow_r[2])
-    XCHG    R2                  ; R2 = Divisor, shadow_r[2] = scratch
-    XCHG    R0                  ; R0 = loop counter, shadow_r[0] = scratch
-    XCHG    R0                  ; Restore R0
-
-    ; Compute test trial subtraction: difference = Remainder - Divisor
-    XCHG    R0
+    ; Unsigned comparison: Remainder (R3) >= Divisor (R2)?
+    ; Save Dividend (R1) on ASP so R1 can hold branch targets.
+    APUSH   R1
     LD      R0, R3
-    SUB     R0, R2              ; R0 = Remainder - Divisor
-    XCHG    R0                  ; shadow_r[0] = difference, R0 restored
+    XOR     R0, R2              ; Bit 15 = 1 iff MSBs of R3 and R2 differ
+    LOAD16  R1, _DIV_DIFF_MSB
+    JMP.M   R1, R0
 
-    ; Check if trial subtraction produced a negative result
-    XCHG    R0                  ; R0 = difference
-    LOAD16  R2, _DIV_NO_SUB
-    JMP.M   R2, R0              ; If negative, cannot subtract -> skip
-    XCHG    R0                  ; shadow_r[0] = difference, R0 restored
+    ; Same MSB: R3 >= R2 iff (R3 - R2) has bit 15 == 0
+    LD      R0, R3
+    SUB     R0, R2
+    LOAD16  R1, _DIV_NO_SUB
+    JMP.M   R1, R0
+    LOAD16  R1, _DIV_DO_SUB
+    JMP     R1
 
-    ; Successful subtraction: Remainder gets difference, Quotient LSB = 1
-    XCHG    R0
-    LD      R3, R0              ; Remainder = difference (subtraction committed)
-    XCHG    R0
+_DIV_DIFF_MSB:
+    ; Different MSBs: R3 >= R2 iff R3 has bit 15 == 1
+    LOAD16  R1, _DIV_DO_SUB
+    JMP.M   R1, R3
+    LOAD16  R1, _DIV_NO_SUB
+    JMP     R1
+
+_DIV_DO_SUB:
+    SUB     R3, R2              ; Remainder -= Divisor
+    APOP    R1                  ; Restore Dividend/Quotient
     INC     R1                  ; Quotient LSB = 1
-
-    LOAD16  R2, _DIV_DEC_LOOP
-    JMP     R2
+    LOAD16  R0, _DIV_DEC_LOOP
+    JMP     R0
 
 _DIV_NO_SUB:
-    XCHG    R0                  ; Restore R0
+    APOP    R1                  ; Restore Dividend/Quotient
 
 _DIV_DEC_LOOP:
-    XCHG    R2                  ; Restore Divisor back into shadow_r[2]
-    XCHG    R0                  ; Access loop counter
+    APOP    R0                  ; Pop loop counter
     DEC     R0                  ; counter--
-    LOAD16  R2, _DIV_EXIT
-    JMP.Z   R2, R0              ; If counter == 0, division complete
-    XCHG    R0                  ; Save counter back to shadow_r[0]
-
-    LOAD16  R0, _DIV_BIT_LOOP   ; Loop for next bit
+    APUSH   R1                  ; Preserve Quotient while branching
+    LOAD16  R1, _DIV_EXIT
+    JMP.Z   R1, R0              ; If counter == 0, division complete
+    APOP    R1                  ; Restore Quotient
+    APUSH   R0                  ; Save updated counter
+    LOAD16  R0, _DIV_BIT_LOOP
     JMP     R0
 
 _DIV_EXIT:
-    XCHG    R0                  ; Restore original R0
-    XCHG    R2                  ; Restore original R2 (Divisor)
+    APOP    R1                  ; Restore final Quotient (R3 = Remainder)
     RRET                        ; Return with R1 = Quotient, R3 = Remainder
 
 _DIV_ZERO:

@@ -78,6 +78,52 @@ void shell_cmd_ls(void) {
     fat32_close(fd);
 }
 
+void shell_cmd_cat(void) {
+    u16 wds    = 0;
+    u16 nbytes = 0;
+    u16 i      = 0;
+    u16 ch     = 0;
+    u16 prev   = 0;
+
+    if (getbyte(sh_arg, 0) == 0) {
+        uart_puts("Usage: cat <file>\r\n");
+        return;
+    }
+    if (fat_mounted == 0) {
+        uart_puts("SD/FAT32 not mounted\r\n");
+        return;
+    }
+
+    wds = fat32_read_file_root(sh_arg, run_img_buf, RUN_BUF_MAX);
+    if (fat32_last_found == 0) {
+        uart_puts("File not found: ");
+        uart_puts(sh_arg);
+        uart_nl();
+        return;
+    }
+    if (wds == 0) {
+        return;
+    }
+
+    nbytes = wds << 1;
+    if (fat32_last_size_hi == 0 && fat32_last_size_lo < nbytes) {
+        nbytes = fat32_last_size_lo;
+    }
+
+    while (i < nbytes) {
+        ch = getbyte(run_img_buf, i);
+        if (ch == 10 && prev != 13) {
+            uart_putc(13);
+        }
+        uart_putc(ch);
+        prev = ch;
+        i++;
+    }
+    if (prev != 10) {
+        uart_nl();
+    }
+}
+
 void shell_exec(void) {
     u16 pid = 0;
     u16 err = 0;
@@ -126,9 +172,7 @@ void shell_exec(void) {
             }
         }
     } else if (str_eq(sh_cmd, "cat") == 1) {
-        uart_puts("TODO: cat ");
-        uart_puts(sh_arg);
-        uart_nl();
+        shell_cmd_cat();
     } else if (str_eq(sh_cmd, "rm") == 1) {
         uart_puts("TODO: rm ");
         uart_puts(sh_arg);

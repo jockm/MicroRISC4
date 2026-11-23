@@ -281,34 +281,38 @@
 ; ==============================================================================
 .macro STPUSH ptr_addr, reg
     XCHG    R0
+    XCHG    R1
     XCHG    R2
     XCHG    R3
+    XCHG    %reg
+    LD      R1, %reg
     LD      R0, %ptr_addr
-    LD      R2, R0
+    LD      R2, (R0)
+    LD      (--R2), R1
+    LD      (R0), R2
+    LD      %reg, R1
+    XCHG    %reg
     XCHG    R0
-    LD      R3, (R2)
-    LD      (--R3), %reg
-    LD      (R2), R3
-    XCHG    R3
+    XCHG    R1
     XCHG    R2
+    XCHG    R3
 .endmacro
 
 .macro STPOP ptr_addr, reg
     XCHG    R0
+    XCHG    R1
     XCHG    R2
     XCHG    R3
     LD      R0, %ptr_addr
-    LD      R2, R0
-    XCHG    R0
-    LD      R3, (R2)
-    LD      %reg, (R3++)
-    LD      (R2), R3
-    XCHG    R1
-    LD      R1, %reg
-    XCHG    R3
-    XCHG    R2
+    LD      R2, (R0)
+    LD      R1, (R2++)
+    LD      (R0), R2
     LD      %reg, R1
+    XCHG    %reg
+    XCHG    R0
     XCHG    R1
+    XCHG    R2
+    XCHG    R3
 .endmacro
 
 .macro RPUSH reg

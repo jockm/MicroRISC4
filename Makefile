@@ -276,13 +276,13 @@ $(OS_MAIN_ASM): $(OS_MAIN_A4) $(wildcard $(OS_SRC_DIR)/os/*.a4) | $(OS_BUILD)
 	$(COMPILE) $(OS_MAIN_A4) -o $(OS_MAIN_ASM) -I $(OS_SRC_DIR)/os -I lib
 
 $(OS_MAIN_BIN) $(OS_MAIN_LST): $(OS_MAIN_ASM)
-	$(ASSEMBLE) -I lib $<
+	$(MR4ASM) -I $(LIB_DIR) "$<" -o "$(OS_MAIN_BIN)" -l "$(OS_MAIN_LST)"
 
 $(LS_ASM): $(LS_A4) | $(OS_BUILD)
 	$(COMPILE) $(LS_A4) -o $(LS_ASM) -I $(OS_SRC_DIR)/os -I lib
 
 $(LS_BIN) $(LS_LST): $(LS_ASM)
-	$(ASSEMBLE) -I lib $<
+	$(MR4ASM) -I $(LIB_DIR) "$<" -o "$(LS_BIN)" -l "$(LS_LST)"
 
 os-build: $(OS_MAIN_BIN) $(LS_BIN)
 

@@ -113,7 +113,7 @@ def build_fat32_image(
     root_clus = 2
     fsinfo_sec = 1
     backup_boot_sec = 6
-    struct.pack_into("<IHH12sB3sIHH", bpb, 36,
+    struct.pack_into("<IHHIHH12sBBBI11s8s", bpb, 36,
         fat_size_32,     # 36: sectors per FAT (32-bit)
         0,               # 40: ext flags
         0,               # 42: fs version

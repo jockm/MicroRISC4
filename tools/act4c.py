@@ -169,10 +169,10 @@ class TypeDesc:
         return s
 
 class StructDef:
-    def __init__(self, name: str, fields: List[Tuple[str, TypeDesc, int]]):
+    def __init__(self, name: str, fields: List[Tuple[str, TypeDesc, int]], structs: Optional[Dict[str, 'StructDef']] = None):
         self.name = name
         self.fields = fields
-        self.word_size = sum(f[1].word_size({}) for f in fields)
+        self.word_size = sum(f[1].word_size(structs or {}) for f in fields)
 
 class VarDecl(ASTNode):
     def __init__(self, name: str, typ: TypeDesc, init_expr: Optional[Any] = None,
@@ -377,7 +377,7 @@ class Parser:
             offset += ftype.word_size(self.structs)
         self.consume("RBRACE")
         self.consume("SEMI")
-        self.structs[name_tok.value] = StructDef(name_tok.value, fields)
+        self.structs[name_tok.value] = StructDef(name_tok.value, fields, self.structs)
 
     def parse_const_decl(self) -> VarDecl:
         self.consume("CONST")
@@ -1021,7 +1021,8 @@ class CodeGen:
                 inits = [f"0x{self.eval_const_init(e):04X}" for e in decl.array_inits]
                 self.emit_raw(f"{lbl}: .word " + ", ".join(inits))
             elif decl.typ.array_size is not None:
-                zeros = ", ".join(["0"] * decl.typ.array_size)
+                sz = decl.typ.word_size(self.structs)
+                zeros = ", ".join(["0"] * sz)
                 self.emit_raw(f"{lbl}: .word {zeros}")
             elif decl.init_expr is not None:
                 v = self.eval_const_init(decl.init_expr)
@@ -1186,17 +1187,13 @@ class CodeGen:
             self.emit("LD      (R0), R1")
         else:
             self.gen_lvalue_addr(stmt.target)
-            self.emit("LOAD16  R1, _act4_t1")
-            self.emit("LD      (R1), R0")
-
+            self.emit("APUSH   R0")
             self.emit("LD      R1, (R0)")
-            self.emit("LOAD16  R0, _act4_t0")
-            self.emit("LD      (R0), R1")
+            self.emit("APUSH   R1")
 
             self.gen_expr(stmt.value)
             self.emit("LD      R2, R1")
-            self.emit("LOAD16  R0, _act4_t0")
-            self.emit("LD      R1, (R0)")
+            self.emit("APOP    R1")
 
             base_op = stmt.op[:-1]
             if base_op == "+":
@@ -1225,28 +1222,29 @@ class CodeGen:
                 self.emit("RCALL   MOD")
                 self.emit("APOP    R1")
 
-            self.emit("LOAD16  R0, _act4_t1")
-            self.emit("LD      R0, (R0)")
+            self.emit("APOP    R0")
             self.emit("LD      (R0), R1")
 
     def gen_setbyte(self, stmt: SetByteStmt):
         self.gen_expr(stmt.base_expr)
-        self.emit("LOAD16  R0, _act4_t0")
-        self.emit("LD      (R0), R1")
+        self.emit("APUSH   R1")
 
         self.gen_expr(stmt.index_expr)
-        self.emit("LOAD16  R0, _act4_t1")
-        self.emit("LD      (R0), R1")
+        self.emit("APUSH   R1")
 
         self.gen_expr(stmt.val_expr)
         self.emit("LOAD16  R0, _act4_t2")
         self.emit("LD      (R0), R1")
 
+        self.emit("APOP    R1")
         self.emit("LOAD16  R0, _act4_t1")
-        self.emit("LD      R1, (R0)")
-        self.emit("SHIFT.R R1")
+        self.emit("LD      (R0), R1")
+
+        self.emit("APOP    R2")
         self.emit("LOAD16  R0, _act4_t0")
-        self.emit("LD      R2, (R0)")
+        self.emit("LD      (R0), R2")
+
+        self.emit("SHIFT.R R1")
         self.emit("ADD     R1, R2")
         self.emit("LOAD16  R0, _act4_t3")
         self.emit("LD      (R0), R1")
@@ -1281,50 +1279,6 @@ class CodeGen:
         self.emit("LD      R0, (R0)")
         self.emit("LD      (R0), R1")
 
-    def gen_lvalue_addr(self, expr: Expr):
-        if isinstance(expr, VarRef):
-            lbl = self.resolve_var_label(expr.name)
-            if expr.name in self.global_vars and self.global_vars[expr.name].address is not None:
-                addr = self.global_vars[expr.name].address
-                self.emit(f"LOAD16  R0, 0x{addr:04X}")
-            else:
-                self.emit(f"LOAD16  R0, {lbl}")
-
-        elif isinstance(expr, UnaryOp) and expr.op == "*":
-            self.gen_expr(expr.operand)  # R1 = pointer address
-            self.emit("LD      R0, R1")
-
-        elif isinstance(expr, IndexAccess):
-            self.gen_expr(expr.target)
-            self.emit("APUSH   R1")
-
-            self.gen_expr(expr.index)
-            elem_sz = self.get_index_elem_word_size(expr.target)
-            if elem_sz > 1:
-                self.emit("APUSH   R1")
-                self.emit(f"LOAD16  R1, {elem_sz}")
-                self.emit("APUSH   R1")
-                self.emit("RCALL   MULT")
-                self.emit("APOP    R1")
-
-            self.emit("APOP    R2")
-            self.emit("ADD     R1, R2")
-            self.emit("LD      R0, R1")
-
-        elif isinstance(expr, MemberAccess):
-            offset = self.get_member_offset(expr.target, expr.member)
-            if expr.is_arrow:
-                self.gen_expr(expr.target)
-            else:
-                self.gen_lvalue_addr(expr.target)
-                self.emit("LD      R1, R0")
-            if offset != 0:
-                self.emit(f"LOAD16  R2, {offset}")
-                self.emit(f"ADD     R1, R2")
-            self.emit("LD      R0, R1")
-        else:
-            raise CompilerError(f"Cannot take address of non-lvalue expression: {expr}")
-
     def resolve_var_label(self, name: str) -> str:
         if self.current_func:
             for pname, _ in self.current_func.params:
@@ -1335,32 +1289,92 @@ class CodeGen:
                     return f"_{self.current_func.name}_{name}"
         return f"_{name}"
 
-    def get_index_elem_word_size(self, target: Expr) -> int:
-        if isinstance(target, VarRef):
-            decl = None
+    def resolve_fixed_address(self, name: str) -> Optional[int]:
+        if self.current_func:
+            for pname, _ in self.current_func.params:
+                if pname == name:
+                    return None
+            for decl in self.current_func.locals_decls:
+                if decl.name == name:
+                    return decl.address
+        if name in self.global_vars:
+            return self.global_vars[name].address
+        return None
+
+    def infer_type_desc(self, expr: Expr) -> Optional[TypeDesc]:
+        if isinstance(expr, VarRef):
             if self.current_func:
                 for pname, ptype in self.current_func.params:
-                    if pname == target.name:
-                        return 1 if ptype.is_pointer or ptype.is_func_ptr else (
-                            self.structs[ptype.base_type].word_size if ptype.base_type in self.structs else 1
-                        )
-                for d in self.current_func.locals_decls:
-                    if d.name == target.name:
-                        decl = d
-                        break
-            if decl is None and target.name in self.global_vars:
-                decl = self.global_vars[target.name]
-            if decl is not None:
-                t = decl.typ
-                if t.is_pointer or t.is_func_ptr:
-                    return 1
-                if t.base_type in self.structs:
-                    return self.structs[t.base_type].word_size
-        elif isinstance(target, MemberAccess):
-            tname = self.get_member_type_name(target.target, target.member)
-            if tname and tname in self.structs:
-                return self.structs[tname].word_size
-        return 1
+                    if pname == expr.name:
+                        return ptype
+                for decl in self.current_func.locals_decls:
+                    if decl.name == expr.name:
+                        return decl.typ
+            if expr.name in self.global_vars:
+                return self.global_vars[expr.name].typ
+            return None
+        elif isinstance(expr, IndexAccess):
+            td = self.infer_type_desc(expr.target)
+            if td is None:
+                return None
+            if td.array_size is not None:
+                return TypeDesc(
+                    td.base_type,
+                    is_pointer=td.is_pointer,
+                    array_size=None,
+                    is_func_ptr=td.is_func_ptr,
+                    func_params=td.func_params,
+                    func_ret=td.func_ret,
+                )
+            if td.is_pointer:
+                return TypeDesc(td.base_type, is_pointer=False, array_size=None)
+            return TypeDesc(td.base_type)
+        elif isinstance(expr, MemberAccess):
+            typ_name = self.infer_type(expr.target)
+            if typ_name in self.structs:
+                for fname, ftype, _ in self.structs[typ_name].fields:
+                    if fname == expr.member:
+                        return ftype
+            return None
+        elif isinstance(expr, UnaryOp):
+            if expr.op == "*":
+                td = self.infer_type_desc(expr.operand)
+                if td is None:
+                    return None
+                if td.array_size is not None:
+                    return TypeDesc(
+                        td.base_type,
+                        is_pointer=td.is_pointer,
+                        array_size=None,
+                        is_func_ptr=td.is_func_ptr,
+                        func_params=td.func_params,
+                        func_ret=td.func_ret,
+                    )
+                if td.is_pointer:
+                    return TypeDesc(td.base_type, is_pointer=False, array_size=None)
+                return td
+            elif expr.op == "&":
+                td = self.infer_type_desc(expr.operand)
+                if td is not None:
+                    return TypeDesc(td.base_type, is_pointer=True)
+                return TypeDesc("u16", is_pointer=True)
+        elif isinstance(expr, CallExpr):
+            if isinstance(expr.callee, VarRef) and expr.callee.name in self.functions:
+                return self.functions[expr.callee.name].ret_type
+        elif isinstance(expr, BinaryOp):
+            if expr.op in ("+", "-"):
+                lhs_td = self.infer_type_desc(expr.lhs)
+                if lhs_td is not None and (lhs_td.is_pointer or lhs_td.array_size is not None):
+                    return TypeDesc(lhs_td.base_type, is_pointer=True)
+        return None
+
+    def is_array_expr(self, expr: Expr) -> bool:
+        td = self.infer_type_desc(expr)
+        return td is not None and td.array_size is not None
+
+    def infer_type(self, expr: Expr) -> str:
+        td = self.infer_type_desc(expr)
+        return td.base_type if td is not None else "u16"
 
     def get_member_type_name(self, target: Expr, member: str) -> Optional[str]:
         typ_name = self.infer_type(target)
@@ -1375,24 +1389,26 @@ class CodeGen:
     def get_member_offset(self, target: Expr, member: str) -> int:
         typ_name = self.infer_type(target)
         if typ_name in self.structs:
-            sdef = self.structs[typ_name]
-            for fname, _, off in sdef.fields:
+            for fname, _, off in self.structs[typ_name].fields:
                 if fname == member:
                     return off
         return 0
 
-    def infer_type(self, expr: Expr) -> str:
-        if isinstance(expr, VarRef):
-            if self.current_func:
-                for pname, ptype in self.current_func.params:
-                    if pname == expr.name:
-                        return ptype.base_type
-                for decl in self.current_func.locals_decls:
-                    if decl.name == expr.name:
-                        return decl.typ.base_type
-            if expr.name in self.global_vars:
-                return self.global_vars[expr.name].typ.base_type
-        return "u16"
+    def get_index_elem_word_size(self, target: Expr) -> int:
+        td = self.infer_type_desc(target)
+        if td is not None:
+            if td.array_size is not None:
+                elem = TypeDesc(
+                    td.base_type,
+                    is_pointer=td.is_pointer,
+                    array_size=None,
+                    is_func_ptr=td.is_func_ptr,
+                )
+                return elem.word_size(self.structs)
+            if td.is_pointer:
+                elem = TypeDesc(td.base_type, is_pointer=False, array_size=None)
+                return elem.word_size(self.structs)
+        return 1
 
     def gen_cond_branch(self, cond: Expr, invert: bool, target_label: str):
         if isinstance(cond, BinaryOp) and cond.op == "||":
@@ -1475,6 +1491,58 @@ class CodeGen:
                 self.emit(f"JMP     R0")
                 self.emit_raw(f"{lbl_skip}:")
 
+    def gen_lvalue_addr(self, expr: Expr):
+        if isinstance(expr, VarRef):
+            addr = self.resolve_fixed_address(expr.name)
+            if addr is not None:
+                self.emit(f"LOAD16  R0, 0x{addr:04X}")
+            else:
+                lbl = self.resolve_var_label(expr.name)
+                self.emit(f"LOAD16  R0, {lbl}")
+
+        elif isinstance(expr, UnaryOp) and expr.op == "*":
+            self.gen_expr(expr.operand)  # R1 = pointer address
+            self.emit("LD      R0, R1")
+
+        elif isinstance(expr, IndexAccess):
+            elem_sz = self.get_index_elem_word_size(expr.target)
+            if isinstance(expr.index, IntLit):
+                self.gen_expr(expr.target)
+                off = (expr.index.val * elem_sz) & 0xFFFF
+                if off != 0:
+                    self.emit(f"LOAD16  R2, {off}")
+                    self.emit("ADD     R1, R2")
+                self.emit("LD      R0, R1")
+            else:
+                self.gen_expr(expr.target)
+                self.emit("APUSH   R1")
+
+                self.gen_expr(expr.index)
+                if elem_sz > 1:
+                    self.emit("APUSH   R1")
+                    self.emit(f"LOAD16  R1, {elem_sz}")
+                    self.emit("APUSH   R1")
+                    self.emit("RCALL   MULT")
+                    self.emit("APOP    R1")
+
+                self.emit("APOP    R2")
+                self.emit("ADD     R1, R2")
+                self.emit("LD      R0, R1")
+
+        elif isinstance(expr, MemberAccess):
+            offset = self.get_member_offset(expr.target, expr.member)
+            if expr.is_arrow:
+                self.gen_expr(expr.target)
+            else:
+                self.gen_lvalue_addr(expr.target)
+                self.emit("LD      R1, R0")
+            if offset != 0:
+                self.emit(f"LOAD16  R2, {offset}")
+                self.emit(f"ADD     R1, R2")
+            self.emit("LD      R0, R1")
+        else:
+            raise CompilerError(f"Cannot take address of non-lvalue expression: {expr}")
+
     def gen_expr(self, expr: Expr):
         if isinstance(expr, IntLit):
             self.emit(f"LOAD16  R1, 0x{expr.val:04X}")
@@ -1484,16 +1552,10 @@ class CodeGen:
 
         elif isinstance(expr, VarRef):
             lbl = self.resolve_var_label(expr.name)
-            is_array = False
-            if self.current_func:
-                for decl in self.current_func.locals_decls:
-                    if decl.name == expr.name and decl.typ.array_size is not None:
-                        is_array = True
-            if not is_array and expr.name in self.global_vars and self.global_vars[expr.name].typ.array_size is not None:
-                is_array = True
+            is_array = self.is_array_expr(expr)
+            addr = self.resolve_fixed_address(expr.name)
 
-            if expr.name in self.global_vars and self.global_vars[expr.name].address is not None:
-                addr = self.global_vars[expr.name].address
+            if addr is not None:
                 if is_array:
                     self.emit(f"LOAD16  R1, 0x{addr:04X}")
                 else:
@@ -1540,27 +1602,31 @@ class CodeGen:
 
         elif isinstance(expr, IndexAccess):
             self.gen_lvalue_addr(expr)
-            self.emit("LD      R1, (R0)")
+            if self.is_array_expr(expr):
+                self.emit("LD      R1, R0")
+            else:
+                self.emit("LD      R1, (R0)")
 
         elif isinstance(expr, MemberAccess):
             self.gen_lvalue_addr(expr)
-            self.emit("LD      R1, (R0)")
+            if self.is_array_expr(expr):
+                self.emit("LD      R1, R0")
+            else:
+                self.emit("LD      R1, (R0)")
 
         elif isinstance(expr, CallExpr):
             self.gen_call(expr)
 
         elif isinstance(expr, GetByteExpr):
             self.gen_expr(expr.base_expr)
-            self.emit("LOAD16  R0, _act4_t0")
-            self.emit("LD      (R0), R1")
+            self.emit("APUSH   R1")
 
             self.gen_expr(expr.index_expr)
             self.emit("LOAD16  R0, _act4_t1")
             self.emit("LD      (R0), R1")
 
+            self.emit("APOP    R2")
             self.emit("SHIFT.R R1")
-            self.emit("LOAD16  R0, _act4_t0")
-            self.emit("LD      R2, (R0)")
             self.emit("ADD     R1, R2")
             self.emit("LD      R0, R1")
             self.emit("LD      R1, (R0)")
@@ -1585,6 +1651,19 @@ class CodeGen:
             self.emit_raw(f"{lbl_done}:")
 
     def gen_binary(self, expr: BinaryOp):
+        if expr.op in ("&&", "||"):
+            lbl_false = self.new_label("log_false")
+            lbl_done = self.new_label("log_done")
+            self.gen_cond_branch(expr, invert=True, target_label=lbl_false)
+            self.emit("LD0     R1")
+            self.emit("INC     R1")
+            self.emit(f"LOAD16  R0, {lbl_done}")
+            self.emit("JMP     R0")
+            self.emit_raw(f"{lbl_false}:")
+            self.emit("LD0     R1")
+            self.emit_raw(f"{lbl_done}:")
+            return
+
         self.gen_expr(expr.lhs)
         self.emit("APUSH   R1")
 
@@ -1602,6 +1681,40 @@ class CodeGen:
             self.emit("OR      R1, R2")
         elif expr.op == "^":
             self.emit("XOR     R1, R2")
+        elif expr.op == "==":
+            lbl_true = self.new_label("eq_true")
+            lbl_done = self.new_label("eq_done")
+            self.emit("SUB     R1, R2")
+            self.emit(f"LOAD16  R0, {lbl_true}")
+            self.emit("JMP.Z   R0, R1")
+            self.emit("LD0     R1")
+            self.emit(f"LOAD16  R0, {lbl_done}")
+            self.emit("JMP     R0")
+            self.emit_raw(f"{lbl_true}:")
+            self.emit("LD0     R1")
+            self.emit("INC     R1")
+            self.emit_raw(f"{lbl_done}:")
+        elif expr.op == "!=":
+            lbl_false = self.new_label("ne_false")
+            lbl_done = self.new_label("ne_done")
+            self.emit("SUB     R1, R2")
+            self.emit(f"LOAD16  R0, {lbl_false}")
+            self.emit("JMP.Z   R0, R1")
+            self.emit("LD0     R1")
+            self.emit("INC     R1")
+            self.emit(f"LOAD16  R0, {lbl_done}")
+            self.emit("JMP     R0")
+            self.emit_raw(f"{lbl_false}:")
+            self.emit("LD0     R1")
+            self.emit_raw(f"{lbl_done}:")
+        elif expr.op == "<":
+            self.emit("RCALL   _CMP_LT")
+        elif expr.op == ">":
+            self.emit("RCALL   _CMP_GT")
+        elif expr.op == "<=":
+            self.emit("RCALL   _CMP_LE")
+        elif expr.op == ">=":
+            self.emit("RCALL   _CMP_GE")
         elif expr.op == "*":
             self.emit("APUSH   R1")
             self.emit("APUSH   R2")
@@ -1651,17 +1764,34 @@ class CodeGen:
     def gen_call(self, call: CallExpr):
         if isinstance(call.callee, VarRef) and call.callee.name in self.functions:
             fn = self.functions[call.callee.name]
-            for idx, arg_expr in enumerate(call.args):
-                pname = fn.params[idx][0]
-                self.gen_expr(arg_expr)
+            if len(call.args) == 1:
+                pname = fn.params[0][0]
+                self.gen_expr(call.args[0])
                 self.emit(f"LOAD16  R0, _{fn.name}_{pname}")
-                self.emit(f"LD      (R0), R1")
+                self.emit("LD      (R0), R1")
+            elif len(call.args) > 1:
+                for arg_expr in call.args:
+                    self.gen_expr(arg_expr)
+                    self.emit("APUSH   R1")
+                for idx in range(len(call.args) - 1, -1, -1):
+                    pname = fn.params[idx][0]
+                    self.emit("APOP    R1")
+                    self.emit(f"LOAD16  R0, _{fn.name}_{pname}")
+                    self.emit("LD      (R0), R1")
             self.emit(f"RCALL   _{fn.name}")
         else:
-            for idx, arg_expr in enumerate(call.args):
-                self.gen_expr(arg_expr)
-                self.emit(f"LOAD16  R0, _act4_arg{idx}")
-                self.emit(f"LD      (R0), R1")
+            if len(call.args) == 1:
+                self.gen_expr(call.args[0])
+                self.emit("LOAD16  R0, _act4_arg0")
+                self.emit("LD      (R0), R1")
+            elif len(call.args) > 1:
+                for arg_expr in call.args:
+                    self.gen_expr(arg_expr)
+                    self.emit("APUSH   R1")
+                for idx in range(len(call.args) - 1, -1, -1):
+                    self.emit("APOP    R1")
+                    self.emit(f"LOAD16  R0, _act4_arg{idx}")
+                    self.emit("LD      (R0), R1")
             self.gen_expr(call.callee)
             self.emit("LD      R2, R1")
             self.emit("LINK    R2, R0")

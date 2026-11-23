@@ -74,6 +74,33 @@ u16 str_eq(u16 *a, u16 *b) {
     return 0;
 }
 
+// Convert ASCII lowercase 'a'..'z' to uppercase 'A'..'Z'
+u16 ascii_upper(u16 ch) {
+    if (ch >= 97 && ch <= 122) {
+        return ch - 32;
+    }
+    return ch;
+}
+
+// Case-insensitive comparison of two null-terminated packed strings (1 = equal)
+u16 str_eq_ci(u16 *a, u16 *b) {
+    u16 i = 0;
+    u16 ca = 0;
+    u16 cb = 0;
+    while (true) {
+        ca = ascii_upper(getbyte(a, i));
+        cb = ascii_upper(getbyte(b, i));
+        if (ca != cb) {
+            return 0;
+        }
+        if (ca == 0) {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
 // Copy up to max_bytes-1 chars from src to dst and null-terminate
 void str_copy(u16 *dst, u16 *src, u16 max_bytes) {
     u16 i = 0;

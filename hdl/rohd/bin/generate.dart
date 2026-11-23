@@ -16,8 +16,8 @@ void main(List<String> args) async {
   var memWords = 65536;
   var workerMemWords = 2048;
   var nocCores = 0;
-  var nocChannels = 4;
-  var nocFifoDepth = 8;
+  var nocChannels = 1;
+  var nocFifoDepth = 16;
   var resetHoldBits = 19; // ~10.9 ms POR & btn_pwr_n debounce at 48 MHz
 
   for (var i = 0; i < args.length; i++) {

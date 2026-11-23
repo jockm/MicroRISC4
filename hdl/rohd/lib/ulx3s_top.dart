@@ -9,6 +9,7 @@ import 'cpu_config.dart';
 import 'cpu_core.dart';
 import 'ecp5_pll.dart';
 import 'noc_cache_wrapper.dart';
+import 'noc_router.dart';
 import 'uart.dart';
 
 class Ulx3sTop extends Module {
@@ -206,15 +207,16 @@ class Ulx3sTop extends Module {
         final busWe = core.output('port_b_we_out');
         final busAddr = core.output('port_b_addr_out');
         final busWdata = core.output('port_b_wdata_out');
-        final inNocRange =
-            busAddr.gte(Const(MiniRISC4Constants.addrNocTxData, width: 16)) &
-                busAddr.lte(Const(MiniRISC4Constants.addrNocInfo, width: 16));
+        // Fast 2-LUT decode for 0x0020..0x002A (avoids 16-bit CCU2C comparators)
+        final inNocRange = busAddr.slice(15, 4).eq(Const(0x002, width: 12)) &
+            busAddr.slice(3, 0).lte(Const(0xA, width: 4));
         mmioAddr.add(busAddr);
         mmioWdata.add(busWdata);
         mmioWe.add(busEn & busWe & inNocRange);
         mmioRe.add(busEn & (~busWe) & inNocRange);
       }
 
+      final srvIdWidth = NocRouterNi.idWidthForCores(nocCores);
       final nocFabric = NocMultiCoreCacheWrapper(
         clk: clk48mhz,
         reset: uartReset,
@@ -225,14 +227,11 @@ class Ulx3sTop extends Module {
         netOutReady: netOutReady,
         srvInjectValid: Const(0),
         srvInjectType: Const(0),
-        srvInjectSrcCore: Const(0, width: 8),
-        srvInjectSrcCh: Const(0, width: 8),
-        srvInjectDstCore: Const(0, width: 8),
-        srvInjectDstCh: Const(0, width: 8),
+        srvInjectSrcCore: Const(0, width: srvIdWidth),
+        srvInjectDstCore: Const(0, width: srvIdWidth),
         srvInjectPayload: Const(0, width: MiniRISC4Constants.dataWidth),
         numCores: nocCores,
         serverCoreId: 0,
-        numChannels: effectiveConfig.nocChannels,
         fifoDepth: effectiveConfig.nocFifoDepth,
         name: 'ulx3s_noc_fabric',
       );

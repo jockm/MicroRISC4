@@ -15,18 +15,19 @@ abstract class MiniRISC4Constants {
   static const int addrUartRx = 0x000E;
   static const int addrUartTx = 0x000F;
 
-  // NoC & Network Interface MMIO Registers (0x0020-0x002A)
-  static const int addrNocTxData    = 0x0020;
-  static const int addrNocSelCh     = 0x0021;
-  static const int addrNocRxData    = 0x0022;
-  static const int addrNocRxStat    = 0x0023;
-  static const int addrNocRxTryR    = 0x0024;
-  static const int addrNocMboxSend  = 0x0025;
-  static const int addrNocMboxData  = 0x0026;
-  static const int addrNocMboxSrc   = 0x0027;
-  static const int addrNocChCfg0    = 0x0028;
-  static const int addrNocChCfg1    = 0x0029;
-  static const int addrNocInfo      = 0x002A;
+  // Lean Direct-Addressed NoC Ring & Doorbell MMIO Registers (0x0020-0x002A)
+  static const int addrNocTxData    = 0x0020; // W: send 16-bit DATA word to dstCore
+  static const int addrNocDstCore   = 0x0021; // R/W: target destination core ID
+  static const int addrNocSelCh     = 0x0021; // Legacy alias for addrNocDstCore
+  static const int addrNocRxData    = 0x0022; // R: pop word from shared RX FIFO
+  static const int addrNocRxStat    = 0x0023; // R: status flags + rx_count[15:8]
+  static const int addrNocRxTryR    = 0x0024; // R: non-blocking pop (0 if empty)
+  static const int addrNocMboxSend  = 0x0025; // W: send doorbell/MBOX (fires Trap 14)
+  static const int addrNocMboxData  = 0x0026; // R: pop doorbell payload (clears trap)
+  static const int addrNocMboxSrc   = 0x0027; // R: sender core ID of doorbell
+  static const int addrNocChCfg0    = 0x0028; // Reserved (unused in direct ring)
+  static const int addrNocChCfg1    = 0x0029; // Reserved (unused in direct ring)
+  static const int addrNocInfo      = 0x002A; // R: {fifoDepth[7:0], numCores[7:0]}
 
   // Primary Opcodes (Bits [7:4])
   static const int opLdReg      = 0x0;

@@ -189,28 +189,21 @@ void main() {
 
       // Core 0 program:
       //  - Store CPUID (0x000D) -> [0x0300]
-      //  - Route ch 1 -> (dstCore=2, dstCh=0), send DATA 0x4242 & MBOX 0xCAFE (2 hops: 0->1->2)
-      //  - Idle loop at 0x0120; Trap 14 (0x01E0) captures reply MBOX from Core 2,
-      //    stores src -> [0x0301], data -> [0x0302], increments trap count [0x0304], returns!
+      //  - Set NOC_DST_CORE (0x0021) = 2 (1 register write — zero channel table!),
+      //    send DATA 0x4242 & MBOX 0xCAFE (2 hops: 0->1->2)
+      //  - Idle loop at 0x0130; Trap 14 (0x01E0) captures reply MBOX from Core 2,
+      //    stores src -> [0x0301] (2), data -> [0x0302] (0x4243), trap count [0x0304] (1)
       final core0Mem = <int, int>{};
       emitProg(core0Mem, 0x0100, [
         ...load16(0, 0x000D),
         pack2(peek(1, 0)),
         ...load16(2, 0x0300),
         pack2(poke(2, 1)),
-        // NOC_SEL_CH = 1
-        ...load16(0, MiniRISC4Constants.addrNocSelCh),
-        ...load16(1, 1),
+        // NOC_DST_CORE = 2
+        ...load16(0, MiniRISC4Constants.addrNocDstCore),
+        ...load16(1, 2),
         pack2(poke(0, 1)),
-        // NOC_CH_CFG0 = (2 << 8) | 0
-        ...load16(0, MiniRISC4Constants.addrNocChCfg0),
-        ...load16(1, 0x0200),
-        pack2(poke(0, 1)),
-        // NOC_CH_CFG1 = 1
-        ...load16(0, MiniRISC4Constants.addrNocChCfg1),
-        ...load16(1, 1),
-        pack2(poke(0, 1)),
-        // Send DATA 0x4242 to Core 2 ch 0
+        // Send DATA 0x4242 to Core 2
         ...load16(0, MiniRISC4Constants.addrNocTxData),
         ...load16(1, 0x4242),
         pack2(poke(0, 1)),
@@ -263,9 +256,9 @@ void main() {
       ]);
 
       // Core 2 program (worker core 2 hops from Core 0):
-      //  - Stores CPUID -> [0x0300], configures ch 0 -> (dstCore=0, dstCh=0), idles at 0x0120
-      //  - Trap 14 (0x01E0): reads MBOX src -> [0x0301], MBOX data -> [0x0302],
-      //    pops DATA from ch 0 (0x4242), increments to 0x4243 -> [0x0303],
+      //  - Stores CPUID -> [0x0300], sets NOC_DST_CORE = 0, idles at 0x0120
+      //  - Trap 14 (0x01E0): reads MBOX src -> [0x0301] (0), MBOX data -> [0x0302] (0xCAFE),
+      //    pops DATA (0x4242), increments to 0x4243 -> [0x0303],
       //    sends 0x4243 back to Core 0 as MBOX, increments trap count [0x0304], returns!
       final core2Mem = <int, int>{};
       emitProg(core2Mem, 0x0100, [
@@ -273,15 +266,9 @@ void main() {
         pack2(peek(1, 0)),
         ...load16(2, 0x0300),
         pack2(poke(2, 1)),
-        // Route ch 0 -> (dstCore=0, dstCh=0)
-        ...load16(0, MiniRISC4Constants.addrNocSelCh),
+        // NOC_DST_CORE = 0
+        ...load16(0, MiniRISC4Constants.addrNocDstCore),
         ...load16(1, 0),
-        pack2(poke(0, 1)),
-        ...load16(0, MiniRISC4Constants.addrNocChCfg0),
-        ...load16(1, 0x0000),
-        pack2(poke(0, 1)),
-        ...load16(0, MiniRISC4Constants.addrNocChCfg1),
-        ...load16(1, 1),
         pack2(poke(0, 1)),
         ...load16(3, 0x0120),
         pack2(jmp(3)),
@@ -300,7 +287,7 @@ void main() {
         pack2(peek(1, 0)),
         ...load16(2, 0x0302),
         pack2(poke(2, 1)),
-        // Pop DATA word from ch 0, compute +1, store to [0x0303], reply MBOX to Core 0
+        // Pop DATA word, compute +1, store to [0x0303], reply MBOX to Core 0
         ...load16(0, MiniRISC4Constants.addrNocRxTryR),
         pack2(peek(1, 0), inc(1)),
         ...load16(2, 0x0303),
@@ -331,8 +318,7 @@ void main() {
           enableMathAccel: false,
           trapTableBase: 0x0100,
           memWords: 2048,
-          nocChannels: 4,
-          nocFifoDepth: 4,
+          nocFifoDepth: 16,
         ),
         nocCores: 3,
         workerMemWords: 2048,
@@ -350,22 +336,22 @@ void main() {
       });
 
       Simulator.registerAction(3000, () {
-        // CPUID & NOC_INFO checks across all 3 real CpuCores
+        // CPUID & NOC_INFO ({fifoDepth=16, numCores=3} = 0x1003) across all 3 real CpuCores
         expect(top.cores[0].ram.mem[0x0300], equals(0));
         expect(top.cores[1].ram.mem[0x0300], equals(1));
-        expect(top.cores[1].ram.mem[0x0301], equals((4 << 8) | 3));
+        expect(top.cores[1].ram.mem[0x0301], equals((16 << 8) | 3));
         expect(top.cores[2].ram.mem[0x0300], equals(2));
 
-        // Core 2 received Core 0's 2-hop MBOX (0xCAFE from Core 0 ch 1),
+        // Core 2 received Core 0's 2-hop MBOX (0xCAFE from Core 0),
         // popped DATA (0x4242 -> 0x4243), and trapped exactly ONCE
-        expect(top.cores[2].ram.mem[0x0301], equals(0x0001));
+        expect(top.cores[2].ram.mem[0x0301], equals(0));
         expect(top.cores[2].ram.mem[0x0302], equals(0xCAFE));
         expect(top.cores[2].ram.mem[0x0303], equals(0x4243));
         expect(top.cores[2].ram.mem[0x0304], equals(1));
 
-        // Core 0 received Core 2's reply MBOX (0x4243 from Core 2 ch 0)
+        // Core 0 received Core 2's reply MBOX (0x4243 from Core 2)
         // via hardware Trap 14 and trapped exactly ONCE
-        expect(top.cores[0].ram.mem[0x0301], equals(0x0200));
+        expect(top.cores[0].ram.mem[0x0301], equals(2));
         expect(top.cores[0].ram.mem[0x0302], equals(0x4243));
         expect(top.cores[0].ram.mem[0x0304], equals(1));
 

@@ -119,6 +119,7 @@ class NocMultiCoreCacheWrapper extends Module {
       res.add(addInput('mmioRe_$c', mmioRe[c]));
       readys.add(addInput('netOutReady_$c', netOutReady[c]));
       addOutput('mmioRdata_$c', width: MiniRISC4Constants.dataWidth);
+      addOutput('mmioRdataReg_$c', width: MiniRISC4Constants.dataWidth);
       addOutput('mboxTrapReq_$c');
       addOutput('netOutValid_$c');
       addOutput('netOutType_$c');
@@ -172,6 +173,7 @@ class NocMultiCoreCacheWrapper extends Module {
       );
 
       output('mmioRdata_$c') <= ni.output('mmioRdata');
+      output('mmioRdataReg_$c') <= ni.output('mmioRdataReg');
       output('mboxTrapReq_$c') <= ni.output('mboxTrapReq');
       output('netOutValid_$c') <= ni.output('netOutValid');
       output('netOutType_$c') <= ni.output('netOutType');

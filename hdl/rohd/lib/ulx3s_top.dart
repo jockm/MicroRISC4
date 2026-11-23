@@ -180,7 +180,7 @@ class Ulx3sTop extends Module {
         fifoDepth: config.nocFifoDepth,
         name: 'ulx3s_noc_fabric',
       );
-      nocRdataCore0 <= nocFabric.output('mmioRdata_0');
+      nocRdataCore0 <= nocFabric.output('mmioRdataReg_0');
       led <= [
         pll.locked,
         nocFabric.output('mboxTrapReq_0'),

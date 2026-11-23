@@ -6,6 +6,7 @@
 import 'dart:io';
 import 'package:rohd/rohd.dart';
 import 'package:minirisc4_rohd/cpu_config.dart';
+import 'package:minirisc4_rohd/tdp_bram.dart';
 import 'package:minirisc4_rohd/ulx3s_top.dart';
 
 void main(List<String> args) async {
@@ -65,6 +66,11 @@ void main(List<String> args) async {
   if (!dir.existsSync()) {
     dir.createSync(recursive: true);
   }
+  TdpBram.writeBankHexFiles(
+    hexFileName: hexPath,
+    outDir: dir.path,
+    depth: memWords,
+  );
   final outFile = File('${dir.path}/ulx3s_top_rohd.sv');
   await outFile.writeAsString(generatedSv);
 

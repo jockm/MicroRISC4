@@ -14,6 +14,62 @@ class TdpBram extends Module with SystemVerilog {
   final String? initHexFile;
   final Uint16List mem;
 
+  static const int maxSingleBankWords = 16384;
+
+  static String bankHexName(String hexPath, int bankIndex) {
+    final dot = hexPath.lastIndexOf('.');
+    if (dot > 0) {
+      return '${hexPath.substring(0, dot)}_b$bankIndex${hexPath.substring(dot)}';
+    }
+    return '${hexPath}_b$bankIndex';
+  }
+
+  /// Parses a standard `$readmemh` file (supporting `@addr` directives) into a
+  /// flat [Uint16List] of length [depth].
+  static Uint16List parseHexFile(String path, int depth) {
+    final words = Uint16List(depth);
+    final file = File(path);
+    if (!file.existsSync()) return words;
+    var idx = 0;
+    for (final raw in file.readAsLinesSync()) {
+      final line = raw.trim();
+      if (line.isEmpty || line.startsWith('//')) continue;
+      if (line.startsWith('@')) {
+        idx = int.parse(line.substring(1), radix: 16);
+        continue;
+      }
+      if (idx < depth) {
+        words[idx++] = int.parse(line, radix: 16) & 0xFFFF;
+      }
+    }
+    return words;
+  }
+
+  /// Writes per-bank hex initialization files into [outDir] when [depth] uses
+  /// banked `16K`-word DP16KD arrays.
+  static void writeBankHexFiles({
+    required String hexFileName,
+    required String outDir,
+    required int depth,
+  }) {
+    if (depth <= maxSingleBankWords || depth % maxSingleBankWords != 0) {
+      return;
+    }
+    final srcPath = '$outDir/$hexFileName';
+    if (!File(srcPath).existsSync()) return;
+    final words = parseHexFile(srcPath, depth);
+    final bankCount = depth ~/ maxSingleBankWords;
+    for (var b = 0; b < bankCount; b++) {
+      final base = b * maxSingleBankWords;
+      final buf = StringBuffer();
+      for (var i = 0; i < maxSingleBankWords; i++) {
+        buf.writeln(words[base + i].toRadixString(16).padLeft(4, '0'));
+      }
+      final bankFile = File('$outDir/${bankHexName(hexFileName, b)}');
+      bankFile.writeAsStringSync(buf.toString());
+    }
+  }
+
   TdpBram({
     required Logic clk,
     required Logic portAAddr,
@@ -28,22 +84,9 @@ class TdpBram extends Module with SystemVerilog {
     Map<int, int>? initialMemory,
     super.name = 'tdp_bram',
   })  : addrWidth = (depth - 1).bitLength,
-        mem = Uint16List(depth) {
-    if (initHexFile != null && File(initHexFile!).existsSync()) {
-      final lines = File(initHexFile!).readAsLinesSync();
-      var idx = 0;
-      for (final raw in lines) {
-        final line = raw.trim();
-        if (line.isEmpty || line.startsWith('//')) continue;
-        if (line.startsWith('@')) {
-          idx = int.parse(line.substring(1), radix: 16);
-          continue;
-        }
-        if (idx < depth) {
-          mem[idx++] = int.parse(line, radix: 16) & 0xFFFF;
-        }
-      }
-    }
+        mem = (initHexFile != null && File(initHexFile).existsSync())
+            ? parseHexFile(initHexFile, depth)
+            : Uint16List(depth) {
     if (initialMemory != null) {
       initialMemory.forEach((addr, val) {
         if (addr >= 0 && addr < depth) {
@@ -86,7 +129,6 @@ class TdpBram extends Module with SystemVerilog {
       if (bEn && bAddr < depth) {
         if (bWe) {
           mem[bAddr] = bWdata & 0xFFFF;
-          portBRdataRaw = bWdata & 0xFFFF;
         } else {
           portBRdataRaw = mem[bAddr];
         }
@@ -107,7 +149,103 @@ class TdpBram extends Module with SystemVerilog {
 
   @override
   String definitionVerilog(String definitionType) {
-    final initBlock = (initHexFile != null && initHexFile!.isNotEmpty)
+    final hasInit = initHexFile != null && initHexFile!.isNotEmpty;
+
+    // For depths > 16384 words (e.g., 65536), split into 16K-word banks so each
+    // bank maps cleanly to 16 x (16K x 1) DP16KD blocks with zero intra-bank
+    // output muxing, followed by a registered inter-bank mux (2-cycle total).
+    if (depth > maxSingleBankWords && depth % maxSingleBankWords == 0) {
+      final bankCount = depth ~/ maxSingleBankWords;
+      const bankAddrBits = 14;
+      final bankSelWidth = (bankCount - 1).bitLength;
+      final bankSelHi = addrWidth - 1;
+
+      final bankDecls = List.generate(bankCount, (b) {
+        final initStmt = hasInit
+            ? '\n  initial \$readmemh("${bankHexName(initHexFile!, b)}", bank${b}_mem);'
+            : '';
+        return '''
+  (* ram_style = "block", no_rw_check *)
+  logic [${dataWidth - 1}:0] bank${b}_mem [0:${maxSingleBankWords - 1}];$initStmt
+  logic [${dataWidth - 1}:0] bank${b}_a_raw;
+  logic [${dataWidth - 1}:0] bank${b}_b_raw;
+  logic bank${b}_we;
+  assign bank${b}_we = port_b_we & (port_b_addr[$bankSelHi:$bankAddrBits] == $bankSelWidth'd$b);''';
+      }).join('\n');
+
+      final bankAReads = List.generate(
+        bankCount,
+        (b) => '      bank${b}_a_raw <= bank${b}_mem[port_a_addr[${bankAddrBits - 1}:0]];',
+      ).join('\n');
+
+      final bankBOps = List.generate(
+        bankCount,
+        (b) => '''
+      if (bank${b}_we) begin
+        bank${b}_mem[port_b_addr[${bankAddrBits - 1}:0]] <= port_b_wdata;
+      end else begin
+        bank${b}_b_raw <= bank${b}_mem[port_b_addr[${bankAddrBits - 1}:0]];
+      end''',
+      ).join('\n');
+
+      final bankACases = List.generate(
+        bankCount,
+        (b) => b == bankCount - 1
+            ? '      default: port_a_rdata <= bank${b}_a_raw;'
+            : "      $bankSelWidth'd$b: port_a_rdata <= bank${b}_a_raw;",
+      ).join('\n');
+
+      final bankBCases = List.generate(
+        bankCount,
+        (b) => b == bankCount - 1
+            ? '      default: port_b_rdata <= bank${b}_b_raw;'
+            : "      $bankSelWidth'd$b: port_b_rdata <= bank${b}_b_raw;",
+      ).join('\n');
+
+      return '''
+module $definitionType (
+  input  logic clk,
+  input  logic [${addrWidth - 1}:0] port_a_addr,
+  input  logic port_a_en,
+  output logic [${dataWidth - 1}:0] port_a_rdata,
+  input  logic [${addrWidth - 1}:0] port_b_addr,
+  input  logic [${dataWidth - 1}:0] port_b_wdata,
+  input  logic port_b_we,
+  input  logic port_b_en,
+  output logic [${dataWidth - 1}:0] port_b_rdata
+);
+$bankDecls
+
+  logic [${bankSelWidth - 1}:0] a_bank_q;
+  logic [${bankSelWidth - 1}:0] b_bank_q;
+
+  always_ff @(posedge clk) begin
+    if (port_a_en) begin
+      a_bank_q <= port_a_addr[$bankSelHi:$bankAddrBits];
+$bankAReads
+    end
+  end
+
+  always_ff @(posedge clk) begin
+    if (port_b_en) begin
+      b_bank_q <= port_b_addr[$bankSelHi:$bankAddrBits];
+$bankBOps
+    end
+  end
+
+  always_ff @(posedge clk) begin
+    case (a_bank_q)
+$bankACases
+    endcase
+    case (b_bank_q)
+$bankBCases
+    endcase
+  end
+endmodule
+''';
+    }
+
+    final initBlock = hasInit
         ? """
   initial begin
     \$readmemh("$initHexFile", mem);
@@ -127,7 +265,7 @@ module $definitionType (
   input  logic port_b_en,
   output logic [${dataWidth - 1}:0] port_b_rdata
 );
-  (* ram_style = "block" *)
+  (* ram_style = "block", no_rw_check *)
   logic [${dataWidth - 1}:0] mem [0:${depth - 1}];
 $initBlock
   logic [${dataWidth - 1}:0] port_a_rdata_raw;
@@ -144,7 +282,6 @@ $initBlock
     if (port_b_en) begin
       if (port_b_we) begin
         mem[port_b_addr] <= port_b_wdata;
-        port_b_rdata_raw <= port_b_wdata;
       end else begin
         port_b_rdata_raw <= mem[port_b_addr];
       end

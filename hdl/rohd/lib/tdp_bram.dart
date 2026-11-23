@@ -169,6 +169,8 @@ class TdpBram extends Module with SystemVerilog {
   logic [${dataWidth - 1}:0] bank${b}_mem [0:${maxSingleBankWords - 1}];$initStmt
   logic [${dataWidth - 1}:0] bank${b}_a_raw;
   logic [${dataWidth - 1}:0] bank${b}_b_raw;
+  (* keep = "true" *) logic [${dataWidth - 1}:0] bank${b}_a_q;
+  (* keep = "true" *) logic [${dataWidth - 1}:0] bank${b}_b_q;
   logic bank${b}_we;
   assign bank${b}_we = port_b_we & (port_b_addr[$bankSelHi:$bankAddrBits] == $bankSelWidth'd$b);''';
       }).join('\n');
@@ -188,32 +190,39 @@ class TdpBram extends Module with SystemVerilog {
       end''',
       ).join('\n');
 
+      final bankLocalRegs = List.generate(
+        bankCount,
+        (b) => '''
+    bank${b}_a_q <= bank${b}_a_raw;
+    bank${b}_b_q <= bank${b}_b_raw;''',
+      ).join('\n');
+
       final String aMuxAssign;
       final String bMuxAssign;
       if (bankCount == 4) {
         aMuxAssign = '''
-    port_a_rdata <= a_bank_q[1]
-        ? (a_bank_q[0] ? bank3_a_raw : bank2_a_raw)
-        : (a_bank_q[0] ? bank1_a_raw : bank0_a_raw);''';
+  assign port_a_rdata = a_bank_q2[1]
+      ? (a_bank_q2[0] ? bank3_a_q : bank2_a_q)
+      : (a_bank_q2[0] ? bank1_a_q : bank0_a_q);''';
         bMuxAssign = '''
-    port_b_rdata <= b_bank_q[1]
-        ? (b_bank_q[0] ? bank3_b_raw : bank2_b_raw)
-        : (b_bank_q[0] ? bank1_b_raw : bank0_b_raw);''';
+  assign port_b_rdata = b_bank_q2[1]
+      ? (b_bank_q2[0] ? bank3_b_q : bank2_b_q)
+      : (b_bank_q2[0] ? bank1_b_q : bank0_b_q);''';
       } else {
         final bankACases = List.generate(
           bankCount,
           (b) => b == bankCount - 1
-              ? '      default: port_a_rdata <= bank${b}_a_raw;'
-              : "      $bankSelWidth'd$b: port_a_rdata <= bank${b}_a_raw;",
+              ? '      default: port_a_rdata = bank${b}_a_q;'
+              : "      $bankSelWidth'd$b: port_a_rdata = bank${b}_a_q;",
         ).join('\n');
         final bankBCases = List.generate(
           bankCount,
           (b) => b == bankCount - 1
-              ? '      default: port_b_rdata <= bank${b}_b_raw;'
-              : "      $bankSelWidth'd$b: port_b_rdata <= bank${b}_b_raw;",
+              ? '      default: port_b_rdata = bank${b}_b_q;'
+              : "      $bankSelWidth'd$b: port_b_rdata = bank${b}_b_q;",
         ).join('\n');
-        aMuxAssign = '    case (a_bank_q)\n$bankACases\n    endcase';
-        bMuxAssign = '    case (b_bank_q)\n$bankBCases\n    endcase';
+        aMuxAssign = '  always_comb begin\n    case (a_bank_q2)\n$bankACases\n    endcase\n  end';
+        bMuxAssign = '  always_comb begin\n    case (b_bank_q2)\n$bankBCases\n    endcase\n  end';
       }
 
       return '''
@@ -230,27 +239,31 @@ module $definitionType (
 );
 $bankDecls
 
-  logic [${bankSelWidth - 1}:0] a_bank_q;
-  logic [${bankSelWidth - 1}:0] b_bank_q;
+  logic [${bankSelWidth - 1}:0] a_bank_q1, a_bank_q2;
+  logic [${bankSelWidth - 1}:0] b_bank_q1, b_bank_q2;
 
   always_ff @(posedge clk) begin
     if (port_a_en) begin
-      a_bank_q <= port_a_addr[$bankSelHi:$bankAddrBits];
+      a_bank_q1 <= port_a_addr[$bankSelHi:$bankAddrBits];
 $bankAReads
     end
   end
 
   always_ff @(posedge clk) begin
     if (port_b_en) begin
-      b_bank_q <= port_b_addr[$bankSelHi:$bankAddrBits];
+      b_bank_q1 <= port_b_addr[$bankSelHi:$bankAddrBits];
 $bankBOps
     end
   end
 
   always_ff @(posedge clk) begin
+    a_bank_q2 <= a_bank_q1;
+    b_bank_q2 <= b_bank_q1;
+$bankLocalRegs
+  end
+
 $aMuxAssign
 $bMuxAssign
-  end
 endmodule
 ''';
     }

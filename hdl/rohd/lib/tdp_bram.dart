@@ -106,38 +106,65 @@ class TdpBram extends Module with SystemVerilog {
     final portARdata = addOutput('port_a_rdata', width: dataWidth);
     final portBRdata = addOutput('port_b_rdata', width: dataWidth);
 
-    portARdata.put(0);
-    portBRdata.put(0);
-    var portARdataRaw = 0;
-    var portBRdataRaw = 0;
+    // Combinational array read taps + genuine ROHD Sequential stages so Dart
+    // simulation matches Verilog always_ff @(posedge clk) 100% cycle-for-cycle.
+    final aComb = Logic(name: 'a_comb_sim', width: dataWidth);
+    final bComb = Logic(name: 'b_comb_sim', width: dataWidth);
+    final portARdataRawSig =
+        Logic(name: 'port_a_rdata_raw_sim', width: dataWidth);
+    final portBRdataRawSig =
+        Logic(name: 'port_b_rdata_raw_sim', width: dataWidth);
 
-    clk.posedge.listen((_) {
-      final aEn = portAEn.value.isValid && portAEn.value.toBool();
-      final bEn = portBEn.value.isValid && portBEn.value.toBool();
-      final bWe = portBWe.value.isValid && portBWe.value.toBool();
+    // Latched write-port shadow registers for applying Port B writes after clk.
+    final wrFireQ = Logic(name: 'wr_fire_q_sim');
+    final wrAddrQ = Logic(name: 'wr_addr_q_sim', width: addrWidth);
+    final wrDataQ = Logic(name: 'wr_data_q_sim', width: dataWidth);
 
+    void refreshReads() {
       final aAddr = portAAddr.value.isValid ? portAAddr.value.toInt() : 0;
       final bAddr = portBAddr.value.isValid ? portBAddr.value.toInt() : 0;
-      final bWdata = portBWdata.value.isValid ? portBWdata.value.toInt() : 0;
+      aComb.put(aAddr < depth ? mem[aAddr] : 0);
+      bComb.put(bAddr < depth ? mem[bAddr] : 0);
+    }
 
-      final prevARaw = portARdataRaw;
-      final prevBRaw = portBRdataRaw;
+    aComb.put(0);
+    bComb.put(0);
+    portARdataRawSig.put(0);
+    portBRdataRawSig.put(0);
+    portARdata.put(0);
+    portBRdata.put(0);
+    wrFireQ.put(0);
+    wrAddrQ.put(0);
+    wrDataQ.put(0);
 
-      if (aEn && aAddr < depth) {
-        portARdataRaw = mem[aAddr];
-      }
-      if (bEn && bAddr < depth) {
-        if (bWe) {
-          mem[bAddr] = bWdata & 0xFFFF;
-        } else {
-          portBRdataRaw = mem[bAddr];
-        }
-      }
+    portAAddr.changed.listen((_) => refreshReads());
+    portBAddr.changed.listen((_) => refreshReads());
 
-      Simulator.clkStable.first.then(
+    Sequential(clk, [
+      If(portAEn, then: [
+        portARdataRawSig < aComb,
+      ]),
+      portARdata < portARdataRawSig,
+      If(portBEn & ~portBWe, then: [
+        portBRdataRawSig < bComb,
+      ]),
+      portBRdata < portBRdataRawSig,
+      wrFireQ < (portBEn & portBWe),
+      wrAddrQ < portBAddr,
+      wrDataQ < portBWdata,
+    ]);
+
+    clk.posedge.listen((_) {
+      Simulator.postTick.first.then(
         (_) {
-          portARdata.put(prevARaw);
-          portBRdata.put(prevBRaw);
+          if (wrFireQ.value.isValid && wrFireQ.value.toBool()) {
+            final wAddr = wrAddrQ.value.isValid ? wrAddrQ.value.toInt() : 0;
+            final wData = wrDataQ.value.isValid ? wrDataQ.value.toInt() : 0;
+            if (wAddr < depth) {
+              mem[wAddr] = wData & 0xFFFF;
+            }
+          }
+          refreshReads();
         },
         onError: (_) {},
       );

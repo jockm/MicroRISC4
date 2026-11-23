@@ -21,7 +21,7 @@
 
 ### Core Architecture Summary
 * **Word Size:** 16-bit word-addressed memory and registers (`r0`, `r1`, `r2`, `r3`, plus shadow registers `shadowR`).
-* **Instruction Staging:** Multi-cycle FSM executing two 8-bit instruction slots (`slotByte0`, `slotByte1`) per 16-bit word fetch (`_stReset` -> `_stFetch` -> `_stFetchWait` -> `_stFetchLatch` -> `_stExec`).
+* **Instruction Staging:** Zero-bubble prefetched execution pipeline running sequential two-slot words at **1 cycle per slot (2 cycles/word)** via a 1-word `nextInstReg` prefetch buffer fed by 2-cycle `TdpBram` (`PUSH8` = 2 cycles; branch refill = `_stFetch` -> `_stFetchWait` -> `_stFetchLatch` -> `_stExec`).
 * **Vector Table:** Direct Stride Vector Table starting at `0x0100` (`config.trapTableBase`). Stride = 16 words (32 bytes) per vector slot. Hardware jump dispatch calculates `PC <- 0x0100 + (vector << 4)`. Reset trap is at `0x0100`.
 * **Execution Start:** Reset vector jumps to `_main` at `0x0200` in `monitor.asm`.
 
@@ -129,7 +129,7 @@ make ulx3s-timing
 
 ### Priority 2: Timing & Pipeline Bottlenecks (`>100 MHz`)
 - [x] Redesign `TdpBram` read staging to remove wide multi-BRAM output muxes from critical path (`4 × 16K` banked `TdpBram` with `no_rw_check` + `NORMAL` write mode + per-bank hex init: cut `128 → 64 DP16KD`, `431 → 347 FF`, lifted $F_{\max}$ from `66.27 MHz` to `90.5–96.9 MHz` at 48 MHz target).
-- [ ] Separate instruction fetch pipeline from execution FSM states to achieve 1-cycle throughput per slot.
+- [x] Separate instruction fetch pipeline from execution FSM states to achieve 1-cycle throughput per slot (`nextInstReg` zero-bubble prefetch: 5 → 2 cycles/word sequential, 4 → 2 cycles `PUSH8`, 189-byte banner at 31,865 cycles ≈ 95% of 3 Mbaud wire speed; fixed `rxPop` `GETC` race and made `TdpBram` Dart sim cycle-exact via ROHD `Sequential`).
 - [ ] Optimize nextpnr timing parameters to reach `>100 MHz` clock target on ECP5-85k.
 
 ### Priority 3: Hardware NoC MMIO Transport (`0x0020`–`0x002A`)

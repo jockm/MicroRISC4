@@ -70,9 +70,15 @@ void shell_tokenize(void) {
 }
 
 void shell_cmd_ls(void) {
-    u16 fd = fat32_opendir_root(0);
+    u16 fd = fat32_opendir(0, sh_arg);
     if (fd == 0xFFFF) {
-        uart_puts("SD/FAT32 not mounted\r\n");
+        if (fat_mounted == 0) {
+            uart_puts("SD/FAT32 not mounted\r\n");
+        } else {
+            uart_puts("Directory not found: ");
+            uart_puts(sh_arg);
+            uart_nl();
+        }
         return;
     }
     while (fat32_readdir(fd, &sh_ent) == 0) {
@@ -85,6 +91,85 @@ void shell_cmd_ls(void) {
         uart_nl();
     }
     fat32_close(fd);
+}
+
+void shell_cmd_pwd(void) {
+    uart_puts(cwd_path);
+    uart_nl();
+}
+
+void shell_cmd_cd(void) {
+    u16 err = 0;
+    if (fat_mounted == 0) {
+        uart_puts("SD/FAT32 not mounted\r\n");
+        return;
+    }
+    err = fat32_chdir(sh_arg);
+    if (err != 0) {
+        uart_puts("Directory not found: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    }
+}
+
+void shell_cmd_mkdir(void) {
+    u16 err = 0;
+    if (getbyte(sh_arg, 0) == 0) {
+        uart_puts("Usage: mkdir <dir>\r\n");
+        return;
+    }
+    if (fat_mounted == 0) {
+        uart_puts("SD/FAT32 not mounted\r\n");
+        return;
+    }
+    err = fat32_mkdir(sh_arg);
+    if (err == 0) {
+        uart_puts("Created ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else if (err == 3) {
+        uart_puts("Already exists: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else {
+        uart_puts("Failed to mkdir: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    }
+}
+
+void shell_cmd_rmdir(void) {
+    u16 err = 0;
+    if (getbyte(sh_arg, 0) == 0) {
+        uart_puts("Usage: rmdir <dir>\r\n");
+        return;
+    }
+    if (fat_mounted == 0) {
+        uart_puts("SD/FAT32 not mounted\r\n");
+        return;
+    }
+    err = fat32_rmdir(sh_arg);
+    if (err == 0) {
+        uart_puts("Removed dir ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else if (err == 3) {
+        uart_puts("Directory not empty: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else if (err == 4) {
+        uart_puts("Cannot remove current dir: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else if (err == 2) {
+        uart_puts("Directory not found: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else {
+        uart_puts("Failed to rmdir: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    }
 }
 
 void shell_cmd_cat(void) {
@@ -103,7 +188,7 @@ void shell_cmd_cat(void) {
         return;
     }
 
-    wds = fat32_read_file_root(sh_arg, run_img_buf, RUN_BUF_MAX);
+    wds = fat32_read_file(sh_arg, run_img_buf, RUN_BUF_MAX);
     if (fat32_last_found == 0) {
         uart_puts("File not found: ");
         uart_puts(sh_arg);
@@ -143,13 +228,17 @@ void shell_cmd_rm(void) {
         uart_puts("SD/FAT32 not mounted\r\n");
         return;
     }
-    err = fat32_unlink_root(sh_arg);
+    err = fat32_unlink(sh_arg);
     if (err == 0) {
         uart_puts("Removed ");
         uart_puts(sh_arg);
         uart_nl();
     } else if (err == 2) {
         uart_puts("File not found: ");
+        uart_puts(sh_arg);
+        uart_nl();
+    } else if (err == 3) {
+        uart_puts("Is a directory (use rmdir): ");
         uart_puts(sh_arg);
         uart_nl();
     } else {
@@ -186,7 +275,7 @@ void shell_cmd_write(void) {
     setbyte(run_img_buf, o, 10);    // append '\n'
     o++;
 
-    fd = fat32_open_write_root(0, sh_arg);
+    fd = fat32_open_write(0, sh_arg);
     if (fd == 0xFFFF) {
         uart_puts("Failed to create: ");
         uart_puts(sh_arg);
@@ -219,7 +308,7 @@ void shell_cmd_stat(void) {
         uart_puts("SD/FAT32 not mounted\r\n");
         return;
     }
-    err = fat32_stat_root(sh_arg, &sh_ent);
+    err = fat32_stat(sh_arg, &sh_ent);
     if (err == 2) {
         uart_puts("File not found: ");
         uart_puts(sh_arg);
@@ -282,7 +371,7 @@ void shell_exec(void) {
     }
 
     if (str_eq(sh_cmd, "help") == 1) {
-        uart_puts("Commands: ps, run <file>, kill <pid>, ls, cat <file>, stat <file>, write <file> <text>, rm <file>, echo <text>, clear\r\n");
+        uart_puts("Commands: ps, run <file>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write <file> <text>, rm <file>, echo <text>, clear\r\n");
     } else if (str_eq(sh_cmd, "ps") == 1) {
         proc_print_ps();
     } else if (str_eq(sh_cmd, "kill") == 1) {
@@ -295,13 +384,21 @@ void shell_exec(void) {
         } else {
             uart_puts("kill failed\r\n");
         }
+    } else if (str_eq(sh_cmd, "pwd") == 1) {
+        shell_cmd_pwd();
+    } else if (str_eq(sh_cmd, "cd") == 1) {
+        shell_cmd_cd();
     } else if (str_eq(sh_cmd, "ls") == 1) {
         shell_cmd_ls();
+    } else if (str_eq(sh_cmd, "mkdir") == 1) {
+        shell_cmd_mkdir();
+    } else if (str_eq(sh_cmd, "rmdir") == 1) {
+        shell_cmd_rmdir();
     } else if (str_eq(sh_cmd, "run") == 1) {
         if (getbyte(sh_arg, 0) == 0) {
             uart_puts("Usage: run <file>\r\n");
         } else {
-            err = fat32_read_file_root(sh_arg, run_img_buf, RUN_BUF_MAX);
+            err = fat32_read_file(sh_arg, run_img_buf, RUN_BUF_MAX);
             if (err == 0) {
                 uart_puts("Failed to load file: ");
                 uart_puts(sh_arg);

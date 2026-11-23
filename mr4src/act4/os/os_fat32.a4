@@ -1,9 +1,17 @@
 // ==============================================================================
 // FILE: mr4src/act4/os/os_fat32.a4
-// Core 0 FAT32 Filesystem Driver (8.3 Names)
+// Core 0 FAT32 Filesystem Driver (8.3 Names, Subdirectories & Path Traversal)
 // ==============================================================================
 
-u16 sec_buf[256];               // Shared 512-byte (256-word) sector buffer
+const u16 FD_MAX          = 8;
+const u16 CWD_PATH_WORDS  = 32;         // 64-byte packed CWD string
+
+const u16 ATTR_VOLUME_ID  = 0x0008;
+const u16 ATTR_DIRECTORY  = 0x0010;
+const u16 ATTR_ARCHIVE    = 0x0020;
+const u16 ATTR_LFN        = 0x000F;
+
+u16 sec_buf[256];                       // Shared 512-byte (256-word) sector buffer
 
 // Mounted volume geometry (32-bit LBAs stored as hi/lo u16 pairs)
 u16 fat_lba_lo     = 0;
@@ -17,15 +25,34 @@ u16 fat_num_fats   = 0;
 u16 fat_sz_lo      = 0;
 u16 fat_sz_hi      = 0;
 u16 fat_mounted    = 0;
+
+// Current Working Directory state
+u16 cwd_clus_lo    = 0;
+u16 cwd_clus_hi    = 0;
+u16 cwd_path[CWD_PATH_WORDS];
+
+// Last lookup / read_file result globals
 u16 fat32_last_found   = 0;
 u16 fat32_last_size_lo = 0;
 u16 fat32_last_size_hi = 0;
+
+u16 fat_dir_clus_lo    = 0;
+u16 fat_dir_clus_hi    = 0;
+u16 fat_ent_clus_lo    = 0;
+u16 fat_ent_clus_hi    = 0;
+u16 fat_ent_size_lo    = 0;
+u16 fat_ent_size_hi    = 0;
+u16 fat_ent_attr       = 0;
+u16 fat_ent_lba_lo     = 0;
+u16 fat_ent_lba_hi     = 0;
+u16 fat_ent_off        = 0;
+u16 fat_leaf_name[8];                   // 16-byte packed leaf component
 
 type DirEntry {
     u16 attr;
     u16 size_lo;
     u16 size_hi;
-    u16 name[8];                // Null-terminated "FILENAME.EXT"
+    u16 name[8];                        // Null-terminated "FILENAME.EXT"
 };
 
 type FileHandle {
@@ -34,19 +61,19 @@ type FileHandle {
     u16 owner_core;
     u16 cur_clus_lo;
     u16 cur_clus_hi;
-    u16 sec_in_clus;            // 0 .. (sec_per_clus - 1)
-    u16 byte_in_sec;            // 0 .. 511
+    u16 sec_in_clus;                    // 0 .. (sec_per_clus - 1)
+    u16 byte_in_sec;                    // 0 .. 511
     u16 size_lo;
     u16 size_hi;
     u16 pos_lo;
     u16 pos_hi;
-    u16 writable;               // 0 = read-only, 1 = write
-    u16 dir_lba_lo;             // Root dir sector LBA for size sync
+    u16 writable;                       // 0 = read-only, 1 = write
+    u16 dir_lba_lo;                     // Parent dir sector LBA for size sync
     u16 dir_lba_hi;
-    u16 dir_off;                // Byte offset (0..480) of 32-byte entry
+    u16 dir_off;                        // Byte offset (0..480) of 32-byte entry
 };
 
-FileHandle fds[8];
+FileHandle fds[FD_MAX];
 
 // --- Little-Endian Unaligned Helpers (using ACT4 getbyte/setbyte) ---
 u16 rd_u16(u16 *buf, u16 off) {
@@ -66,7 +93,7 @@ void add32(u16 a_hi, u16 a_lo, u16 b_hi, u16 b_lo) {
     tmp32_lo = a_lo + b_lo;
     tmp32_hi = a_hi + b_hi;
     if (tmp32_lo < a_lo) {
-        tmp32_hi++;             // Carry into high word
+        tmp32_hi++;                     // Carry into high word
     }
 }
 
@@ -104,7 +131,7 @@ u16 fat32_next_cluster(u16 clus_hi, u16 clus_lo) {
     tmp32_hi = rd_u16(sec_buf, ent_off + 2) & 0x0FFF;
 
     if (tmp32_hi >= 0x0FFF && tmp32_lo >= 0xFFF8) {
-        return 1;               // End of cluster chain
+        return 1;                       // End of cluster chain
     }
     return 0;
 }
@@ -161,6 +188,12 @@ u16 fat32_mount(void) {
         i++;
     }
 
+    // Initialize CWD to root ("/")
+    cwd_clus_hi = root_clus_hi;
+    cwd_clus_lo = root_clus_lo;
+    setbyte(cwd_path, 0, 47);           // '/'
+    setbyte(cwd_path, 1, 0);
+
     fat_mounted = 1;
     return 0;
 }
@@ -182,7 +215,7 @@ void format_83_name(u16 off, u16 *dst) {
     }
     // 3-char extension (only add '.' if non-blank)
     if (getbyte(sec_buf, off + 8) != 32) {
-        setbyte(dst, o, 46);    // '.'
+        setbyte(dst, o, 46);            // '.'
         o++;
         i = 8;
         while (i < 11) {
@@ -237,19 +270,496 @@ void encode_83_name(u16 *src, u16 *dst11) {
     }
 }
 
-// Open root directory ("/") into a FileHandle slot (returns fd or 0xFFFF)
-u16 fat32_opendir_root(u16 owner_core) {
-    u16 fd = 0;
+// Return 1 if name == ".", 2 if name == "..", else 0
+u16 fat32_is_dot(u16 *name) {
+    u16 c0 = getbyte(name, 0);
+    u16 c1 = getbyte(name, 1);
+    u16 c2 = getbyte(name, 2);
+    if (c0 == 46 && c1 == 0) {
+        return 1;
+    }
+    if (c0 == 46 && c1 == 46 && c2 == 0) {
+        return 2;
+    }
+    return 0;
+}
+
+// Free an entire FAT32 cluster chain starting at (clus_hi:clus_lo) across all FAT copies
+u16 fat32_free_chain(u16 clus_hi, u16 clus_lo) {
+    u16 fat_sec_lo = 0;
+    u16 fat_sec_hi = 0;
+    u16 ent_off    = 0;
+    u16 next_lo    = 0;
+    u16 next_hi    = 0;
+    u16 hi_rsvd    = 0;
+    u16 cur_lba_lo = 0;
+    u16 cur_lba_hi = 0;
+    u16 f_idx      = 0;
+
+    while (clus_hi != 0 || clus_lo >= 2) {
+        fat_sec_lo = (clus_lo >> 7) | (clus_hi << 9);
+        fat_sec_hi = clus_hi >> 7;
+        ent_off    = (clus_lo & 0x007F) << 2;
+
+        add32(fat_lba_hi, fat_lba_lo, fat_sec_hi, fat_sec_lo);
+        cur_lba_hi = tmp32_hi;
+        cur_lba_lo = tmp32_lo;
+        if (sd_read_sector(cur_lba_hi, cur_lba_lo, sec_buf) != 0) {
+            return 1;
+        }
+
+        next_lo = rd_u16(sec_buf, ent_off);
+        hi_rsvd = rd_u16(sec_buf, ent_off + 2);
+        next_hi = hi_rsvd & 0x0FFF;
+
+        // Zero cluster pointer bits while preserving top 4 reserved bits
+        wr_u16(sec_buf, ent_off, 0);
+        wr_u16(sec_buf, ent_off + 2, hi_rsvd & 0xF000);
+
+        // Write updated FAT sector to every FAT copy
+        f_idx = 0;
+        while (f_idx < fat_num_fats) {
+            if (sd_write_sector(cur_lba_hi, cur_lba_lo, sec_buf) != 0) {
+                return 1;
+            }
+            add32(cur_lba_hi, cur_lba_lo, fat_sz_hi, fat_sz_lo);
+            cur_lba_hi = tmp32_hi;
+            cur_lba_lo = tmp32_lo;
+            f_idx++;
+        }
+
+        if ((next_hi >= 0x0FFF && next_lo >= 0xFFF8) || (next_hi == 0 && next_lo < 2)) {
+            return 0;
+        }
+        clus_hi = next_hi;
+        clus_lo = next_lo;
+    }
+    return 0;
+}
+
+// Write a 28-bit FAT32 entry value for (clus_hi:clus_lo) across all FAT copies
+u16 fat32_set_entry(u16 clus_hi, u16 clus_lo, u16 val_hi, u16 val_lo) {
+    u16 fat_sec_lo = (clus_lo >> 7) | (clus_hi << 9);
+    u16 fat_sec_hi = clus_hi >> 7;
+    u16 ent_off    = (clus_lo & 0x007F) << 2;
+    u16 hi_rsvd    = 0;
+    u16 cur_lba_lo = 0;
+    u16 cur_lba_hi = 0;
+    u16 f_idx      = 0;
+
+    add32(fat_lba_hi, fat_lba_lo, fat_sec_hi, fat_sec_lo);
+    cur_lba_hi = tmp32_hi;
+    cur_lba_lo = tmp32_lo;
+    if (sd_read_sector(cur_lba_hi, cur_lba_lo, sec_buf) != 0) {
+        return 1;
+    }
+
+    hi_rsvd = rd_u16(sec_buf, ent_off + 2) & 0xF000;
+    wr_u16(sec_buf, ent_off, val_lo);
+    wr_u16(sec_buf, ent_off + 2, hi_rsvd | (val_hi & 0x0FFF));
+
+    while (f_idx < fat_num_fats) {
+        if (sd_write_sector(cur_lba_hi, cur_lba_lo, sec_buf) != 0) {
+            return 1;
+        }
+        add32(cur_lba_hi, cur_lba_lo, fat_sz_hi, fat_sz_lo);
+        cur_lba_hi = tmp32_hi;
+        cur_lba_lo = tmp32_lo;
+        f_idx++;
+    }
+    return 0;
+}
+
+// Allocate a free FAT32 cluster, mark EOC across all FAT copies, zero its sectors.
+// Result returned in (tmp32_hi:tmp32_lo). Returns 0 = OK, 1 = full/error.
+u16 fat32_alloc_cluster(void) {
+    u16 sec        = 0;
+    u16 max_sec    = fat_sz_lo;
+    u16 e          = 0;
+    u16 ent_off    = 0;
+    u16 lo         = 0;
+    u16 hi         = 0;
+    u16 hi_rsvd    = 0;
+    u16 alloc_lo   = 0;
+    u16 alloc_hi   = 0;
+    u16 cur_lba_lo = 0;
+    u16 cur_lba_hi = 0;
+    u16 f_idx      = 0;
+    u16 s_idx      = 0;
+    u16 w_idx      = 0;
+
+    if (fat_sz_hi != 0) {
+        max_sec = 0xFFFF;
+    }
+
+    while (sec < max_sec) {
+        add32(fat_lba_hi, fat_lba_lo, 0, sec);
+        cur_lba_hi = tmp32_hi;
+        cur_lba_lo = tmp32_lo;
+        if (sd_read_sector(cur_lba_hi, cur_lba_lo, sec_buf) != 0) {
+            return 1;
+        }
+
+        e = 0;
+        if (sec == 0) {
+            e = 2;                      // Clusters 0 and 1 are reserved
+        }
+        while (e < 128) {
+            ent_off = e << 2;
+            lo = rd_u16(sec_buf, ent_off);
+            hi = rd_u16(sec_buf, ent_off + 2);
+            if (lo == 0 && (hi & 0x0FFF) == 0) {
+                alloc_lo = (sec << 7) | e;
+                alloc_hi = sec >> 9;
+
+                // Mark EOC (0x0FFFFFFF) in sec_buf and write to every FAT copy
+                hi_rsvd = hi & 0xF000;
+                wr_u16(sec_buf, ent_off, 0xFFFF);
+                wr_u16(sec_buf, ent_off + 2, hi_rsvd | 0x0FFF);
+
+                f_idx = 0;
+                while (f_idx < fat_num_fats) {
+                    if (sd_write_sector(cur_lba_hi, cur_lba_lo, sec_buf) != 0) {
+                        return 1;
+                    }
+                    add32(cur_lba_hi, cur_lba_lo, fat_sz_hi, fat_sz_lo);
+                    cur_lba_hi = tmp32_hi;
+                    cur_lba_lo = tmp32_lo;
+                    f_idx++;
+                }
+
+                // Zero all sectors in the newly allocated cluster
+                w_idx = 0;
+                while (w_idx < 256) {
+                    sec_buf[w_idx] = 0;
+                    w_idx++;
+                }
+                s_idx = 0;
+                while (s_idx < sec_per_clus) {
+                    cluster_to_lba(alloc_hi, alloc_lo);
+                    add32(tmp32_hi, tmp32_lo, 0, s_idx);
+                    if (sd_write_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
+                        return 1;
+                    }
+                    s_idx++;
+                }
+
+                tmp32_hi = alloc_hi;
+                tmp32_lo = alloc_lo;
+                return 0;
+            }
+            e++;
+        }
+        sec++;
+    }
+    return 1;
+}
+
+// ==============================================================================
+// Directory Search & Path Resolution Helpers
+// ==============================================================================
+
+// Scan directory cluster chain (dir_hi:dir_lo) for an 8.3 entry matching `name`
+// (case-insensitive). Populates fat_ent_* globals on match.
+// Returns 0 = found, 1 = I/O error, 2 = not found.
+u16 fat32_find_in_dir(u16 dir_hi, u16 dir_lo, u16 *name) {
+    u16 scan_hi = dir_hi;
+    u16 scan_lo = dir_lo;
+    u16 sec_idx = 0;
+    u16 off     = 0;
+    u16 first   = 0;
+    u16 attr    = 0;
+    u16 lba_hi  = 0;
+    u16 lba_lo  = 0;
+    u16 entry_name[8];
+
+    while (true) {
+        sec_idx = 0;
+        while (sec_idx < sec_per_clus) {
+            cluster_to_lba(scan_hi, scan_lo);
+            add32(tmp32_hi, tmp32_lo, 0, sec_idx);
+            lba_hi = tmp32_hi;
+            lba_lo = tmp32_lo;
+            if (sd_read_sector(lba_hi, lba_lo, sec_buf) != 0) {
+                return 1;
+            }
+            off = 0;
+            while (off < 512) {
+                first = getbyte(sec_buf, off);
+                attr  = getbyte(sec_buf, off + 11);
+                if (first == 0x00) {
+                    return 2;
+                }
+                if (first != 0xE5 && attr != ATTR_LFN && (attr & ATTR_VOLUME_ID) == 0) {
+                    format_83_name(off, entry_name);
+                    if (str_eq_ci(entry_name, name) == 1) {
+                        fat_ent_attr    = attr;
+                        fat_ent_clus_lo = rd_u16(sec_buf, off + 26);
+                        fat_ent_clus_hi = rd_u16(sec_buf, off + 20);
+                        fat_ent_size_lo = rd_u16(sec_buf, off + 28);
+                        fat_ent_size_hi = rd_u16(sec_buf, off + 30);
+                        fat_ent_lba_hi  = lba_hi;
+                        fat_ent_lba_lo  = lba_lo;
+                        fat_ent_off     = off;
+                        return 0;
+                    }
+                }
+                off = off + 32;
+            }
+            sec_idx++;
+        }
+        if (fat32_next_cluster(scan_hi, scan_lo) != 0) {
+            return 2;
+        }
+        scan_hi = tmp32_hi;
+        scan_lo = tmp32_lo;
+    }
+    return 2;
+}
+
+// Find a free (0x00) or deleted (0xE5) 32-byte slot in directory (dir_hi:dir_lo),
+// extending the directory cluster chain if necessary.
+// Result written to fat_ent_lba_hi, fat_ent_lba_lo, fat_ent_off. Returns 0 = OK, 1 = error.
+u16 fat32_alloc_dir_slot(u16 dir_hi, u16 dir_lo) {
+    u16 scan_hi = dir_hi;
+    u16 scan_lo = dir_lo;
+    u16 sec_idx = 0;
+    u16 off     = 0;
+    u16 first   = 0;
+    u16 lba_hi  = 0;
+    u16 lba_lo  = 0;
+    u16 new_hi  = 0;
+    u16 new_lo  = 0;
+
+    while (true) {
+        sec_idx = 0;
+        while (sec_idx < sec_per_clus) {
+            cluster_to_lba(scan_hi, scan_lo);
+            add32(tmp32_hi, tmp32_lo, 0, sec_idx);
+            lba_hi = tmp32_hi;
+            lba_lo = tmp32_lo;
+            if (sd_read_sector(lba_hi, lba_lo, sec_buf) != 0) {
+                return 1;
+            }
+            off = 0;
+            while (off < 512) {
+                first = getbyte(sec_buf, off);
+                if (first == 0x00 || first == 0xE5) {
+                    fat_ent_lba_hi = lba_hi;
+                    fat_ent_lba_lo = lba_lo;
+                    fat_ent_off    = off;
+                    return 0;
+                }
+                off = off + 32;
+            }
+            sec_idx++;
+        }
+        if (fat32_next_cluster(scan_hi, scan_lo) != 0) {
+            if (fat32_alloc_cluster() != 0) {
+                return 1;
+            }
+            new_hi = tmp32_hi;
+            new_lo = tmp32_lo;
+            if (fat32_set_entry(scan_hi, scan_lo, new_hi, new_lo) != 0) {
+                return 1;
+            }
+            scan_hi = new_hi;
+            scan_lo = new_lo;
+        } else {
+            scan_hi = tmp32_hi;
+            scan_lo = tmp32_lo;
+        }
+    }
+    return 1;
+}
+
+// Resolve a directory path (relative to CWD or absolute "/...") into
+// (fat_dir_clus_hi:fat_dir_clus_lo). Returns 0 = OK, 1 = I/O, 2 = not found / not dir.
+u16 fat32_resolve_dir(u16 *path) {
+    u16 cur_hi = cwd_clus_hi;
+    u16 cur_lo = cwd_clus_lo;
+    u16 i      = 0;
+    u16 j      = 0;
+    u16 ch     = 0;
+    u16 dot    = 0;
+    u16 err    = 0;
+    u16 comp[8];
+
+    if (fat_mounted == 0) {
+        return 1;
+    }
+
+    if (getbyte(path, 0) == 47) {       // '/'
+        cur_hi = root_clus_hi;
+        cur_lo = root_clus_lo;
+        i = 1;
+    }
+
+    while (true) {
+        while (getbyte(path, i) == 47) {
+            i++;
+        }
+        if (getbyte(path, i) == 0) {
+            break;
+        }
+
+        j = 0;
+        while (true) {
+            ch = getbyte(path, i);
+            if (ch == 0 || ch == 47) {
+                break;
+            }
+            if (j < 15) {
+                setbyte(comp, j, ch);
+                j++;
+            }
+            i++;
+        }
+        setbyte(comp, j, 0);
+
+        dot = fat32_is_dot(comp);
+        if (dot == 1) {
+            // "." -> stay in current directory
+        } else if (dot == 2) {
+            // ".." -> move to parent (root's parent is root)
+            if (cur_hi != root_clus_hi || cur_lo != root_clus_lo) {
+                err = fat32_find_in_dir(cur_hi, cur_lo, comp);
+                if (err != 0) {
+                    return err;
+                }
+                if (fat_ent_clus_hi == 0 && fat_ent_clus_lo == 0) {
+                    cur_hi = root_clus_hi;
+                    cur_lo = root_clus_lo;
+                } else {
+                    cur_hi = fat_ent_clus_hi;
+                    cur_lo = fat_ent_clus_lo;
+                }
+            }
+        } else {
+            err = fat32_find_in_dir(cur_hi, cur_lo, comp);
+            if (err != 0) {
+                return err;
+            }
+            if ((fat_ent_attr & ATTR_DIRECTORY) == 0) {
+                return 2;
+            }
+            if (fat_ent_clus_hi == 0 && fat_ent_clus_lo == 0) {
+                cur_hi = root_clus_hi;
+                cur_lo = root_clus_lo;
+            } else {
+                cur_hi = fat_ent_clus_hi;
+                cur_lo = fat_ent_clus_lo;
+            }
+        }
+    }
+
+    fat_dir_clus_hi = cur_hi;
+    fat_dir_clus_lo = cur_lo;
+    return 0;
+}
+
+// Split path into parent directory cluster (fat_dir_clus_hi:lo) and leaf name (fat_leaf_name).
+// Rejects empty paths, root-only "/", ".", and ".." as leaf names.
+// Returns 0 = OK, 1 = not mounted / I/O, 2 = invalid path / parent not found.
+u16 fat32_resolve_parent(u16 *path) {
+    u16 len        = 0;
+    u16 last_slash = 0xFFFF;
+    u16 i          = 0;
+    u16 j          = 0;
+    u16 leaf_start = 0;
+    u16 parent_buf[CWD_PATH_WORDS];
+
+    if (fat_mounted == 0) {
+        return 1;
+    }
+
+    while (getbyte(path, len) != 0) {
+        len++;
+    }
+    while (len > 0 && getbyte(path, len - 1) == 47) {
+        len--;
+    }
+    if (len == 0) {
+        return 2;
+    }
+
+    i = 0;
+    while (i < len) {
+        if (getbyte(path, i) == 47) {
+            last_slash = i;
+        }
+        i++;
+    }
+
+    if (last_slash == 0xFFFF) {
+        leaf_start = 0;
+    } else {
+        leaf_start = last_slash + 1;
+    }
+
+    j = 0;
+    i = leaf_start;
+    while (i < len && j < 15) {
+        setbyte(fat_leaf_name, j, getbyte(path, i));
+        i++;
+        j++;
+    }
+    setbyte(fat_leaf_name, j, 0);
+
+    if (j == 0 || fat32_is_dot(fat_leaf_name) != 0) {
+        return 2;
+    }
+
+    if (last_slash == 0xFFFF) {
+        fat_dir_clus_hi = cwd_clus_hi;
+        fat_dir_clus_lo = cwd_clus_lo;
+        return 0;
+    }
+    if (last_slash == 0) {
+        fat_dir_clus_hi = root_clus_hi;
+        fat_dir_clus_lo = root_clus_lo;
+        return 0;
+    }
+
+    i = 0;
+    while (i < last_slash && i < ((CWD_PATH_WORDS << 1) - 1)) {
+        setbyte(parent_buf, i, getbyte(path, i));
+        i++;
+    }
+    setbyte(parent_buf, i, 0);
+    return fat32_resolve_dir(parent_buf);
+}
+
+// ==============================================================================
+// Directory & File Operations
+// ==============================================================================
+
+// Open a directory (empty path = CWD, else relative/absolute path) into a FileHandle slot
+u16 fat32_opendir(u16 owner_core, u16 *path) {
+    u16 fd  = 0;
+    u16 err = 0;
+
     if (fat_mounted == 0) {
         return 0xFFFF;
     }
-    while (fd < 8) {
+
+    if (getbyte(path, 0) == 0) {
+        fat_dir_clus_hi = cwd_clus_hi;
+        fat_dir_clus_lo = cwd_clus_lo;
+    } else {
+        err = fat32_resolve_dir(path);
+        if (err != 0) {
+            return 0xFFFF;
+        }
+    }
+
+    while (fd < FD_MAX) {
         if (fds[fd].in_use == 0) {
             fds[fd].in_use      = 1;
             fds[fd].is_dir      = 1;
             fds[fd].owner_core  = owner_core;
-            fds[fd].cur_clus_lo = root_clus_lo;
-            fds[fd].cur_clus_hi = root_clus_hi;
+            fds[fd].cur_clus_lo = fat_dir_clus_lo;
+            fds[fd].cur_clus_hi = fat_dir_clus_hi;
             fds[fd].sec_in_clus = 0;
             fds[fd].byte_in_sec = 0;
             return fd;
@@ -259,15 +769,19 @@ u16 fat32_opendir_root(u16 owner_core) {
     return 0xFFFF;
 }
 
+u16 fat32_opendir_root(u16 owner_core) {
+    return fat32_opendir(owner_core, "/");
+}
+
 void fat32_close(u16 fd) {
-    if (fd < 8) {
+    if (fd < FD_MAX) {
         fds[fd].in_use = 0;
     }
 }
 
 void fat32_close_owner(u16 owner_core) {
     u16 fd = 0;
-    while (fd < 8) {
+    while (fd < FD_MAX) {
         if (fds[fd].in_use != 0 && fds[fd].owner_core == owner_core) {
             fds[fd].in_use = 0;
         }
@@ -275,24 +789,17 @@ void fat32_close_owner(u16 owner_core) {
     }
 }
 
-// Open an 8.3 file (case-insensitive) in root directory for streaming reads.
-// Returns fd (0..7) or 0xFFFF on error / not found.
-u16 fat32_open_root(u16 owner_core, u16 *filename) {
-    u16 fd           = 0;
-    u16 slot         = 0xFFFF;
-    u16 off          = 0;
-    u16 first        = 0;
-    u16 attr         = 0;
-    u16 sec_idx      = 0;
-    u16 scan_clus_lo = root_clus_lo;
-    u16 scan_clus_hi = root_clus_hi;
-    u16 entry_name[8];
+// Open an 8.3 file (relative/absolute path, case-insensitive) for streaming reads.
+// Returns fd (0..FD_MAX-1) or 0xFFFF on error / not found.
+u16 fat32_open(u16 owner_core, u16 *path) {
+    u16 fd   = 0;
+    u16 slot = 0xFFFF;
 
     if (fat_mounted == 0) {
         return 0xFFFF;
     }
 
-    while (fd < 8) {
+    while (fd < FD_MAX) {
         if (fds[fd].in_use == 0) {
             slot = fd;
             break;
@@ -303,50 +810,29 @@ u16 fat32_open_root(u16 owner_core, u16 *filename) {
         return 0xFFFF;
     }
 
-    while (true) {
-        sec_idx = 0;
-        while (sec_idx < sec_per_clus) {
-            cluster_to_lba(scan_clus_hi, scan_clus_lo);
-            add32(tmp32_hi, tmp32_lo, 0, sec_idx);
-            if (sd_read_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
-                return 0xFFFF;
-            }
-            off = 0;
-            while (off < 512) {
-                first = getbyte(sec_buf, off);
-                attr  = getbyte(sec_buf, off + 11);
-                if (first == 0x00) {
-                    return 0xFFFF;
-                }
-                if (first != 0xE5 && attr != 0x0F && (attr & 0x08) == 0 && (attr & 0x10) == 0) {
-                    format_83_name(off, entry_name);
-                    if (str_eq_ci(entry_name, filename) == 1) {
-                        fds[slot].in_use      = 1;
-                        fds[slot].is_dir      = 0;
-                        fds[slot].owner_core  = owner_core;
-                        fds[slot].cur_clus_lo = rd_u16(sec_buf, off + 26);
-                        fds[slot].cur_clus_hi = rd_u16(sec_buf, off + 20);
-                        fds[slot].sec_in_clus = 0;
-                        fds[slot].byte_in_sec = 0;
-                        fds[slot].size_lo     = rd_u16(sec_buf, off + 28);
-                        fds[slot].size_hi     = rd_u16(sec_buf, off + 30);
-                        fds[slot].pos_lo      = 0;
-                        fds[slot].pos_hi      = 0;
-                        fds[slot].writable    = 0;
-                        return slot;
-                    }
-                }
-                off = off + 32;
-            }
-            sec_idx++;
-        }
-        if (fat32_next_cluster(scan_clus_hi, scan_clus_lo) != 0) {
-            return 0xFFFF;
-        }
-        scan_clus_hi = tmp32_hi;
-        scan_clus_lo = tmp32_lo;
+    if (fat32_resolve_parent(path) != 0) {
+        return 0xFFFF;
     }
-    return 0xFFFF;
+    if (fat32_find_in_dir(fat_dir_clus_hi, fat_dir_clus_lo, fat_leaf_name) != 0) {
+        return 0xFFFF;
+    }
+    if ((fat_ent_attr & ATTR_DIRECTORY) != 0) {
+        return 0xFFFF;
+    }
+
+    fds[slot].in_use      = 1;
+    fds[slot].is_dir      = 0;
+    fds[slot].owner_core  = owner_core;
+    fds[slot].cur_clus_lo = fat_ent_clus_lo;
+    fds[slot].cur_clus_hi = fat_ent_clus_hi;
+    fds[slot].sec_in_clus = 0;
+    fds[slot].byte_in_sec = 0;
+    fds[slot].size_lo     = fat_ent_size_lo;
+    fds[slot].size_hi     = fat_ent_size_hi;
+    fds[slot].pos_lo      = 0;
+    fds[slot].pos_hi      = 0;
+    fds[slot].writable    = 0;
+    return slot;
 }
 
 // Read up to max_bytes from an open file fd into packed dst_buf.
@@ -360,7 +846,7 @@ u16 fat32_read_bytes(u16 fd, u16 *dst_buf, u16 max_bytes) {
     u16 s_lo    = 0;
     u16 s_hi    = 0;
 
-    if (fd >= 8 || fds[fd].in_use == 0 || fds[fd].is_dir != 0 || max_bytes == 0) {
+    if (fd >= FD_MAX || fds[fd].in_use == 0 || fds[fd].is_dir != 0 || max_bytes == 0) {
         return 0;
     }
 
@@ -431,7 +917,7 @@ u16 fat32_readdir(u16 fd, DirEntry *out) {
     u16 first = 0;
     u16 attr  = 0;
 
-    if (fd >= 8 || fds[fd].in_use == 0) {
+    if (fd >= FD_MAX || fds[fd].in_use == 0) {
         return 1;
     }
 
@@ -449,10 +935,10 @@ u16 fat32_readdir(u16 fd, DirEntry *out) {
             off = off + 32;
 
             if (first == 0x00) {
-                return 1;       // End of directory
+                return 1;               // End of directory
             }
             // Skip deleted (0xE5), LFN (0x0F), and volume labels (0x08)
-            if (first != 0xE5 && attr != 0x0F && (attr & 0x08) == 0) {
+            if (first != 0xE5 && attr != ATTR_LFN && (attr & ATTR_VOLUME_ID) == 0) {
                 fds[fd].byte_in_sec = off;
                 out->attr    = attr;
                 out->size_lo = rd_u16(sec_buf, off - 4);
@@ -477,12 +963,9 @@ u16 fat32_readdir(u16 fd, DirEntry *out) {
     return 1;
 }
 
-// Find an 8.3 file (case-insensitive) in root dir and read up to max_words
-// packed 16-bit words into dst_buf. Returns word count (>0) or 0 on error.
-u16 fat32_read_file_root(u16 *filename, u16 *dst_buf, u16 max_words) {
-    u16 off        = 0;
-    u16 first      = 0;
-    u16 attr       = 0;
+// Find an 8.3 file (relative/absolute path, case-insensitive) and read up to
+// max_words packed 16-bit words into dst_buf. Returns word count (>0) or 0 on error.
+u16 fat32_read_file(u16 *path, u16 *dst_buf, u16 max_words) {
     u16 clus_lo    = 0;
     u16 clus_hi    = 0;
     u16 size_lo    = 0;
@@ -491,10 +974,6 @@ u16 fat32_read_file_root(u16 *filename, u16 *dst_buf, u16 max_words) {
     u16 words_read = 0;
     u16 sec_idx    = 0;
     u16 w_idx      = 0;
-    u16 found      = 0;
-    u16 scan_clus_lo = root_clus_lo;
-    u16 scan_clus_hi = root_clus_hi;
-    u16 entry_name[8];
 
     fat32_last_found   = 0;
     fat32_last_size_lo = 0;
@@ -504,43 +983,20 @@ u16 fat32_read_file_root(u16 *filename, u16 *dst_buf, u16 max_words) {
         return 0;
     }
 
-    while (found == 0) {
-        sec_idx = 0;
-        while (sec_idx < sec_per_clus && found == 0) {
-            cluster_to_lba(scan_clus_hi, scan_clus_lo);
-            add32(tmp32_hi, tmp32_lo, 0, sec_idx);
-            if (sd_read_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
-                return 0;
-            }
-            off = 0;
-            while (off < 512 && found == 0) {
-                first = getbyte(sec_buf, off);
-                attr  = getbyte(sec_buf, off + 11);
-                if (first == 0x00) {
-                    return 0;
-                }
-                if (first != 0xE5 && attr != 0x0F && (attr & 0x08) == 0 && (attr & 0x10) == 0) {
-                    format_83_name(off, entry_name);
-                    if (str_eq_ci(entry_name, filename) == 1) {
-                        clus_lo = rd_u16(sec_buf, off + 26);
-                        clus_hi = rd_u16(sec_buf, off + 20);
-                        size_lo = rd_u16(sec_buf, off + 28);
-                        size_hi = rd_u16(sec_buf, off + 30);
-                        found = 1;
-                    }
-                }
-                off = off + 32;
-            }
-            sec_idx++;
-        }
-        if (found == 0) {
-            if (fat32_next_cluster(scan_clus_hi, scan_clus_lo) != 0) {
-                return 0;
-            }
-            scan_clus_hi = tmp32_hi;
-            scan_clus_lo = tmp32_lo;
-        }
+    if (fat32_resolve_parent(path) != 0) {
+        return 0;
     }
+    if (fat32_find_in_dir(fat_dir_clus_hi, fat_dir_clus_lo, fat_leaf_name) != 0) {
+        return 0;
+    }
+    if ((fat_ent_attr & ATTR_DIRECTORY) != 0) {
+        return 0;
+    }
+
+    clus_lo = fat_ent_clus_lo;
+    clus_hi = fat_ent_clus_hi;
+    size_lo = fat_ent_size_lo;
+    size_hi = fat_ent_size_hi;
 
     fat32_last_found   = 1;
     fat32_last_size_lo = size_lo;
@@ -586,244 +1042,54 @@ u16 fat32_read_file_root(u16 *filename, u16 *dst_buf, u16 max_words) {
     return words_read;
 }
 
-// Free an entire FAT32 cluster chain starting at (clus_hi:clus_lo) across all FAT copies
-u16 fat32_free_chain(u16 clus_hi, u16 clus_lo) {
-    u16 fat_sec_lo = 0;
-    u16 fat_sec_hi = 0;
-    u16 ent_off    = 0;
-    u16 next_lo    = 0;
-    u16 next_hi    = 0;
-    u16 hi_rsvd    = 0;
-    u16 cur_lba_lo = 0;
-    u16 cur_lba_hi = 0;
-    u16 f_idx      = 0;
-
-    while (clus_hi != 0 || clus_lo >= 2) {
-        fat_sec_lo = (clus_lo >> 7) | (clus_hi << 9);
-        fat_sec_hi = clus_hi >> 7;
-        ent_off    = (clus_lo & 0x007F) << 2;
-
-        add32(fat_lba_hi, fat_lba_lo, fat_sec_hi, fat_sec_lo);
-        cur_lba_hi = tmp32_hi;
-        cur_lba_lo = tmp32_lo;
-        if (sd_read_sector(cur_lba_hi, cur_lba_lo, sec_buf) != 0) {
-            return 1;
-        }
-
-        next_lo = rd_u16(sec_buf, ent_off);
-        hi_rsvd = rd_u16(sec_buf, ent_off + 2);
-        next_hi = hi_rsvd & 0x0FFF;
-
-        // Zero cluster pointer bits while preserving top 4 reserved bits
-        wr_u16(sec_buf, ent_off, 0);
-        wr_u16(sec_buf, ent_off + 2, hi_rsvd & 0xF000);
-
-        // Write updated FAT sector to every FAT copy
-        f_idx = 0;
-        while (f_idx < fat_num_fats) {
-            if (sd_write_sector(cur_lba_hi, cur_lba_lo, sec_buf) != 0) {
-                return 1;
-            }
-            add32(cur_lba_hi, cur_lba_lo, fat_sz_hi, fat_sz_lo);
-            cur_lba_hi = tmp32_hi;
-            cur_lba_lo = tmp32_lo;
-            f_idx++;
-        }
-
-        if ((next_hi >= 0x0FFF && next_lo >= 0xFFF8) || (next_hi == 0 && next_lo < 2)) {
-            return 0;
-        }
-        clus_hi = next_hi;
-        clus_lo = next_lo;
-    }
-    return 0;
-}
-
-// Delete an 8.3 file (case-insensitive) from root directory and free its clusters.
-// Returns 0 = OK, 1 = I/O or not mounted, 2 = not found.
-u16 fat32_unlink_root(u16 *filename) {
-    u16 off          = 0;
-    u16 first        = 0;
-    u16 attr         = 0;
-    u16 clus_lo      = 0;
-    u16 clus_hi      = 0;
-    u16 sec_idx      = 0;
-    u16 dir_lba_lo   = 0;
-    u16 dir_lba_hi   = 0;
-    u16 scan_clus_lo = root_clus_lo;
-    u16 scan_clus_hi = root_clus_hi;
-    u16 entry_name[8];
+// Delete an 8.3 file (relative/absolute path, case-insensitive) and free its clusters.
+// Returns 0 = OK, 1 = I/O or not mounted, 2 = not found, 3 = is a directory.
+u16 fat32_unlink(u16 *path) {
+    u16 err     = 0;
+    u16 clus_lo = 0;
+    u16 clus_hi = 0;
+    u16 lba_lo  = 0;
+    u16 lba_hi  = 0;
+    u16 off     = 0;
 
     if (fat_mounted == 0) {
         return 1;
     }
 
-    while (true) {
-        sec_idx = 0;
-        while (sec_idx < sec_per_clus) {
-            cluster_to_lba(scan_clus_hi, scan_clus_lo);
-            add32(tmp32_hi, tmp32_lo, 0, sec_idx);
-            dir_lba_hi = tmp32_hi;
-            dir_lba_lo = tmp32_lo;
-            if (sd_read_sector(dir_lba_hi, dir_lba_lo, sec_buf) != 0) {
-                return 1;
-            }
-            off = 0;
-            while (off < 512) {
-                first = getbyte(sec_buf, off);
-                attr  = getbyte(sec_buf, off + 11);
-                if (first == 0x00) {
-                    return 2;
-                }
-                if (first != 0xE5 && attr != 0x0F && (attr & 0x08) == 0 && (attr & 0x10) == 0) {
-                    format_83_name(off, entry_name);
-                    if (str_eq_ci(entry_name, filename) == 1) {
-                        clus_lo = rd_u16(sec_buf, off + 26);
-                        clus_hi = rd_u16(sec_buf, off + 20);
-                        setbyte(sec_buf, off, 0xE5);
-                        if (sd_write_sector(dir_lba_hi, dir_lba_lo, sec_buf) != 0) {
-                            return 1;
-                        }
-                        if (clus_hi != 0 || clus_lo >= 2) {
-                            if (fat32_free_chain(clus_hi, clus_lo) != 0) {
-                                return 1;
-                            }
-                        }
-                        return 0;
-                    }
-                }
-                off = off + 32;
-            }
-            sec_idx++;
-        }
-        if (fat32_next_cluster(scan_clus_hi, scan_clus_lo) != 0) {
-            return 2;
-        }
-        scan_clus_hi = tmp32_hi;
-        scan_clus_lo = tmp32_lo;
+    err = fat32_resolve_parent(path);
+    if (err != 0) {
+        return err;
     }
-    return 2;
-}
+    err = fat32_find_in_dir(fat_dir_clus_hi, fat_dir_clus_lo, fat_leaf_name);
+    if (err != 0) {
+        return err;
+    }
+    if ((fat_ent_attr & ATTR_DIRECTORY) != 0) {
+        return 3;
+    }
 
-// Write a 28-bit FAT32 entry value for (clus_hi:clus_lo) across all FAT copies
-u16 fat32_set_entry(u16 clus_hi, u16 clus_lo, u16 val_hi, u16 val_lo) {
-    u16 fat_sec_lo = (clus_lo >> 7) | (clus_hi << 9);
-    u16 fat_sec_hi = clus_hi >> 7;
-    u16 ent_off    = (clus_lo & 0x007F) << 2;
-    u16 hi_rsvd    = 0;
-    u16 cur_lba_lo = 0;
-    u16 cur_lba_hi = 0;
-    u16 f_idx      = 0;
+    clus_lo = fat_ent_clus_lo;
+    clus_hi = fat_ent_clus_hi;
+    lba_hi  = fat_ent_lba_hi;
+    lba_lo  = fat_ent_lba_lo;
+    off     = fat_ent_off;
 
-    add32(fat_lba_hi, fat_lba_lo, fat_sec_hi, fat_sec_lo);
-    cur_lba_hi = tmp32_hi;
-    cur_lba_lo = tmp32_lo;
-    if (sd_read_sector(cur_lba_hi, cur_lba_lo, sec_buf) != 0) {
+    if (sd_read_sector(lba_hi, lba_lo, sec_buf) != 0) {
         return 1;
     }
-
-    hi_rsvd = rd_u16(sec_buf, ent_off + 2) & 0xF000;
-    wr_u16(sec_buf, ent_off, val_lo);
-    wr_u16(sec_buf, ent_off + 2, hi_rsvd | (val_hi & 0x0FFF));
-
-    while (f_idx < fat_num_fats) {
-        if (sd_write_sector(cur_lba_hi, cur_lba_lo, sec_buf) != 0) {
+    setbyte(sec_buf, off, 0xE5);
+    if (sd_write_sector(lba_hi, lba_lo, sec_buf) != 0) {
+        return 1;
+    }
+    if (clus_hi != 0 || clus_lo >= 2) {
+        if (fat32_free_chain(clus_hi, clus_lo) != 0) {
             return 1;
         }
-        add32(cur_lba_hi, cur_lba_lo, fat_sz_hi, fat_sz_lo);
-        cur_lba_hi = tmp32_hi;
-        cur_lba_lo = tmp32_lo;
-        f_idx++;
     }
     return 0;
 }
 
-// Allocate a free FAT32 cluster, mark EOC across all FAT copies, zero its sectors.
-// Result returned in (tmp32_hi:tmp32_lo). Returns 0 = OK, 1 = full/error.
-u16 fat32_alloc_cluster(void) {
-    u16 sec        = 0;
-    u16 max_sec    = fat_sz_lo;
-    u16 e          = 0;
-    u16 ent_off    = 0;
-    u16 lo         = 0;
-    u16 hi         = 0;
-    u16 hi_rsvd    = 0;
-    u16 alloc_lo   = 0;
-    u16 alloc_hi   = 0;
-    u16 cur_lba_lo = 0;
-    u16 cur_lba_hi = 0;
-    u16 f_idx      = 0;
-    u16 s_idx      = 0;
-    u16 w_idx      = 0;
-
-    if (fat_sz_hi != 0) {
-        max_sec = 0xFFFF;
-    }
-
-    while (sec < max_sec) {
-        add32(fat_lba_hi, fat_lba_lo, 0, sec);
-        cur_lba_hi = tmp32_hi;
-        cur_lba_lo = tmp32_lo;
-        if (sd_read_sector(cur_lba_hi, cur_lba_lo, sec_buf) != 0) {
-            return 1;
-        }
-
-        e = 0;
-        if (sec == 0) {
-            e = 2;              // Clusters 0 and 1 are reserved
-        }
-        while (e < 128) {
-            ent_off = e << 2;
-            lo = rd_u16(sec_buf, ent_off);
-            hi = rd_u16(sec_buf, ent_off + 2);
-            if (lo == 0 && (hi & 0x0FFF) == 0) {
-                alloc_lo = (sec << 7) | e;
-                alloc_hi = sec >> 9;
-
-                // Mark EOC (0x0FFFFFFF) in sec_buf and write to every FAT copy
-                hi_rsvd = hi & 0xF000;
-                wr_u16(sec_buf, ent_off, 0xFFFF);
-                wr_u16(sec_buf, ent_off + 2, hi_rsvd | 0x0FFF);
-
-                f_idx = 0;
-                while (f_idx < fat_num_fats) {
-                    if (sd_write_sector(cur_lba_hi, cur_lba_lo, sec_buf) != 0) {
-                        return 1;
-                    }
-                    add32(cur_lba_hi, cur_lba_lo, fat_sz_hi, fat_sz_lo);
-                    cur_lba_hi = tmp32_hi;
-                    cur_lba_lo = tmp32_lo;
-                    f_idx++;
-                }
-
-                // Zero all sectors in the newly allocated cluster
-                w_idx = 0;
-                while (w_idx < 256) {
-                    sec_buf[w_idx] = 0;
-                    w_idx++;
-                }
-                s_idx = 0;
-                while (s_idx < sec_per_clus) {
-                    cluster_to_lba(alloc_hi, alloc_lo);
-                    add32(tmp32_hi, tmp32_lo, 0, s_idx);
-                    if (sd_write_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
-                        return 1;
-                    }
-                    s_idx++;
-                }
-
-                tmp32_hi = alloc_hi;
-                tmp32_lo = alloc_lo;
-                return 0;
-            }
-            e++;
-        }
-        sec++;
-    }
-    return 1;
-}
-
-// Sync open writable FileHandle's size back to its root directory entry on disk
+// Sync open writable FileHandle's size back to its parent directory entry on disk
 u16 fat32_sync_dir_size(u16 fd) {
     u16 off = fds[fd].dir_off;
     if (sd_read_sector(fds[fd].dir_lba_hi, fds[fd].dir_lba_lo, sec_buf) != 0) {
@@ -834,31 +1100,32 @@ u16 fat32_sync_dir_size(u16 fd) {
     return sd_write_sector(fds[fd].dir_lba_hi, fds[fd].dir_lba_lo, sec_buf);
 }
 
-// Create/truncate an 8.3 file in root directory and open it for writing.
-// Returns fd (0..7) or 0xFFFF on error.
-u16 fat32_open_write_root(u16 owner_core, u16 *filename) {
-    u16 fd           = 0;
-    u16 slot         = 0xFFFF;
-    u16 err          = 0;
-    u16 off          = 0;
-    u16 first        = 0;
-    u16 sec_idx      = 0;
-    u16 dir_lba_lo   = 0;
-    u16 dir_lba_hi   = 0;
-    u16 dir_off      = 0;
-    u16 found_slot   = 0;
-    u16 new_clus_lo  = 0;
-    u16 new_clus_hi  = 0;
-    u16 scan_clus_lo = root_clus_lo;
-    u16 scan_clus_hi = root_clus_hi;
-    u16 i            = 0;
+// Create/truncate an 8.3 file (relative/absolute path) and open it for writing.
+// Returns fd (0..FD_MAX-1) or 0xFFFF on error.
+u16 fat32_open_write(u16 owner_core, u16 *path) {
+    u16 fd          = 0;
+    u16 slot        = 0xFFFF;
+    u16 err         = 0;
+    u16 parent_hi   = 0;
+    u16 parent_lo   = 0;
+    u16 old_clus_hi = 0;
+    u16 old_clus_lo = 0;
+    u16 old_lba_hi  = 0;
+    u16 old_lba_lo  = 0;
+    u16 old_off     = 0;
+    u16 dir_lba_lo  = 0;
+    u16 dir_lba_hi  = 0;
+    u16 dir_off     = 0;
+    u16 new_clus_lo = 0;
+    u16 new_clus_hi = 0;
+    u16 i           = 0;
     u16 name11[6];
 
     if (fat_mounted == 0) {
         return 0xFFFF;
     }
 
-    while (fd < 8) {
+    while (fd < FD_MAX) {
         if (fds[fd].in_use == 0) {
             slot = fd;
             break;
@@ -869,54 +1136,46 @@ u16 fat32_open_write_root(u16 owner_core, u16 *filename) {
         return 0xFFFF;
     }
 
-    // Remove existing file of same name (frees its clusters & leaves 0xE5 slot)
-    err = fat32_unlink_root(filename);
+    if (fat32_resolve_parent(path) != 0) {
+        return 0xFFFF;
+    }
+    parent_hi = fat_dir_clus_hi;
+    parent_lo = fat_dir_clus_lo;
+
+    // If an entry with the same name already exists, reject directories and replace files
+    err = fat32_find_in_dir(parent_hi, parent_lo, fat_leaf_name);
     if (err == 1) {
         return 0xFFFF;
     }
-
-    // Find first free (0x00) or deleted (0xE5) directory entry in root dir
-    while (found_slot == 0) {
-        sec_idx = 0;
-        while (sec_idx < sec_per_clus && found_slot == 0) {
-            cluster_to_lba(scan_clus_hi, scan_clus_lo);
-            add32(tmp32_hi, tmp32_lo, 0, sec_idx);
-            dir_lba_hi = tmp32_hi;
-            dir_lba_lo = tmp32_lo;
-            if (sd_read_sector(dir_lba_hi, dir_lba_lo, sec_buf) != 0) {
-                return 0xFFFF;
-            }
-            off = 0;
-            while (off < 512) {
-                first = getbyte(sec_buf, off);
-                if (first == 0x00 || first == 0xE5) {
-                    dir_off = off;
-                    found_slot = 1;
-                    break;
-                }
-                off = off + 32;
-            }
-            sec_idx++;
+    if (err == 0) {
+        if ((fat_ent_attr & ATTR_DIRECTORY) != 0) {
+            return 0xFFFF;
         }
-        if (found_slot == 0) {
-            if (fat32_next_cluster(scan_clus_hi, scan_clus_lo) != 0) {
-                // Extend root directory by allocating a new cluster
-                if (fat32_alloc_cluster() != 0) {
-                    return 0xFFFF;
-                }
-                new_clus_hi = tmp32_hi;
-                new_clus_lo = tmp32_lo;
-                if (fat32_set_entry(scan_clus_hi, scan_clus_lo, new_clus_hi, new_clus_lo) != 0) {
-                    return 0xFFFF;
-                }
-                scan_clus_hi = new_clus_hi;
-                scan_clus_lo = new_clus_lo;
-            } else {
-                scan_clus_hi = tmp32_hi;
-                scan_clus_lo = tmp32_lo;
+        old_clus_hi = fat_ent_clus_hi;
+        old_clus_lo = fat_ent_clus_lo;
+        old_lba_hi  = fat_ent_lba_hi;
+        old_lba_lo  = fat_ent_lba_lo;
+        old_off     = fat_ent_off;
+        if (sd_read_sector(old_lba_hi, old_lba_lo, sec_buf) != 0) {
+            return 0xFFFF;
+        }
+        setbyte(sec_buf, old_off, 0xE5);
+        if (sd_write_sector(old_lba_hi, old_lba_lo, sec_buf) != 0) {
+            return 0xFFFF;
+        }
+        if (old_clus_hi != 0 || old_clus_lo >= 2) {
+            if (fat32_free_chain(old_clus_hi, old_clus_lo) != 0) {
+                return 0xFFFF;
             }
         }
     }
+
+    if (fat32_alloc_dir_slot(parent_hi, parent_lo) != 0) {
+        return 0xFFFF;
+    }
+    dir_lba_hi = fat_ent_lba_hi;
+    dir_lba_lo = fat_ent_lba_lo;
+    dir_off    = fat_ent_off;
 
     // Allocate initial data cluster for the file
     if (fat32_alloc_cluster() != 0) {
@@ -926,7 +1185,7 @@ u16 fat32_open_write_root(u16 owner_core, u16 *filename) {
     new_clus_lo = tmp32_lo;
 
     // Populate the 32-byte directory entry on disk
-    encode_83_name(filename, name11);
+    encode_83_name(fat_leaf_name, name11);
     if (sd_read_sector(dir_lba_hi, dir_lba_lo, sec_buf) != 0) {
         return 0xFFFF;
     }
@@ -940,9 +1199,9 @@ u16 fat32_open_write_root(u16 owner_core, u16 *filename) {
         setbyte(sec_buf, dir_off + i, getbyte(name11, i));
         i++;
     }
-    setbyte(sec_buf, dir_off + 11, 0x20);       // ATTR_ARCHIVE
-    wr_u16(sec_buf, dir_off + 20, new_clus_hi); // FstClusHI
-    wr_u16(sec_buf, dir_off + 26, new_clus_lo); // FstClusLO
+    setbyte(sec_buf, dir_off + 11, ATTR_ARCHIVE);
+    wr_u16(sec_buf, dir_off + 20, new_clus_hi);
+    wr_u16(sec_buf, dir_off + 26, new_clus_lo);
     if (sd_write_sector(dir_lba_hi, dir_lba_lo, sec_buf) != 0) {
         return 0xFFFF;
     }
@@ -980,7 +1239,7 @@ u16 fat32_write_bytes(u16 fd, u16 *src_buf, u16 byte_count) {
     u16 p_lo       = 0;
     u16 p_hi       = 0;
 
-    if (fd >= 8 || fds[fd].in_use == 0 || fds[fd].is_dir != 0 || fds[fd].writable == 0 || byte_count == 0) {
+    if (fd >= FD_MAX || fds[fd].in_use == 0 || fds[fd].is_dir != 0 || fds[fd].writable == 0 || byte_count == 0) {
         return 0;
     }
 
@@ -1045,26 +1304,211 @@ u16 fat32_write_bytes(u16 fd, u16 *src_buf, u16 byte_count) {
     return written;
 }
 
-// Look up an 8.3 entry in root directory (case-insensitive) into *out.
+// Look up an 8.3 entry (relative/absolute path, case-insensitive) into *out.
 // Starting cluster is returned in (tmp32_hi:tmp32_lo).
 // Returns 0 = found, 1 = not mounted / I/O error, 2 = not found.
-u16 fat32_stat_root(u16 *filename, DirEntry *out) {
-    u16 off          = 0;
-    u16 first        = 0;
-    u16 attr         = 0;
-    u16 sec_idx      = 0;
-    u16 scan_clus_lo = root_clus_lo;
-    u16 scan_clus_hi = root_clus_hi;
+u16 fat32_stat(u16 *path, DirEntry *out) {
+    u16 err = 0;
+
+    if (fat_mounted == 0) {
+        return 1;
+    }
+
+    if (getbyte(path, 0) == 47 && getbyte(path, 1) == 0) {
+        out->attr    = ATTR_DIRECTORY;
+        out->size_lo = 0;
+        out->size_hi = 0;
+        setbyte(out->name, 0, 47);
+        setbyte(out->name, 1, 0);
+        tmp32_hi = root_clus_hi;
+        tmp32_lo = root_clus_lo;
+        return 0;
+    }
+
+    err = fat32_resolve_parent(path);
+    if (err != 0) {
+        return err;
+    }
+    err = fat32_find_in_dir(fat_dir_clus_hi, fat_dir_clus_lo, fat_leaf_name);
+    if (err != 0) {
+        return err;
+    }
+
+    out->attr    = fat_ent_attr;
+    out->size_lo = fat_ent_size_lo;
+    out->size_hi = fat_ent_size_hi;
+    format_83_name(fat_ent_off, out->name);
+    tmp32_lo     = fat_ent_clus_lo;
+    tmp32_hi     = fat_ent_clus_hi;
+    return 0;
+}
+
+// Create a new subdirectory (relative/absolute path) with "." and ".." entries.
+// Returns 0 = OK, 1 = I/O or alloc error, 2 = invalid/missing parent, 3 = already exists.
+u16 fat32_mkdir(u16 *path) {
+    u16 err       = 0;
+    u16 parent_hi = 0;
+    u16 parent_lo = 0;
+    u16 dir_lba_hi = 0;
+    u16 dir_lba_lo = 0;
+    u16 dir_off    = 0;
+    u16 new_hi    = 0;
+    u16 new_lo    = 0;
+    u16 dotdot_hi = 0;
+    u16 dotdot_lo = 0;
+    u16 i         = 0;
+    u16 name11[6];
+
+    if (fat_mounted == 0) {
+        return 1;
+    }
+
+    err = fat32_resolve_parent(path);
+    if (err != 0) {
+        return err;
+    }
+    parent_hi = fat_dir_clus_hi;
+    parent_lo = fat_dir_clus_lo;
+
+    err = fat32_find_in_dir(parent_hi, parent_lo, fat_leaf_name);
+    if (err == 1) {
+        return 1;
+    }
+    if (err == 0) {
+        return 3;                       // Already exists
+    }
+
+    if (fat32_alloc_dir_slot(parent_hi, parent_lo) != 0) {
+        return 1;
+    }
+    dir_lba_hi = fat_ent_lba_hi;
+    dir_lba_lo = fat_ent_lba_lo;
+    dir_off    = fat_ent_off;
+
+    if (fat32_alloc_cluster() != 0) {
+        return 1;
+    }
+    new_hi = tmp32_hi;
+    new_lo = tmp32_lo;
+
+    // Build sector 0 of new directory: "." and ".." entries
+    i = 0;
+    while (i < 256) {
+        sec_buf[i] = 0;
+        i++;
+    }
+
+    // Entry 0: "." -> new cluster
+    setbyte(sec_buf, 0, 46);
+    i = 1;
+    while (i < 11) {
+        setbyte(sec_buf, i, 32);
+        i++;
+    }
+    setbyte(sec_buf, 11, ATTR_DIRECTORY);
+    wr_u16(sec_buf, 20, new_hi);
+    wr_u16(sec_buf, 26, new_lo);
+
+    // Entry 1: ".." -> 0 if parent is root (FAT32 spec), else parent cluster
+    setbyte(sec_buf, 32, 46);
+    setbyte(sec_buf, 33, 46);
+    i = 2;
+    while (i < 11) {
+        setbyte(sec_buf, 32 + i, 32);
+        i++;
+    }
+    setbyte(sec_buf, 32 + 11, ATTR_DIRECTORY);
+    if (parent_hi == root_clus_hi && parent_lo == root_clus_lo) {
+        dotdot_hi = 0;
+        dotdot_lo = 0;
+    } else {
+        dotdot_hi = parent_hi;
+        dotdot_lo = parent_lo;
+    }
+    wr_u16(sec_buf, 32 + 20, dotdot_hi);
+    wr_u16(sec_buf, 32 + 26, dotdot_lo);
+
+    cluster_to_lba(new_hi, new_lo);
+    if (sd_write_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
+        return 1;
+    }
+
+    // Write the 32-byte directory entry in the parent directory
+    encode_83_name(fat_leaf_name, name11);
+    if (sd_read_sector(dir_lba_hi, dir_lba_lo, sec_buf) != 0) {
+        return 1;
+    }
+    i = 0;
+    while (i < 32) {
+        setbyte(sec_buf, dir_off + i, 0);
+        i++;
+    }
+    i = 0;
+    while (i < 11) {
+        setbyte(sec_buf, dir_off + i, getbyte(name11, i));
+        i++;
+    }
+    setbyte(sec_buf, dir_off + 11, ATTR_DIRECTORY);
+    wr_u16(sec_buf, dir_off + 20, new_hi);
+    wr_u16(sec_buf, dir_off + 26, new_lo);
+    if (sd_write_sector(dir_lba_hi, dir_lba_lo, sec_buf) != 0) {
+        return 1;
+    }
+    return 0;
+}
+
+// Remove an empty subdirectory (relative/absolute path).
+// Returns 0 = OK, 1 = I/O, 2 = not found / not dir, 3 = not empty, 4 = cannot remove CWD/root.
+u16 fat32_rmdir(u16 *path) {
+    u16 err           = 0;
+    u16 parent_lba_hi = 0;
+    u16 parent_lba_lo = 0;
+    u16 parent_off    = 0;
+    u16 target_hi     = 0;
+    u16 target_lo     = 0;
+    u16 scan_hi       = 0;
+    u16 scan_lo       = 0;
+    u16 sec_idx       = 0;
+    u16 off           = 0;
+    u16 first         = 0;
+    u16 attr          = 0;
+    u16 done          = 0;
     u16 entry_name[8];
 
     if (fat_mounted == 0) {
         return 1;
     }
 
-    while (true) {
+    err = fat32_resolve_parent(path);
+    if (err != 0) {
+        return err;
+    }
+    err = fat32_find_in_dir(fat_dir_clus_hi, fat_dir_clus_lo, fat_leaf_name);
+    if (err != 0) {
+        return err;
+    }
+    if ((fat_ent_attr & ATTR_DIRECTORY) == 0) {
+        return 2;
+    }
+
+    parent_lba_hi = fat_ent_lba_hi;
+    parent_lba_lo = fat_ent_lba_lo;
+    parent_off    = fat_ent_off;
+    target_hi     = fat_ent_clus_hi;
+    target_lo     = fat_ent_clus_lo;
+
+    if ((target_hi == root_clus_hi && target_lo == root_clus_lo) ||
+        (target_hi == cwd_clus_hi && target_lo == cwd_clus_lo)) {
+        return 4;
+    }
+
+    // Verify target directory has no entries other than "." and ".."
+    scan_hi = target_hi;
+    scan_lo = target_lo;
+    while (done == 0) {
         sec_idx = 0;
-        while (sec_idx < sec_per_clus) {
-            cluster_to_lba(scan_clus_hi, scan_clus_lo);
+        while (sec_idx < sec_per_clus && done == 0) {
+            cluster_to_lba(scan_hi, scan_lo);
             add32(tmp32_hi, tmp32_lo, 0, sec_idx);
             if (sd_read_sector(tmp32_hi, tmp32_lo, sec_buf) != 0) {
                 return 1;
@@ -1074,29 +1518,145 @@ u16 fat32_stat_root(u16 *filename, DirEntry *out) {
                 first = getbyte(sec_buf, off);
                 attr  = getbyte(sec_buf, off + 11);
                 if (first == 0x00) {
-                    return 2;
+                    done = 1;
+                    break;
                 }
-                if (first != 0xE5 && attr != 0x0F && (attr & 0x08) == 0) {
+                if (first != 0xE5 && attr != ATTR_LFN && (attr & ATTR_VOLUME_ID) == 0) {
                     format_83_name(off, entry_name);
-                    if (str_eq_ci(entry_name, filename) == 1) {
-                        out->attr    = attr;
-                        out->size_lo = rd_u16(sec_buf, off + 28);
-                        out->size_hi = rd_u16(sec_buf, off + 30);
-                        str_copy(out->name, entry_name, 16);
-                        tmp32_lo     = rd_u16(sec_buf, off + 26);
-                        tmp32_hi     = rd_u16(sec_buf, off + 20);
-                        return 0;
+                    if (fat32_is_dot(entry_name) == 0) {
+                        return 3;       // Directory not empty
                     }
                 }
                 off = off + 32;
             }
             sec_idx++;
         }
-        if (fat32_next_cluster(scan_clus_hi, scan_clus_lo) != 0) {
-            return 2;
+        if (done == 0) {
+            if (fat32_next_cluster(scan_hi, scan_lo) != 0) {
+                done = 1;
+            } else {
+                scan_hi = tmp32_hi;
+                scan_lo = tmp32_lo;
+            }
         }
-        scan_clus_hi = tmp32_hi;
-        scan_clus_lo = tmp32_lo;
     }
-    return 2;
+
+    // Mark parent entry deleted and free directory cluster chain
+    if (sd_read_sector(parent_lba_hi, parent_lba_lo, sec_buf) != 0) {
+        return 1;
+    }
+    setbyte(sec_buf, parent_off, 0xE5);
+    if (sd_write_sector(parent_lba_hi, parent_lba_lo, sec_buf) != 0) {
+        return 1;
+    }
+    if (target_hi != 0 || target_lo >= 2) {
+        if (fat32_free_chain(target_hi, target_lo) != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Change Current Working Directory (empty path = "/").
+// Returns 0 = OK, 1 = I/O / not mounted, 2 = not found / not a directory.
+u16 fat32_chdir(u16 *path) {
+    u16 err = 0;
+    u16 i   = 0;
+    u16 j   = 0;
+    u16 k   = 0;
+    u16 len = 0;
+    u16 ch  = 0;
+    u16 dot = 0;
+    u16 max_len = (CWD_PATH_WORDS << 1) - 1;
+    u16 comp[8];
+
+    if (fat_mounted == 0) {
+        return 1;
+    }
+
+    if (getbyte(path, 0) == 0) {
+        cwd_clus_hi = root_clus_hi;
+        cwd_clus_lo = root_clus_lo;
+        setbyte(cwd_path, 0, 47);
+        setbyte(cwd_path, 1, 0);
+        return 0;
+    }
+
+    err = fat32_resolve_dir(path);
+    if (err != 0) {
+        return err;
+    }
+
+    cwd_clus_hi = fat_dir_clus_hi;
+    cwd_clus_lo = fat_dir_clus_lo;
+
+    // Normalize cwd_path string
+    if (getbyte(path, 0) == 47) {
+        setbyte(cwd_path, 0, 47);
+        setbyte(cwd_path, 1, 0);
+        i = 1;
+    }
+
+    while (true) {
+        while (getbyte(path, i) == 47) {
+            i++;
+        }
+        if (getbyte(path, i) == 0) {
+            break;
+        }
+
+        j = 0;
+        while (true) {
+            ch = getbyte(path, i);
+            if (ch == 0 || ch == 47) {
+                break;
+            }
+            if (j < 15) {
+                setbyte(comp, j, ch);
+                j++;
+            }
+            i++;
+        }
+        setbyte(comp, j, 0);
+
+        dot = fat32_is_dot(comp);
+        if (dot == 1) {
+            // "." -> unchanged
+        } else if (dot == 2) {
+            // ".." -> pop last path segment
+            len = 0;
+            while (getbyte(cwd_path, len) != 0) {
+                len++;
+            }
+            if (len > 1) {
+                len--;
+                while (len > 0 && getbyte(cwd_path, len) != 47) {
+                    len--;
+                }
+                if (len == 0) {
+                    setbyte(cwd_path, 1, 0);
+                } else {
+                    setbyte(cwd_path, len, 0);
+                }
+            }
+        } else {
+            len = 0;
+            while (getbyte(cwd_path, len) != 0) {
+                len++;
+            }
+            if (len > 1 && len < max_len) {
+                setbyte(cwd_path, len, 47);
+                len++;
+            }
+            k = 0;
+            while (k < j && len < max_len) {
+                setbyte(cwd_path, len, ascii_upper(getbyte(comp, k)));
+                len++;
+                k++;
+            }
+            setbyte(cwd_path, len, 0);
+        }
+    }
+
+    return 0;
 }

@@ -24,6 +24,9 @@ const u16 SYS_OPEN      = 0x12;
 const u16 SYS_WRITE     = 0x13;
 const u16 SYS_OPENDIR   = 0x14;
 const u16 SYS_UNLINK    = 0x15;
+const u16 SYS_MKDIR     = 0x16;
+const u16 SYS_RMDIR     = 0x17;
+const u16 SYS_CHDIR     = 0x18;
 
 // Class C: Buffer In (0x20..0x2F)
 const u16 SYS_READ      = 0x20;
@@ -37,10 +40,12 @@ const u16 ERR_IO        = 0x0002;
 const u16 ERR_EOF       = 0x0003;
 const u16 ERR_UNKNOWN   = 0xFFFF;
 
+const u16 SYS_BUF_WORDS = 64;
+const u16 RUN_BUF_MAX   = 4096;
+
 u16 msg_pending = 0;
-u16 sys_buf[64];
-const u16 RUN_BUF_MAX = 4096;
-u16 run_img_buf[4096];
+u16 sys_buf[SYS_BUF_WORDS];
+u16 run_img_buf[RUN_BUF_MAX];
 DirEntry sys_ent;
 
 // -----------------------------------------------------------------------------
@@ -151,7 +156,7 @@ void handle_syscall(void) {
             i++;
         }
         sys_buf[63] = 0;
-        arg1 = fat32_read_file_root(sys_buf, run_img_buf, RUN_BUF_MAX);
+        arg1 = fat32_read_file(sys_buf, run_img_buf, RUN_BUF_MAX);
         if (arg1 == 0) {
             fifo_sel = pid;
             fifo_out = ERR_IO;
@@ -183,9 +188,9 @@ void handle_syscall(void) {
         }
         sys_buf[63] = 0;
         if (extra == 0) {
-            fd = fat32_open_root(pid, sys_buf);
+            fd = fat32_open(pid, sys_buf);
         } else {
-            fd = fat32_open_write_root(pid, sys_buf);
+            fd = fat32_open_write(pid, sys_buf);
         }
         if (fd == 0xFFFF) {
             fifo_out = ERR_IO;
@@ -230,8 +235,19 @@ void handle_syscall(void) {
     if (id == SYS_OPENDIR) {
         extra = fifo_in;
         wlen  = fifo_in;
-        drain_fifo(wlen);               // v1: opens root "/"
-        fd = fat32_opendir_root(pid);
+        i = 0;
+        while (i < wlen) {
+            arg1 = fifo_in;
+            if (i < 63) {
+                sys_buf[i] = arg1;
+            }
+            i++;
+        }
+        if (wlen == 0) {
+            sys_buf[0] = 0;
+        }
+        sys_buf[63] = 0;
+        fd = fat32_opendir(pid, sys_buf);
         if (fd == 0xFFFF) {
             fifo_out = ERR_IO;
             fifo_out = 0;
@@ -254,7 +270,76 @@ void handle_syscall(void) {
             i++;
         }
         sys_buf[63] = 0;
-        arg2 = fat32_unlink_root(sys_buf);
+        arg2 = fat32_unlink(sys_buf);
+        if (arg2 == 0) {
+            fifo_out = ERR_OK;
+        } else {
+            fifo_out = ERR_IO;
+        }
+        fifo_out = arg2;
+        return;
+    }
+
+    if (id == SYS_MKDIR) {
+        extra = fifo_in;
+        wlen  = fifo_in;
+        i = 0;
+        while (i < wlen) {
+            arg1 = fifo_in;
+            if (i < 63) {
+                sys_buf[i] = arg1;
+            }
+            i++;
+        }
+        sys_buf[63] = 0;
+        arg2 = fat32_mkdir(sys_buf);
+        if (arg2 == 0) {
+            fifo_out = ERR_OK;
+        } else {
+            fifo_out = ERR_IO;
+        }
+        fifo_out = arg2;
+        return;
+    }
+
+    if (id == SYS_RMDIR) {
+        extra = fifo_in;
+        wlen  = fifo_in;
+        i = 0;
+        while (i < wlen) {
+            arg1 = fifo_in;
+            if (i < 63) {
+                sys_buf[i] = arg1;
+            }
+            i++;
+        }
+        sys_buf[63] = 0;
+        arg2 = fat32_rmdir(sys_buf);
+        if (arg2 == 0) {
+            fifo_out = ERR_OK;
+        } else {
+            fifo_out = ERR_IO;
+        }
+        fifo_out = arg2;
+        return;
+    }
+
+    if (id == SYS_CHDIR) {
+        extra = fifo_in;
+        wlen  = fifo_in;
+        i = 0;
+        while (i < wlen) {
+            arg1 = fifo_in;
+            if (i < 63) {
+                sys_buf[i] = arg1;
+            }
+            i++;
+        }
+        if (wlen == 0) {
+            sys_buf[0] = 0;
+        }
+        sys_buf[63] = 0;
+        arg2 = fat32_chdir(sys_buf);
         if (arg2 == 0) {
             fifo_out = ERR_OK;
         } else {

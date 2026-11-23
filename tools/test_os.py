@@ -1153,6 +1153,191 @@ def test_os_cooperative_fibers(args):
     assert worker_sim.mem[0x0005] == 0xFAFF, f"Core 1 ASP leaked: 0x{worker_sim.mem[0x0005]:04X}"
 
 
+# ------------------------------------------------------------------------------
+# Test 10: FAT32 Subdirectories (mkdir, cd, pwd, rmdir, nested paths & syscalls)
+# ------------------------------------------------------------------------------
+def test_os_fat32_subdirs(_args):
+    dirapp_src = """
+import "sys.a4";
+
+DirEntry ent;
+u16 rd_buf[32];
+
+void fail(u16 code) {
+    sys_puts("SUBDIR_APP_FAIL:");
+    sys_putc(code);
+    sys_puts("\\r\\n");
+    sys_exit(code);
+}
+
+void main(void) {
+    u16 fd = 0;
+    u16 dfd = 0;
+    u16 written = 0;
+    u16 nwords = 0;
+    u16 saw_out = 0;
+
+    if (sys_mkdir("/APPDIR") != 0) {
+        fail(65);               // 'A'
+    }
+    if (sys_open("/APPDIR/OUT.TXT", O_WRONLY, &fd) != 0) {
+        fail(66);               // 'B'
+    }
+    if (sys_write(fd, "Subdir syscall OK!\\n", 19, &written) != 0 || written != 19) {
+        fail(67);               // 'C'
+    }
+    sys_close(fd);
+
+    if (sys_opendir("/APPDIR", &dfd) != 0) {
+        fail(68);               // 'D'
+    }
+    while (sys_readdir(dfd, &ent) == 0) {
+        if (getbyte(ent.name, 0) == 79 && getbyte(ent.name, 1) == 85 && getbyte(ent.name, 2) == 84) {
+            saw_out = 1;
+        }
+    }
+    sys_close(dfd);
+    if (saw_out == 0) {
+        fail(69);               // 'E'
+    }
+
+    if (sys_chdir("/APPDIR") != 0) {
+        fail(70);               // 'F'
+    }
+    if (sys_open("OUT.TXT", O_RDONLY, &fd) != 0) {
+        fail(71);               // 'G'
+    }
+    if (sys_read(fd, rd_buf, 16, &nwords) != 0 || nwords == 0) {
+        fail(72);               // 'H'
+    }
+    rd_buf[nwords] = 0;
+    sys_close(fd);
+
+    sys_puts("APPREAD:");
+    sys_puts(rd_buf);
+
+    if (sys_chdir("/") != 0) {
+        fail(73);               // 'I'
+    }
+    if (sys_unlink("/APPDIR/OUT.TXT") != 0) {
+        fail(74);               // 'J'
+    }
+    if (sys_rmdir("/APPDIR") != 0) {
+        fail(75);               // 'K'
+    }
+    sys_puts("SUBDIR_APP_OK\\r\\n");
+    sys_exit(0);
+}
+"""
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td)
+        a4 = p / "dirapp.a4"
+        app_bin = p / "dirapp.bin"
+        a4.write_text(dirapp_src, encoding="utf-8")
+        compile_and_assemble(a4, app_bin, org=0x0400, nopreamble=True, sparsebin=True)
+
+        sd_root = p / "sd_root"
+        sd_root.mkdir()
+        shutil.copy(app_bin, sd_root / "DIRAPP.BIN")
+        (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
+        sd_img = p / "subdir_test.img"
+        subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
+             "-o", str(sd_img), "--size-mb", "16", "--spc", "1"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
+        os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
+        os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+        os_sim.pc = 0x0100
+        uart_out, bad_writes = attach_uart_and_watch(os_sim)
+
+        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+        worker_sim.pc = 0x0100
+        worker_sim._poll_stdin = lambda: None
+        mr4sim.connect_os_worker(os_sim, worker_sim)
+
+        assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
+
+        def send_cmd(cmd_str, max_steps=6000000):
+            start = len(uart_out)
+            for ch in cmd_str:
+                os_sim.rx_queue.append(ord(ch))
+            ok = run_until_prompt(os_sim, uart_out, max_steps, worker=worker_sim)
+            assert ok, f"Command {cmd_str!r} timed out; out={''.join(uart_out[start:])!r}"
+            return "".join(uart_out[start:])
+
+        # 1. Root pwd + nested mkdir + duplicate rejection
+        assert "\r\n/\r\n" in send_cmd("pwd\r")
+        assert "Created docs" in send_cmd("mkdir docs\r")
+        assert "Already exists: docs" in send_cmd("mkdir docs\r")
+        assert "Created docs/sub" in send_cmd("mkdir docs/sub\r")
+
+        # 2. cd into docs, ls shows . / .. / SUB, write/cat/stat inside subdir
+        send_cmd("cd docs\r")
+        assert "\r\n/DOCS\r\n" in send_cmd("pwd\r")
+        out_ls = send_cmd("ls\r")
+        assert "<DIR>  ." in out_ls and "<DIR>  .." in out_ls and "<DIR>  SUB" in out_ls, f"ls in /DOCS:\n{out_ls}"
+        assert "Wrote note.txt" in send_cmd("write note.txt hello nested\r")
+        assert "hello nested" in send_cmd("cat note.txt\r")
+        out_st = send_cmd("stat sub\r")
+        assert "SUB  size=0 bytes  attr=0x0010" in out_st, f"stat sub:\n{out_st}"
+
+        # 3. Traverse deeper & test relative (..) and absolute (/...) paths
+        send_cmd("cd sub\r")
+        assert "\r\n/DOCS/SUB\r\n" in send_cmd("pwd\r")
+        assert "hello nested" in send_cmd("cat ../note.txt\r")
+        assert "Hello from MiniRISC4 FAT32 SD card!" in send_cmd("cat /README.TXT\r")
+        assert "Wrote deep.txt" in send_cmd("write deep.txt deep ok\r")
+        assert "NOTE.TXT" in send_cmd("ls /docs\r")
+
+        # 4. Directory removal safety checks & rmdir cleanup
+        assert "Is a directory (use rmdir): /docs" in send_cmd("rm /docs\r")
+        assert "Cannot remove current dir: /docs/sub" in send_cmd("rmdir /docs/sub\r")
+        send_cmd("cd ..\r")
+        assert "\r\n/DOCS\r\n" in send_cmd("pwd\r")
+        assert "Directory not empty: sub" in send_cmd("rmdir sub\r")
+        assert "Removed sub/deep.txt" in send_cmd("rm sub/deep.txt\r")
+        assert "Removed dir sub" in send_cmd("rmdir sub\r")
+        assert "SUB" not in send_cmd("ls\r")
+        send_cmd("cd /\r")
+        assert "\r\n/\r\n" in send_cmd("pwd\r")
+
+        # 5. Userland worker app using sys_mkdir / sys_open / sys_opendir / sys_chdir / sys_rmdir
+        procs_addr = os_sim.sym_to_addr["_procs"]
+        pid1_state = procs_addr + 10
+        start = len(uart_out)
+        assert "Spawned PID 1" in send_cmd("run DIRAPP.BIN\r", max_steps=10000000)
+        done = False
+        for _ in range(12000000):
+            os_sim.step()
+            worker_sim.step()
+            seg_now = "".join(uart_out[start:])
+            if os_sim.mem[pid1_state] == 0 and ("SUBDIR_APP_OK" in seg_now or "FAIL" in seg_now):
+                done = True
+                break
+        seg = "".join(uart_out[start:])
+        assert done, f"DIRAPP.BIN timed out; out={seg!r}"
+        assert "APPREAD:Subdir syscall OK!" in seg, f"DIRAPP.BIN readback mismatch:\n{seg}"
+        assert "SUBDIR_APP_OK" in seg, f"DIRAPP.BIN failed:\n{seg}"
+        assert os_sim.mem[pid1_state + 1] == 0, f"DIRAPP.BIN exit={os_sim.mem[pid1_state + 1]}"
+        assert "APPDIR" not in send_cmd("ls\r")
+
+        # Verify no FD/stack leaks and zero bad low-memory writes
+        fds_addr = os_sim.sym_to_addr["_fds"]
+        open_fds = [i for i in range(8) if os_sim.mem[fds_addr + i * 15] != 0]
+        assert not open_fds, f"Leaked open FDs: {open_fds}"
+        assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
+        assert os_sim.mem[0x0005] == 0xFAFF, f"Core 0 ASP leaked: 0x{os_sim.mem[0x0005]:04X}"
+        assert worker_sim.mem[0x0004] == 0xFEFF, f"Core 1 RSP leaked: 0x{worker_sim.mem[0x0004]:04X}"
+        assert worker_sim.mem[0x0005] == 0xFAFF, f"Core 1 ASP leaked: 0x{worker_sim.mem[0x0005]:04X}"
+
+
 TESTS = [
     ("compiler_runtime", test_compiler_runtime),
     ("trap_isr", test_trap_isr),
@@ -1163,6 +1348,7 @@ TESTS = [
     ("os_edge_shell_and_kill", test_os_edge_shell_and_kill),
     ("os_stress_fd_syscalls_multicluster", test_os_stress_fd_syscalls_multicluster),
     ("os_cooperative_fibers", test_os_cooperative_fibers),
+    ("os_fat32_subdirs", test_os_fat32_subdirs),
 ]
 
 

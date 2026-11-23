@@ -22,9 +22,10 @@
    - [3.2 Interactive Line Editor & Command History](#32-interactive-line-editor--command-history)
    - [3.3 Explicit-Only Program Launching (`!`, `run`, `&`)](#33-explicit-only-program-launching--run-)
    - [3.4 Executable PATH Resolution](#34-executable-path-resolution)
-   - [3.5 Console Ownership & Job Control Walkthrough](#35-console-ownership--job-control-walkthrough)
-   - [3.6 Built-In Shell Commands](#36-built-in-shell-commands)
-   - [3.7 Worker Crash & Fault Diagnostics](#37-worker-crash--fault-diagnostics)
+   - [3.5 Script Files (`do` / `@`)](#35-script-files-do--)
+   - [3.6 Console Ownership & Job Control Walkthrough](#36-console-ownership--job-control-walkthrough)
+   - [3.7 Built-In Shell Commands](#37-built-in-shell-commands)
+   - [3.8 Worker Crash & Fault Diagnostics](#38-worker-crash--fault-diagnostics)
 4. [Developer & API Reference](#4-developer--api-reference)
    - [4.1 Writing & Building Userland Applications](#41-writing--building-userland-applications)
    - [4.2 Kernel Syscall Table (`0x01`–`0x25`)](#42-kernel-syscall-table-0x010x25)
@@ -135,7 +136,7 @@ When idle, a worker core spins in `_loader_idle` polling `FIFO_IN` for `CMD_LOAD
 
 To launch a binary, Core 0 (`proc_spawn_from_file` in `os_proc.a4`):
 
-1. Opens the `.BIN` file on FAT32 and verifies `0 < word_count <= APP_MAX_WORDS` (`0xF600`).
+1. Opens the `.PRG` file on FAT32 and verifies `0 < word_count <= APP_MAX_WORDS` (`0xF600`).
 2. Allocates the first `PROC_FREE` worker core (`pid = 1..MAX_CORES-1`), sets state to `PROC_LOAD`, records the program name, copies command-line arguments (`proc_args`), inherits the parent's CWD cluster, and configures console ownership.
 3. Selects `fifo_sel = pid` and writes the 4-word load header:
    ```
@@ -202,7 +203,7 @@ Core 0 includes a standalone SPI SDv2/SDHC block driver (`os_sd.a4`) and FAT32 d
 
 - **Block Driver (`os_sd.a4`):** Initializes SDv2/SDHC cards at ~400 kHz (`CMD0`, `CMD8`, `ACMD41`, `CMD58`), switches to high-speed SPI, and supports single-block read (`CMD17`) and write (`CMD24`) with inlined byte-transfer loops for low overhead.
 - **Volume Mount:** Parses MBR partition 0 (or direct superfloppy BPB), validates the `0xAA55` boot signature, and computes 32-bit `fat_lba`, `data_lba`, `root_clus`, `sec_per_clus`, and `data_clus` counts using 16-bit `(hi, lo)` pairs.
-- **Naming & Paths:** Standard FAT32 **8.3** filenames (case-insensitive lookup, stored uppercase on disk). Full hierarchical path traversal supports absolute (`/BIN/LS.BIN`), relative (`SUB/FILE.TXT`), `.` (current directory), and `..` (parent directory).
+- **Naming & Paths:** Standard FAT32 **8.3** filenames (case-insensitive lookup, stored uppercase on disk). Full hierarchical path traversal supports absolute (`/BIN/LS.PRG`), relative (`SUB/FILE.TXT`), `.` (current directory), and `..` (parent directory).
 - **File Descriptors:** `FD_MAX = 8` shared descriptors (`fds[0..7]`) tracking `owner_core`, cluster chain cursor, 32-bit file size/position, and parent directory LBA/offset for size synchronization on write/close.
 - **Write & Metadata Operations:** Multi-cluster allocation and chain extension, `O_WRONLY` (create/truncate) and `O_APPEND` (seek to EOF), `unlink` (frees cluster chain and marks entry `0xE5`), `mkdir` (allocates cluster + seeds `.` and `..`), `rmdir` (verifies directory is empty and not any core's active CWD), `rename` (in-place or cross-directory move, updating the `..` entry when moving a directory), `copy`, `stat`, `df`, and `getcwd` (upward `..` directory walk reconstructing the canonical absolute path).
 
@@ -256,7 +257,7 @@ The Core 0 shell (`os_shell.a4`) provides a non-blocking line editor with a **64
 
 ### 3.3 Explicit-Only Program Launching (`!`, `run`, `&`)
 
-`mr4os` enforces **strictly explicit program launching** — typing a bare program name like `fibers` or `LS.BIN` will **never** implicitly launch an executable; it reports `Unknown command: <name>`.
+`mr4os` enforces **strictly explicit program launching** — typing a bare program name like `fibers` or `LS.PRG` will **never** implicitly launch an executable; it reports `Unknown command: <name>`.
 
 To launch a program on a worker core, you must use an explicit launcher:
 
@@ -273,13 +274,25 @@ Both `!` and `&` accept an optional space between the sigil and the program name
 All explicit launchers (`!`, `run`, `&`) resolve `<app>` through `shell_resolve_exec_path()` in the following order (skipping directories):
 
 1. **Exact path/name** as typed (relative to Core 0's CWD, or absolute if starting with `/`).
-2. **`<app>.BIN`** in CWD (or the specified directory), if `<app>` contains no `.`.
-3. **`/BIN/<app>`** (or `/BIN/<app>.BIN` if no `.`), if `<app>` contains no `/`.
-4. **`/<app>`** (or `/<app>.BIN` if no `.`), if `<app>` contains no `/`.
+2. **`<app>.PRG`** in CWD (or the specified directory), if `<app>` contains no `.`.
+3. **`/BIN/<app>`** (or `/BIN/<app>.PRG` if no `.`), if `<app>` contains no `/`.
+4. **`/<app>`** (or `/<app>.PRG` if no `.`), if `<app>` contains no `/`.
 
-For example, from `/WORK`, typing `!cat README.TXT` locates `/CAT.BIN` (or `/BIN/CAT.BIN`), launches it with CWD `/WORK`, and passes `"README.TXT"` via `sys_getargs()`.
+For example, from `/WORK`, typing `!cat README.TXT` locates `/CAT.PRG` (or `/BIN/CAT.PRG`), launches it with CWD `/WORK`, and passes `"README.TXT"` via `sys_getargs()`.
 
-### 3.5 Console Ownership & Job Control Walkthrough
+### 3.5 Script Files (`do` / `@`)
+
+`mr4os` supports sequential command scripts (no control flow) via **`do <file>`** or its shorthand alias **`@ <file>`** / **`@<file>`**:
+
+- **Path Resolution:**
+  - If `<file>` contains `/` (a full or explicit path such as `@/work/setup.do`), that exact path is opened directly.
+  - Otherwise (a bare name such as `@setup` or `do setup`), the shell looks for `/BIN/<name>.DO` (or `/BIN/<name>` if `.` is present), falling back to `<name>` / `<name>.DO` in the current directory.
+- **Silent Execution:** Script lines are executed silently without echoing commands or intermediate `mr4> ` prompts — only explicit `echo` and program output appear, followed by a single `mr4> ` prompt upon completion.
+- **Formatting:** Both `\n` and `\r\n` line endings are supported (maximum 63 characters per line). Blank lines and lines whose first non-whitespace character is `#` are skipped.
+- **Foreground Synchronization:** If a script line launches a foreground program (`!app`), the script automatically pauses until that worker exits before advancing to the next line. Background launches (`&app` / `run app`) proceed immediately.
+- **Abort on `Ctrl-C`:** Pressing `Ctrl-C` kills any active foreground worker and aborts the remainder of the script cleanly, closing its file descriptor and returning to `mr4> `.
+
+### 3.6 Console Ownership & Job Control Walkthrough
 
 ```text
 mr4> &myworker
@@ -287,7 +300,7 @@ Spawned PID 1 (01A4 words)
 mr4> ps
 PID  STATE  NAME
 0    RUN    os_kernel
-1    RUN    MYWORKER.BIN
+1    RUN    MYWORKER.PRG
 2    FREE   -
 3    FREE   -
 mr4> fg --fgoutput 1
@@ -295,7 +308,7 @@ Console output enabled for PID 1
 mr4> ps
 PID  STATE  NAME
 0    RUN    os_kernel
-1    RUN    MYWORKER.BIN  [OUT]
+1    RUN    MYWORKER.PRG  [OUT]
 2    FREE   -
 3    FREE   -
 mr4> fg 1
@@ -313,14 +326,15 @@ mr4>
 - Pressing **`Ctrl-Z`** while a foreground app is active detaches it cleanly to the background without terminating it.
 - Pressing **`Ctrl-C`** while a foreground app is active terminates it immediately via Mailbox Trap 14 and reclaims its worker core and open file descriptors.
 
-### 3.6 Built-In Shell Commands
+### 3.7 Built-In Shell Commands
 
 | Command | Syntax | Description |
 | :--- | :--- | :--- |
 | `help` | `help` | Print the built-in command summary |
 | `ps` | `ps` | List all core slots (`PID`, `STATE`, `NAME`, plus `[FG]` / `[OUT]` badges) |
-| `!` | `! <file> [args]` / `!<file> [args]` | Launch executable on a worker core in the **foreground** (PATH-resolved) |
-| `run` / `&` | `run <file> [args]` / `&<file> [args]` | Launch executable on a worker core in the **background** (muted output, PATH-resolved) |
+| `!` | `! <file> [args]` / `!<file> [args]` | Launch `.PRG` executable on a worker core in the **foreground** (PATH-resolved) |
+| `run` / `&` | `run <file> [args]` / `&<file> [args]` | Launch `.PRG` executable on a worker core in the **background** (muted output, PATH-resolved) |
+| `do` / `@` | `do <file>` / `@<file>` | Run sequential commands silently from a script file (full path or `/BIN/<name>.DO`) |
 | `fg` | `fg <pid>` | Attach running worker `pid` to foreground (exclusive output + keyboard input) |
 | `fg --fgoutput` | `fg --fgoutput <pid>` | Enable UART output for `pid` without taking shell keyboard input or muting other cores |
 | `bg` | `bg <pid>` | Mute UART output for `pid` (and release foreground input if attached) |
@@ -341,13 +355,13 @@ mr4>
 | `echo` | `echo <text>` | Print `<text>` to UART |
 | `clear` | `clear` | Clear terminal screen and home cursor (`ESC[2J ESC[H`) |
 
-### 3.7 Worker Crash & Fault Diagnostics
+### 3.8 Worker Crash & Fault Diagnostics
 
 If a userland program triggers a hardware alignment violation (Trap 15) or any unhandled trap vector (`2..13`), `worker_stub.asm` sends `SYS_EXIT(0xFF00 | vec)` to Core 0 and resets the worker core cleanly to idle. Core 0 prints a diagnostic banner, reclaims the core and its open FDs, and records `0xFF00 | vec` as its exit code:
 
 ```text
-[FAULT] PID 1 (BADAPP.BIN): align fault (0xFF0F)
-[FAULT] PID 2 (TRAPTEST.BIN): unhandled trap 7 (0xFF07)
+[FAULT] PID 1 (BADAPP.PRG): align fault (0xFF0F)
+[FAULT] PID 2 (TRAPTEST.PRG): unhandled trap 7 (0xFF07)
 ```
 
 ---
@@ -360,19 +374,19 @@ Userland apps are standard ACT4 programs placed under `mr4src/act4/apps/` (or an
 
 #### Compilation & Packaging Flags
 
-Worker applications **must** be compiled for load origin `0x0400` without the Core 0 boot preamble, and assembled with `--sparsebin` so the output binary starts directly at word `0x0400`:
+Worker applications **must** be compiled for load origin `0x0400` without the Core 0 boot preamble, and assembled with `--sparsebin` so the output `.prg` binary starts directly at word `0x0400`:
 
 ```bash
 # 1. Compile ACT4 -> MiniRISC4 assembly (origin 0x0400, no boot preamble)
 bin/compile mr4src/act4/apps/myapp.a4 -o build/os/myapp.asm \
     -I mr4src/act4/os -I lib --org 0x0400 --nopreamble
 
-# 2. Assemble -> raw loadable binary starting at 0x0400
+# 2. Assemble -> raw loadable .prg starting at 0x0400
 python3 tools/mr4asm.py -I lib --sparsebin build/os/myapp.asm \
-    -o build/os/myapp.bin -l build/os/myapp.lst
+    -o build/os/myapp.prg -l build/os/myapp.lst
 
 # 3. Copy onto SD image root (8.3 uppercase filename) and rebuild FAT32 image
-cp build/os/myapp.bin build/sd_root/MYAPP.BIN
+cp build/os/myapp.prg build/sd_root/MYAPP.PRG
 python3 tools/mksdimage.py build/sd_root -o /tmp/mr4_sd.img --size-mb 16 --spc 1
 ```
 

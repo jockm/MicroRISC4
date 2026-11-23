@@ -158,64 +158,87 @@ def build_fat32_image(
     next_clus = root_clus + 1
     cluster_bytes = sec_per_clus * SECTOR_SIZE
 
-    dir_entries: List[bytes] = []
+    total_files = 0
 
-    # Volume label entry
-    vol_entry = bytearray(32)
-    vol_entry[0:11] = volume_label.encode("ascii")[:11].ljust(11, b" ")
-    vol_entry[11] = 0x08  # ATTR_VOLUME_ID
-    dir_entries.append(bytes(vol_entry))
-
-    files = sorted(
-        [p for p in src_dir.iterdir() if p.is_file() and not p.name.startswith(".")],
-        key=lambda p: p.name.upper(),
-    )
-
-    for file_path in files:
-        data = file_path.read_bytes()
-        file_size = len(data)
-        num_clus = max(1, (file_size + cluster_bytes - 1) // cluster_bytes)
-
+    def alloc_cluster_chain(data: bytes, label: str) -> int:
+        nonlocal next_clus
+        num_clus = max(1, (len(data) + cluster_bytes - 1) // cluster_bytes)
         first_clus = next_clus
         for idx in range(num_clus):
             c = next_clus
             next_clus += 1
             if c >= total_clusters + 2:
-                raise RuntimeError(f"Out of FAT32 clusters while adding {file_path.name}")
-
+                raise RuntimeError(f"Out of FAT32 clusters while adding {label}")
             chunk = data[idx * cluster_bytes : (idx + 1) * cluster_bytes]
             buf = bytearray(cluster_bytes)
             buf[: len(chunk)] = chunk
             cluster_data[c] = buf
+            fat_entries[c] = (c + 1) if (idx + 1 < num_clus) else EOC_32
+        return first_clus
 
-            if idx + 1 < num_clus:
-                fat_entries[c] = c + 1
-            else:
-                fat_entries[c] = EOC_32
-
-        # 32-byte FAT directory entry (ATTR_ARCHIVE = 0x20)
+    def make_dir_entry(name_83: bytes, attr: int, first_clus: int, size: int) -> bytes:
         entry = bytearray(32)
-        entry[0:11] = to_83_name(file_path.name)
-        entry[11] = 0x20
+        entry[0:11] = name_83
+        entry[11] = attr
         struct.pack_into("<H", entry, 20, (first_clus >> 16) & 0xFFFF)  # FstClusHI
         struct.pack_into("<H", entry, 26, first_clus & 0xFFFF)         # FstClusLO
-        struct.pack_into("<I", entry, 28, file_size)                    # FileSize
-        dir_entries.append(bytes(entry))
+        struct.pack_into("<I", entry, 28, size)                        # FileSize
+        return bytes(entry)
 
-    # Pack directory entries into root cluster chain
-    packed_dir = b"".join(dir_entries)
-    dir_clus_count = max(1, (len(packed_dir) + cluster_bytes - 1) // cluster_bytes)
-    cur_c = root_clus
-    for d_idx in range(dir_clus_count):
-        if d_idx > 0:
-            new_c = next_clus
-            next_clus += 1
-            cluster_data[new_c] = bytearray(cluster_bytes)
-            fat_entries[cur_c] = new_c
-            fat_entries[new_c] = EOC_32
-            cur_c = new_c
-        chunk = packed_dir[d_idx * cluster_bytes : (d_idx + 1) * cluster_bytes]
-        cluster_data[cur_c][: len(chunk)] = chunk
+    def write_dir_chain(start_clus: int, packed_dir: bytes, label: str) -> None:
+        nonlocal next_clus
+        dir_clus_count = max(1, (len(packed_dir) + cluster_bytes - 1) // cluster_bytes)
+        cur_c = start_clus
+        for d_idx in range(dir_clus_count):
+            if d_idx > 0:
+                new_c = next_clus
+                next_clus += 1
+                if new_c >= total_clusters + 2:
+                    raise RuntimeError(f"Out of FAT32 clusters while growing dir {label}")
+                cluster_data[new_c] = bytearray(cluster_bytes)
+                fat_entries[cur_c] = new_c
+                fat_entries[new_c] = EOC_32
+                cur_c = new_c
+            chunk = packed_dir[d_idx * cluster_bytes : (d_idx + 1) * cluster_bytes]
+            cluster_data[cur_c][: len(chunk)] = chunk
+
+    def populate_dir(host_dir: Path, dir_clus: int, parent_clus: int, is_root: bool) -> None:
+        nonlocal next_clus, total_files
+        entries: List[bytes] = []
+        if is_root:
+            vol_entry = bytearray(32)
+            vol_entry[0:11] = volume_label.encode("ascii")[:11].ljust(11, b" ")
+            vol_entry[11] = 0x08  # ATTR_VOLUME_ID
+            entries.append(bytes(vol_entry))
+        else:
+            # FAT32 spec: ".." points to 0 when parent is root directory
+            dotdot_clus = 0 if parent_clus == root_clus else parent_clus
+            entries.append(make_dir_entry(to_83_name("."), 0x10, dir_clus, 0))
+            entries.append(make_dir_entry(to_83_name(".."), 0x10, dotdot_clus, 0))
+
+        children = sorted(
+            [p for p in host_dir.iterdir() if not p.name.startswith(".")],
+            key=lambda p: p.name.upper(),
+        )
+        for child in children:
+            if child.is_dir():
+                sub_clus = next_clus
+                next_clus += 1
+                if sub_clus >= total_clusters + 2:
+                    raise RuntimeError(f"Out of FAT32 clusters while adding dir {child.name}")
+                cluster_data[sub_clus] = bytearray(cluster_bytes)
+                fat_entries[sub_clus] = EOC_32
+                populate_dir(child, sub_clus, dir_clus, is_root=False)
+                entries.append(make_dir_entry(to_83_name(child.name), 0x10, sub_clus, 0))
+            elif child.is_file():
+                data = child.read_bytes()
+                first_clus = alloc_cluster_chain(data, child.name)
+                entries.append(make_dir_entry(to_83_name(child.name), 0x20, first_clus, len(data)))
+                total_files += 1
+
+        write_dir_chain(dir_clus, b"".join(entries), host_dir.name)
+
+    populate_dir(src_dir, root_clus, root_clus, is_root=True)
 
     # --- 5. Write FAT tables ---
     fat_bytes = bytearray(fat_size_32 * SECTOR_SIZE)
@@ -241,7 +264,7 @@ def build_fat32_image(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(img)
-    print(f"Wrote FAT32 image '{out_path}' ({len(img)} bytes, {len(files)} files, part_lba={part_lba}, spc={sec_per_clus})")
+    print(f"Wrote FAT32 image '{out_path}' ({len(img)} bytes, {total_files} files, part_lba={part_lba}, spc={sec_per_clus})")
 
 
 def main() -> int:

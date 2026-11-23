@@ -23,6 +23,11 @@ u16 sh_arg_idx  = 0;    // Byte offset in sh_line where first arg starts
 u16 sh_rest_idx = 0;    // Byte offset in sh_line after first arg
 DirEntry sh_ent;
 
+u16 sh_script_fd = 0xFFFF;  // Active FAT32 FD for do/@ script (0xFFFF = idle)
+u16 sh_sc_buf[LINE_WORDS];  // 64-byte read-ahead buffer for script runner
+u16 sh_sc_pos    = 0;
+u16 sh_sc_len    = 0;
+
 void shell_prompt(void) {
     uart_puts("mr4> ");
 }
@@ -506,8 +511,8 @@ void shell_cmd_clear(void) {
     uart_puts("[H");
 }
 
-// Build candidate executable path: prefix + name + optional ".BIN" into dst (max 31 chars)
-void shell_build_path(u16 *dst, u16 *prefix, u16 *name, u16 add_bin) {
+// Build candidate path: prefix + name + ext into dst (max 31 chars)
+void shell_build_path(u16 *dst, u16 *prefix, u16 *name, u16 *ext) {
     u16 o  = 0;
     u16 i  = 0;
     u16 ch = 0;
@@ -531,32 +536,30 @@ void shell_build_path(u16 *dst, u16 *prefix, u16 *name, u16 add_bin) {
         o++;
         i++;
     }
-    if (add_bin != 0) {
-        i = 0;
-        while (o < 31) {
-            ch = getbyte(".BIN", i);
-            if (ch == 0) {
-                break;
-            }
-            setbyte(dst, o, ch);
-            o++;
-            i++;
+    i = 0;
+    while (o < 31) {
+        ch = getbyte(ext, i);
+        if (ch == 0) {
+            break;
         }
+        setbyte(dst, o, ch);
+        o++;
+        i++;
     }
     setbyte(dst, o, 0);
 }
 
-// Resolve executable name for `!` and `run`:
+// Resolve executable name for `!`, `run`, and `&`:
 //   1. Exact name in CWD (or explicit path)
-//   2. <name>.BIN (if no '.')
-//   3. /BIN/<name>[.BIN] (if no '/')
-//   4. /<name>[.BIN] (if no '/')
+//   2. <name>.PRG (if no '.')
+//   3. /BIN/<name>[.PRG] (if no '/')
+//   4. /<name>[.PRG] (if no '/')
 u16 shell_resolve_exec_path(u16 *name, u16 *out) {
     u16 i         = 0;
     u16 ch        = 0;
     u16 has_slash = 0;
     u16 has_dot   = 0;
-    u16 add_bin   = 0;
+    u16 *ext      = "";
 
     while (true) {
         ch = getbyte(name, i);
@@ -571,7 +574,7 @@ u16 shell_resolve_exec_path(u16 *name, u16 *out) {
         i++;
     }
     if (has_dot == 0) {
-        add_bin = 1;
+        ext = ".PRG";
     }
 
     // 1. Exact path / name
@@ -579,26 +582,115 @@ u16 shell_resolve_exec_path(u16 *name, u16 *out) {
         str_copy(out, name, 32);
         return 1;
     }
-    // 2. Append .BIN in CWD / explicit dir
-    if (add_bin != 0) {
-        shell_build_path(out, "", name, 1);
+    // 2. Append .PRG in CWD / explicit dir
+    if (has_dot == 0) {
+        shell_build_path(out, "", name, ".PRG");
         if (fat32_stat(out, &sh_ent) == 0 && (sh_ent.attr & ATTR_DIRECTORY) == 0) {
             return 1;
         }
     }
     // 3 & 4. Search /BIN/ then / for bare program names
     if (has_slash == 0) {
-        shell_build_path(out, "/BIN/", name, add_bin);
+        shell_build_path(out, "/BIN/", name, ext);
         if (fat32_stat(out, &sh_ent) == 0 && (sh_ent.attr & ATTR_DIRECTORY) == 0) {
             return 1;
         }
-        shell_build_path(out, "/", name, add_bin);
+        shell_build_path(out, "/", name, ext);
         if (fat32_stat(out, &sh_ent) == 0 && (sh_ent.attr & ATTR_DIRECTORY) == 0) {
             return 1;
         }
     }
     str_copy(out, name, 32);
     return 0;
+}
+
+void shell_script_close(void) {
+    if (sh_script_fd != 0xFFFF) {
+        fat32_close(sh_script_fd);
+        sh_script_fd = 0xFFFF;
+    }
+    sh_sc_pos = 0;
+    sh_sc_len = 0;
+}
+
+// Resolve script path for `do` and `@`:
+//   - If a path containing '/' is provided, use it directly.
+//   - Otherwise look for /BIN/<name>.DO (or /BIN/<name> if '.' present),
+//     falling back to <name> / <name>.DO in CWD.
+u16 shell_resolve_script_path(u16 *name, u16 *out) {
+    u16 i         = 0;
+    u16 ch        = 0;
+    u16 has_slash = 0;
+    u16 has_dot   = 0;
+    u16 *ext      = "";
+
+    while (true) {
+        ch = getbyte(name, i);
+        if (ch == 0) {
+            break;
+        }
+        if (ch == 47) {
+            has_slash = 1;
+        } else if (ch == 46) {
+            has_dot = 1;
+        }
+        i++;
+    }
+    if (has_dot == 0) {
+        ext = ".DO";
+    }
+
+    if (has_slash != 0) {
+        str_copy(out, name, 32);
+        if (fat32_stat(name, &sh_ent) == 0 && (sh_ent.attr & ATTR_DIRECTORY) == 0) {
+            return 1;
+        }
+        return 0;
+    }
+
+    shell_build_path(out, "/BIN/", name, ext);
+    if (fat32_stat(out, &sh_ent) == 0 && (sh_ent.attr & ATTR_DIRECTORY) == 0) {
+        return 1;
+    }
+    if (fat32_stat(name, &sh_ent) == 0 && (sh_ent.attr & ATTR_DIRECTORY) == 0) {
+        str_copy(out, name, 32);
+        return 1;
+    }
+    if (has_dot == 0) {
+        shell_build_path(out, "", name, ".DO");
+        if (fat32_stat(out, &sh_ent) == 0 && (sh_ent.attr & ATTR_DIRECTORY) == 0) {
+            return 1;
+        }
+    }
+    str_copy(out, name, 32);
+    return 0;
+}
+
+void shell_cmd_do(u16 *path_arg) {
+    u16 sc_path[16];
+
+    if (sh_script_fd != 0xFFFF) {
+        uart_puts("Script already running\r\n");
+        return;
+    }
+    if (getbyte(path_arg, 0) == 0) {
+        uart_puts("Usage: do <file>\r\n");
+        return;
+    }
+    if (fat_mounted == 0) {
+        uart_puts("SD/FAT32 not mounted\r\n");
+        return;
+    }
+    shell_resolve_script_path(path_arg, sc_path);
+    sh_script_fd = fat32_open(0, sc_path);
+    if (sh_script_fd == 0xFFFF) {
+        uart_puts("Script not found: ");
+        uart_puts(path_arg);
+        uart_nl();
+        return;
+    }
+    sh_sc_pos = 0;
+    sh_sc_len = 0;
 }
 
 void shell_cmd_run(u16 foreground, u16 arg_off) {
@@ -714,6 +806,29 @@ void shell_exec(void) {
     }
 
     ch = getbyte(sh_cmd, 0);
+    if (ch == 64) {
+        // Support "@ <file>" and "@<file>" (alias for "do")
+        if (getbyte(sh_cmd, 1) != 0) {
+            i = 0;
+            while (getbyte(sh_line, i) == 32) {
+                i++;
+            }
+            i++;                        // Skip '@'
+            pid = 0;
+            while (pid < 31) {
+                ch = getbyte(sh_line, i);
+                if (ch == 0 || ch == 32) {
+                    break;
+                }
+                setbyte(sh_arg, pid, ch);
+                i++;
+                pid++;
+            }
+            setbyte(sh_arg, pid, 0);
+        }
+        shell_cmd_do(sh_arg);
+        return;
+    }
     if (ch == 33 || ch == 38) {
         // Support "! APP [args]", "!APP [args]" (fg) and "& APP [args]", "&APP [args]" (bg)
         pid = 0;
@@ -739,7 +854,9 @@ void shell_exec(void) {
     }
 
     if (str_eq(sh_cmd, "help") == 1) {
-        uart_puts("Commands: ps, ! <file> [args], run/& <file> [args], fg [--fgoutput] <pid>, bg <pid>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write/append <file> <text>, cp/mv <src> <dst>, rm <file>, df, echo <text>, clear\r\n");
+        uart_puts("Commands: ps, ! <file> [args], run/& <file> [args], do/@ <file>, fg [--fgoutput] <pid>, bg <pid>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write/append <file> <text>, cp/mv <src> <dst>, rm <file>, df, echo <text>, clear\r\n");
+    } else if (str_eq(sh_cmd, "do") == 1) {
+        shell_cmd_do(sh_arg);
     } else if (str_eq(sh_cmd, "ps") == 1) {
         proc_print_ps();
     } else if (str_eq(sh_cmd, "fg") == 1) {
@@ -845,6 +962,76 @@ void shell_hist_load(u16 nav_back) {
     shell_redraw_line(&sh_hist[slot * LINE_WORDS]);
 }
 
+u16 shell_script_getc(void) {
+    u16 ch = 0;
+    if (sh_sc_pos >= sh_sc_len) {
+        sh_sc_len = fat32_read_bytes(sh_script_fd, sh_sc_buf, LINE_MAX);
+        sh_sc_pos = 0;
+        if (sh_sc_len == 0) {
+            return 0xFFFF;
+        }
+    }
+    ch = getbyte(sh_sc_buf, sh_sc_pos);
+    sh_sc_pos++;
+    return ch;
+}
+
+// Read next non-empty, non-comment command line from active script into sh_line.
+// Returns 1 if a command line is ready, 0 on EOF.
+u16 shell_script_read_line(void) {
+    u16 ch = 0;
+    u16 i  = 0;
+
+    while (true) {
+        sh_len = 0;
+        while (true) {
+            ch = shell_script_getc();
+            if (ch == 0xFFFF || ch == 10) {
+                break;
+            }
+            if (ch == 13) {
+                continue;
+            }
+            if (sh_len < (LINE_MAX - 1)) {
+                setbyte(sh_line, sh_len, ch);
+                sh_len++;
+            }
+        }
+        setbyte(sh_line, sh_len, 0);
+        if (sh_len == 0 && ch == 0xFFFF) {
+            return 0;
+        }
+        // Skip leading whitespace and ignore empty or '#' comment lines
+        i = 0;
+        while (i < sh_len) {
+            ch = getbyte(sh_line, i);
+            if (ch != 32 && ch != 9) {
+                break;
+            }
+            i++;
+        }
+        if (i < sh_len && getbyte(sh_line, i) != 35) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Execute one pending command from an active script whenever no fg worker is running.
+void shell_script_step(void) {
+    if (sh_script_fd == 0xFFFF || fg_pid != 0) {
+        return;
+    }
+    if (shell_script_read_line() == 0) {
+        shell_script_close();
+        sh_len = 0;
+        shell_prompt();
+        return;
+    }
+    shell_exec();
+    sh_len = 0;
+}
+
 void shell_poll(void) {
     u16 ch  = uart_poll_getc();
     u16 pid = 0;
@@ -859,16 +1046,28 @@ void shell_poll(void) {
             uart_puts("\r\n[Backgrounded PID ");
             uart_putc(pid + 48);
             uart_puts("]\r\n");
-            shell_prompt();
-        } else if (ch == 3) {           // Ctrl-C: kill foreground worker
+            if (sh_script_fd == 0xFFFF) {
+                shell_prompt();
+            }
+        } else if (ch == 3) {           // Ctrl-C: kill foreground worker (+ abort script)
             pid = fg_pid;
             proc_kill(pid);
+            shell_script_close();
             uart_puts("\r\n^C Killed PID ");
             uart_putc(pid + 48);
             uart_nl();
             shell_prompt();
         } else {
             fg_rx_push(ch);
+        }
+        return;
+    }
+
+    if (sh_script_fd != 0xFFFF) {
+        if (ch == 3) {                  // Ctrl-C: abort active script
+            shell_script_close();
+            uart_puts("\r\n^C Script aborted\r\n");
+            shell_prompt();
         }
         return;
     }
@@ -911,7 +1110,7 @@ void shell_poll(void) {
         uart_nl();
         shell_exec();
         sh_len = 0;
-        if (fg_pid == 0) {
+        if (fg_pid == 0 && sh_script_fd == 0xFFFF) {
             shell_prompt();
         }
     } else if (ch == 8 || ch == 127) {

@@ -124,7 +124,9 @@ void handle_syscall(void) {
             uart_puts(")\r\n");
         }
         if (proc_mark_exited(pid, arg1) != 0) {
-            shell_prompt();
+            if (sh_script_fd == 0xFFFF) {
+                shell_prompt();
+            }
         }
         return;                         // No reply expected
     }
@@ -603,5 +605,6 @@ void main(void) {
             proc_use_cwd(0);
         }
         shell_poll();
+        shell_script_step();
     }
 }

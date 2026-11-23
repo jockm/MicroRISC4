@@ -1,7 +1,7 @@
 // ==============================================================================
 // FILE: mr4src/act4/apps/cat.a4
 // Standalone User-Space File Reader App (loads at 0x0400)
-// Usage: ! CAT.BIN [path]  (defaults to README.TXT when no argument is given)
+// Usage: ! CAT.PRG [path]  (defaults to README.TXT when no argument is given)
 // ==============================================================================
 
 import "sys.a4";

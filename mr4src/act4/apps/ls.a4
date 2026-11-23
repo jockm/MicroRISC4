@@ -1,7 +1,7 @@
 // ==============================================================================
 // FILE: mr4src/act4/apps/ls.a4
 // Standalone User-Space Directory Listing App (loads at 0x0400)
-// Usage: ! LS.BIN [dir]  (defaults to "." when no argument is given)
+// Usage: ! LS.PRG [dir]  (defaults to "." when no argument is given)
 // ==============================================================================
 
 import "sys.a4";

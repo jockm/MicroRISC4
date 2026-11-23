@@ -265,25 +265,25 @@ OS_MAIN_LST := $(OS_BUILD)/os_main.lst
 
 LS_A4       := $(OS_SRC_DIR)/apps/ls.a4
 LS_ASM      := $(OS_BUILD)/ls.asm
-LS_BIN      := $(OS_BUILD)/ls.bin
+LS_PRG      := $(OS_BUILD)/ls.prg
 LS_LST      := $(OS_BUILD)/ls.lst
 
 PS_A4       := $(OS_SRC_DIR)/apps/ps.a4
 PS_ASM      := $(OS_BUILD)/ps.asm
-PS_BIN      := $(OS_BUILD)/ps.bin
+PS_PRG      := $(OS_BUILD)/ps.prg
 PS_LST      := $(OS_BUILD)/ps.lst
 
 CAT_A4      := $(OS_SRC_DIR)/apps/cat.a4
 CAT_ASM     := $(OS_BUILD)/cat.asm
-CAT_BIN     := $(OS_BUILD)/cat.bin
+CAT_PRG     := $(OS_BUILD)/cat.prg
 CAT_LST     := $(OS_BUILD)/cat.lst
 
 FIBERS_A4   := $(OS_SRC_DIR)/apps/fibers.a4
 FIBERS_ASM  := $(OS_BUILD)/fibers.asm
-FIBERS_BIN  := $(OS_BUILD)/fibers.bin
+FIBERS_PRG  := $(OS_BUILD)/fibers.prg
 FIBERS_LST  := $(OS_BUILD)/fibers.lst
 
-OS_APP_BINS := $(LS_BIN) $(PS_BIN) $(CAT_BIN) $(FIBERS_BIN)
+OS_APP_PRGS := $(LS_PRG) $(PS_PRG) $(CAT_PRG) $(FIBERS_PRG)
 
 .PHONY: os-build sd-img sim-os os-test test-os clean-os
 
@@ -299,17 +299,18 @@ $(OS_MAIN_BIN) $(OS_MAIN_LST): $(OS_MAIN_ASM)
 $(OS_BUILD)/%.asm: $(OS_SRC_DIR)/apps/%.a4 lib/sys.a4 lib/fiber.a4 lib/term.a4 | $(OS_BUILD)
 	$(COMPILE) $< -o $@ -I $(OS_SRC_DIR)/os -I lib --org 0x0400 --nopreamble
 
-$(OS_BUILD)/%.bin: $(OS_BUILD)/%.asm
-	$(MR4ASM) -I $(LIB_DIR) --sparsebin "$<" -o "$@" -l "$(@:.bin=.lst)"
+$(OS_BUILD)/%.prg: $(OS_BUILD)/%.asm
+	$(MR4ASM) -I $(LIB_DIR) --sparsebin "$<" -o "$@" -l "$(@:.prg=.lst)"
 
-os-build: $(OS_MAIN_BIN) $(OS_APP_BINS) $(BUILD_DIR)/worker_stub.bin
+os-build: $(OS_MAIN_BIN) $(OS_APP_PRGS) $(BUILD_DIR)/worker_stub.bin
 
-$(SD_SRC_DIR): $(OS_APP_BINS)
+$(SD_SRC_DIR): $(OS_APP_PRGS)
 	mkdir -p $(SD_SRC_DIR)
-	cp $(LS_BIN) $(SD_SRC_DIR)/LS.BIN
-	cp $(PS_BIN) $(SD_SRC_DIR)/PS.BIN
-	cp $(CAT_BIN) $(SD_SRC_DIR)/CAT.BIN
-	cp $(FIBERS_BIN) $(SD_SRC_DIR)/FIBERS.BIN
+	rm -f $(SD_SRC_DIR)/*.BIN
+	cp $(LS_PRG) $(SD_SRC_DIR)/LS.PRG
+	cp $(PS_PRG) $(SD_SRC_DIR)/PS.PRG
+	cp $(CAT_PRG) $(SD_SRC_DIR)/CAT.PRG
+	cp $(FIBERS_PRG) $(SD_SRC_DIR)/FIBERS.PRG
 	printf "Hello from MiniRISC4 FAT32 SD card!\n" > $(SD_SRC_DIR)/README.TXT
 
 sd-img: $(SD_SRC_DIR)

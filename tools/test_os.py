@@ -1872,6 +1872,68 @@ void main(void) {
         assert worker_sim.mem[0x0005] == 0xFAFF
 
 
+# ------------------------------------------------------------------------------
+# Test 14: Explicit !/run PATH lookup (no implicit launch) & 4-entry arrow history
+# ------------------------------------------------------------------------------
+def test_os_path_and_history(args):
+    os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+    os_sim.sd_card = mr4sim.SpiSdCard(Path(args.sd_image).read_bytes())
+    os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
+    os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+    os_sim.pc = 0x0100
+    uart_out, bad_writes = attach_uart_and_watch(os_sim)
+
+    worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+    worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+    worker_sim.pc = 0x0100
+    worker_sim._poll_stdin = lambda: None
+    mr4sim.connect_os_worker(os_sim, worker_sim)
+
+    assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
+
+    def send_cmd(cmd_str, max_steps=16000000):
+        start = len(uart_out)
+        for ch in cmd_str:
+            os_sim.rx_queue.append(ord(ch))
+        ok = run_until_prompt(os_sim, uart_out, max_steps, worker=worker_sim)
+        assert ok, f"Command {cmd_str!r} timed out; out={''.join(uart_out[start:])!r}"
+        return "".join(uart_out[start:])
+
+    # 1. Strictly NO implicit launching: bare program name must be Unknown command
+    assert "Unknown command: fibers" in send_cmd("fibers\r")
+
+    # 2. Explicit `!` and `run` resolve .BIN, /BIN/<name>.BIN, and /<name>.BIN
+    assert "FIBERS_OK" in send_cmd("! fibers\r")
+
+    assert "Created /bin" in send_cmd("mkdir /bin\r")
+    assert "Copied CAT.BIN -> /bin/mycat.bin" in send_cmd("cp CAT.BIN /bin/mycat.bin\r")
+    assert "Created /work" in send_cmd("mkdir /work\r")
+    send_cmd("cd /work\r")
+    assert "Wrote msg.txt" in send_cmd("write msg.txt found via path\r")
+    out_bin = send_cmd("! mycat msg.txt\r")
+    assert "found via path" in out_bin, f"! mycat via /BIN failed:\n{out_bin}"
+    out_root = send_cmd("! cat msg.txt\r")
+    assert "found via path" in out_root, f"! cat via / failed:\n{out_root}"
+    send_cmd("cd /\r")
+
+    # 3. 4-entry Up/Down arrow history ring (ESC [ A / ESC [ B) + ignore ESC [ C
+    for tok in ("one", "two", "three", "four", "five"):
+        assert f"\r\n{tok}\r\n" in send_cmd(f"echo {tok}\r")
+
+    # Ring holds: two, three, four, five. Up x4 clamps at "two"; Down x1 -> "three"; Enter runs "echo three"
+    out_h1 = send_cmd("\x1b[A\x1b[A\x1b[A\x1b[A\x1b[A\x1b[B\r")
+    assert "\r\nthree\r\n" in out_h1, f"History Up/Down recall failed:\n{out_h1!r}"
+
+    # Up x1 -> "echo three", Down x1 -> blank line, Right arrow ignored, type "echo fresh"
+    out_h2 = send_cmd("\x1b[A\x1b[B\x1b[Cecho fresh\r")
+    assert "\r\nfresh\r\n" in out_h2, f"History Down-to-blank + ESC[C failed:\n{out_h2!r}"
+
+    assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
+    assert os_sim.mem[0x0005] == 0xFAFF
+    assert worker_sim.mem[0x0004] == 0xFEFF
+    assert worker_sim.mem[0x0005] == 0xFAFF
+
+
 TESTS = [
     ("compiler_runtime", test_compiler_runtime),
     ("trap_isr", test_trap_isr),
@@ -1886,6 +1948,7 @@ TESTS = [
     ("os_console_fg_bg", test_os_console_fg_bg),
     ("os_worker_fault_reporting", test_os_worker_fault_reporting),
     ("os_fs_ops_syscalls", test_os_fs_ops_syscalls),
+    ("os_path_and_history", test_os_path_and_history),
 ]
 
 

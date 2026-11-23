@@ -160,12 +160,16 @@ u16 sd_write_sector(u16 lba_hi, u16 lba_lo, u16 *buf) {
     sd_xfer(0xFF);
     sd_xfer(0xFE);
 
-    // Stream 256 little-endian u16 words (512 bytes)
+    // Stream 256 little-endian u16 words (512 bytes, inlined SPI xfer)
     i = 0;
     while (i < 256) {
         w = buf[i];
-        sd_xfer(w & 0x00FF);
-        sd_xfer(w >> 8);
+        spi_data = w & 0x00FF;
+        while ((spi_stat & 0x0001) != 0) {
+        }
+        spi_data = w >> 8;
+        while ((spi_stat & 0x0001) != 0) {
+        }
         i++;
     }
 

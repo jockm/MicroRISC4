@@ -5,8 +5,17 @@
 
 const u16 LINE_MAX   = 64;
 const u16 LINE_WORDS = LINE_MAX >> 1;
+const u16 HIST_MAX   = 4;
+const u16 HIST_TOTAL = HIST_MAX * LINE_WORDS;
+
 u16 sh_line[LINE_WORDS]; // 64 bytes packed
 u16 sh_len = 0;
+
+u16 sh_hist[HIST_TOTAL]; // 4-entry command history ring
+u16 sh_hist_count = 0;
+u16 sh_hist_next  = 0;
+u16 sh_hist_nav   = 0;
+u16 sh_esc_state  = 0;
 
 u16 sh_cmd[8];          // 16-byte command token
 u16 sh_arg[16];         // 32-byte first argument token
@@ -497,9 +506,105 @@ void shell_cmd_clear(void) {
     uart_puts("[H");
 }
 
+// Build candidate executable path: prefix + name + optional ".BIN" into dst (max 31 chars)
+void shell_build_path(u16 *dst, u16 *prefix, u16 *name, u16 add_bin) {
+    u16 o  = 0;
+    u16 i  = 0;
+    u16 ch = 0;
+
+    while (o < 31) {
+        ch = getbyte(prefix, i);
+        if (ch == 0) {
+            break;
+        }
+        setbyte(dst, o, ch);
+        o++;
+        i++;
+    }
+    i = 0;
+    while (o < 31) {
+        ch = getbyte(name, i);
+        if (ch == 0) {
+            break;
+        }
+        setbyte(dst, o, ch);
+        o++;
+        i++;
+    }
+    if (add_bin != 0) {
+        i = 0;
+        while (o < 31) {
+            ch = getbyte(".BIN", i);
+            if (ch == 0) {
+                break;
+            }
+            setbyte(dst, o, ch);
+            o++;
+            i++;
+        }
+    }
+    setbyte(dst, o, 0);
+}
+
+// Resolve executable name for `!` and `run`:
+//   1. Exact name in CWD (or explicit path)
+//   2. <name>.BIN (if no '.')
+//   3. /BIN/<name>[.BIN] (if no '/')
+//   4. /<name>[.BIN] (if no '/')
+u16 shell_resolve_exec_path(u16 *name, u16 *out) {
+    u16 i         = 0;
+    u16 ch        = 0;
+    u16 has_slash = 0;
+    u16 has_dot   = 0;
+    u16 add_bin   = 0;
+
+    while (true) {
+        ch = getbyte(name, i);
+        if (ch == 0) {
+            break;
+        }
+        if (ch == 47) {
+            has_slash = 1;
+        } else if (ch == 46) {
+            has_dot = 1;
+        }
+        i++;
+    }
+    if (has_dot == 0) {
+        add_bin = 1;
+    }
+
+    // 1. Exact path / name
+    if (fat32_stat(name, &sh_ent) == 0 && (sh_ent.attr & ATTR_DIRECTORY) == 0) {
+        str_copy(out, name, 32);
+        return 1;
+    }
+    // 2. Append .BIN in CWD / explicit dir
+    if (add_bin != 0) {
+        shell_build_path(out, "", name, 1);
+        if (fat32_stat(out, &sh_ent) == 0 && (sh_ent.attr & ATTR_DIRECTORY) == 0) {
+            return 1;
+        }
+    }
+    // 3 & 4. Search /BIN/ then / for bare program names
+    if (has_slash == 0) {
+        shell_build_path(out, "/BIN/", name, add_bin);
+        if (fat32_stat(out, &sh_ent) == 0 && (sh_ent.attr & ATTR_DIRECTORY) == 0) {
+            return 1;
+        }
+        shell_build_path(out, "/", name, add_bin);
+        if (fat32_stat(out, &sh_ent) == 0 && (sh_ent.attr & ATTR_DIRECTORY) == 0) {
+            return 1;
+        }
+    }
+    str_copy(out, name, 32);
+    return 0;
+}
+
 void shell_cmd_run(u16 foreground, u16 arg_off) {
     u16 pid  = 0;
     u16 mode = 0;
+    u16 exec_path[16];
 
     if (getbyte(sh_arg, 0) == 0) {
         if (foreground != 0) {
@@ -512,7 +617,8 @@ void shell_cmd_run(u16 foreground, u16 arg_off) {
     if (foreground != 0) {
         mode = 2;
     }
-    pid = proc_spawn_from_file(0, sh_arg, sh_line, arg_off, mode);
+    shell_resolve_exec_path(sh_arg, exec_path);
+    pid = proc_spawn_from_file(0, exec_path, sh_line, arg_off, mode);
     if (pid == 0) {
         if (proc_last_err == SPAWN_ERR_CORE) {
             uart_puts("No free worker core\r\n");
@@ -684,6 +790,56 @@ void shell_exec(void) {
     }
 }
 
+void shell_hist_push(void) {
+    if (sh_len == 0) {
+        return;
+    }
+    str_copy(&sh_hist[sh_hist_next * LINE_WORDS], sh_line, LINE_MAX);
+    sh_hist_next++;
+    if (sh_hist_next >= HIST_MAX) {
+        sh_hist_next = 0;
+    }
+    if (sh_hist_count < HIST_MAX) {
+        sh_hist_count++;
+    }
+    sh_hist_nav = 0;
+}
+
+void shell_redraw_line(u16 *new_str) {
+    u16 i  = 0;
+    u16 ch = 0;
+
+    while (sh_len > 0) {
+        sh_len--;
+        uart_putc(8);
+        uart_putc(32);
+        uart_putc(8);
+    }
+    if (new_str == 0) {
+        setbyte(sh_line, 0, 0);
+        return;
+    }
+    while (i < (LINE_MAX - 1)) {
+        ch = getbyte(new_str, i);
+        if (ch == 0) {
+            break;
+        }
+        setbyte(sh_line, i, ch);
+        uart_putc(ch);
+        i++;
+    }
+    setbyte(sh_line, i, 0);
+    sh_len = i;
+}
+
+void shell_hist_load(u16 nav_back) {
+    u16 slot = sh_hist_next + HIST_MAX - nav_back;
+    if (slot >= HIST_MAX) {
+        slot = slot - HIST_MAX;
+    }
+    shell_redraw_line(&sh_hist[slot * LINE_WORDS]);
+}
+
 void shell_poll(void) {
     u16 ch  = uart_poll_getc();
     u16 pid = 0;
@@ -712,8 +868,41 @@ void shell_poll(void) {
         return;
     }
 
+    // ANSI escape sequence handling for Up (ESC [ A) / Down (ESC [ B) history
+    if (sh_esc_state == 1) {
+        if (ch == 91) {                 // '['
+            sh_esc_state = 2;
+        } else {
+            sh_esc_state = 0;
+        }
+        return;
+    }
+    if (sh_esc_state == 2) {
+        sh_esc_state = 0;
+        if (ch == 65) {                 // Up arrow -> older history entry
+            if (sh_hist_nav < sh_hist_count) {
+                sh_hist_nav++;
+                shell_hist_load(sh_hist_nav);
+            }
+        } else if (ch == 66) {          // Down arrow -> newer entry or blank line
+            if (sh_hist_nav > 1) {
+                sh_hist_nav--;
+                shell_hist_load(sh_hist_nav);
+            } else if (sh_hist_nav == 1) {
+                sh_hist_nav = 0;
+                shell_redraw_line(0);
+            }
+        }
+        return;
+    }
+    if (ch == 27) {                     // ESC
+        sh_esc_state = 1;
+        return;
+    }
+
     if (ch == 13 || ch == 10) {
         setbyte(sh_line, sh_len, 0);
+        shell_hist_push();
         uart_nl();
         shell_exec();
         sh_len = 0;
@@ -721,13 +910,15 @@ void shell_poll(void) {
             shell_prompt();
         }
     } else if (ch == 8 || ch == 127) {
+        sh_hist_nav = 0;
         if (sh_len > 0) {
             sh_len--;
             uart_putc(8);
             uart_putc(32);
             uart_putc(8);
         }
-    } else if (sh_len < (LINE_MAX - 1)) {
+    } else if (ch >= 32 && ch < 127 && sh_len < (LINE_MAX - 1)) {
+        sh_hist_nav = 0;
         setbyte(sh_line, sh_len, ch);
         sh_len++;
         uart_putc(ch);

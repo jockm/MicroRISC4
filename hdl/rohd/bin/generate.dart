@@ -11,26 +11,43 @@ import 'package:minirisc4_rohd/ulx3s_top.dart';
 
 void main(List<String> args) async {
   var hexPath = 'system_image.hex';
+  String? workerHexPath;
   var outDir = '.';
   var memWords = 65536;
+  var workerMemWords = 2048;
   var nocCores = 0;
+  var nocChannels = 4;
+  var nocFifoDepth = 8;
   var resetHoldBits = 19; // ~10.9 ms POR & btn_pwr_n debounce at 48 MHz
 
   for (var i = 0; i < args.length; i++) {
     if (args[i] == '--hex' && i + 1 < args.length) {
       hexPath = args[++i];
+    } else if (args[i] == '--worker-hex' && i + 1 < args.length) {
+      final v = args[++i];
+      workerHexPath = v.isEmpty ? null : v;
     } else if (args[i] == '--out' && i + 1 < args.length) {
       outDir = args[++i];
     } else if (args[i] == '--mem-words' && i + 1 < args.length) {
       memWords = int.tryParse(args[++i]) ?? memWords;
+    } else if (args[i] == '--worker-mem-words' && i + 1 < args.length) {
+      workerMemWords = int.tryParse(args[++i]) ?? workerMemWords;
     } else if (args[i] == '--noc-cores' && i + 1 < args.length) {
       nocCores = int.tryParse(args[++i]) ?? nocCores;
+    } else if (args[i] == '--noc-channels' && i + 1 < args.length) {
+      nocChannels = int.tryParse(args[++i]) ?? nocChannels;
+    } else if (args[i] == '--noc-fifo-depth' && i + 1 < args.length) {
+      nocFifoDepth = int.tryParse(args[++i]) ?? nocFifoDepth;
     } else if (args[i] == '--reset-hold-bits' && i + 1 < args.length) {
       resetHoldBits = int.tryParse(args[++i]) ?? resetHoldBits;
     }
   }
 
-  print('Building MiniRISC4 ULX3S-85F hardware representation in ROHD (memWords=$memWords, nocCores=$nocCores)...');
+  print(
+    'Building MiniRISC4 ULX3S-85F hardware representation in ROHD '
+    '(memWords=$memWords, nocCores=$nocCores'
+    '${nocCores >= 2 ? ', workerMemWords=$workerMemWords, nocChannels=$nocChannels, nocFifoDepth=$nocFifoDepth' : ''})...',
+  );
 
   final clk25 = Logic(name: 'clk_25mhz');
   final btnPwrN = Logic(name: 'btn_pwr_n');
@@ -43,6 +60,8 @@ void main(List<String> args) async {
     enableCrossTraps: nocCores >= 2,
     enableMathAccel: false,
     enableNoc: nocCores >= 2,
+    nocChannels: nocChannels,
+    nocFifoDepth: nocFifoDepth,
     trapTableBase: 0x0100,
     memWords: memWords,
   );
@@ -53,8 +72,10 @@ void main(List<String> args) async {
     ftdiTxd: ftdiTxd,
     config: cfg,
     nocCores: nocCores,
+    workerMemWords: workerMemWords,
     resetHoldBits: resetHoldBits,
     initHexFile: hexPath,
+    workerInitHexFile: workerHexPath,
   );
 
   await top.build();
@@ -71,6 +92,13 @@ void main(List<String> args) async {
     outDir: dir.path,
     depth: memWords,
   );
+  if (nocCores >= 2 && workerHexPath != null) {
+    TdpBram.writeBankHexFiles(
+      hexFileName: workerHexPath,
+      outDir: dir.path,
+      depth: workerMemWords,
+    );
+  }
   final outFile = File('${dir.path}/ulx3s_top_rohd.sv');
   await outFile.writeAsString(generatedSv);
 

@@ -88,6 +88,7 @@ class CpuCore extends Module {
     final rxPop = addOutput('mmio_rx_pop');
     final txData = addOutput('mmio_tx_data', width: 8);
     final txStrobe = addOutput('mmio_tx_strobe');
+    final extTrapAckOut = addOutput('ext_trap_ack');
     final debugPc = addOutput('debug_pc', width: 16);
 
     // Architectural & Shadow Registers
@@ -365,6 +366,7 @@ class CpuCore extends Module {
     final crossTrapTake = config.enableCrossTraps
         ? (crossTrapReq & state.eq(Const(_stExec, width: 3)))
         : Const(0);
+    extTrapAckOut <= crossTrapTake;
     final inExec = state.eq(Const(_stExec, width: 3)) & ~crossTrapTake;
     final inMemRd = state.eq(Const(_stMemRd, width: 3));
 
@@ -460,6 +462,8 @@ class CpuCore extends Module {
       If(
           crossTrapTake,
           then: [
+            portBEn < 0,
+            portBWe < 0,
             _branchTo(
               trapTableBaseConst +
                   [Const(0, width: 8), crossTrapNum, Const(0, width: 4)]
@@ -851,6 +855,7 @@ class CpuCore extends Module {
   Logic get rxPop => output('mmio_rx_pop');
   Logic get txData => output('mmio_tx_data');
   Logic get txStrobe => output('mmio_tx_strobe');
+  Logic get extTrapAck => output('ext_trap_ack');
   Logic get debugPc => output('debug_pc');
   Logic get portBAddr => output('port_b_addr_out');
   Logic get portBWdata => output('port_b_wdata_out');

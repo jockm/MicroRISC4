@@ -29,16 +29,25 @@ ACT4_SRCS      := $(filter-out mr4src/act4/._%,$(wildcard mr4src/act4/*.a4))
 ACT4_ASMS      := $(patsubst mr4src/act4/%.a4,$(BUILD_DIR)/act4/%.asm,$(ACT4_SRCS))
 ACT4_BINS      := $(patsubst mr4src/act4/%.a4,$(BUILD_DIR)/act4_%.bin,$(ACT4_SRCS))
 
-# ULX3S-85F FPGA build settings
-ULX3S_BLD      := $(BUILD_DIR)/ulx3s
-ULX3S_PROGRAM  ?= mr4src/asm/monitor.asm
-ULX3S_DEVICE   ?= 85k
-ULX3S_PACKAGE  ?= CABGA381
-ULX3S_CLOCK_MHZ ?= 48
-ULX3S_LPF      := $(ROHD_DIR)/boards/ulx3s/ulx3s_v20.lpf
-ULX3S_TOP      := Ulx3sTop
-ULX3S_SV       := ulx3s_top_rohd.sv
-ULX3S_BIT      := $(ULX3S_BLD)/ulx3s_top_rohd.bit
+# ULX3S-85F FPGA & Multi-Core NoC build settings
+# Override any of these on the command line, e.g.:
+#   make ulx3s-bit ULX3S_NOC_CORES=4
+#   make ulx3s-bit ULX3S_NOC_CORES=4 ULX3S_MEM_WORDS=16384 ULX3S_WORKER_MEM_WORDS=2048
+ULX3S_BLD              := $(BUILD_DIR)/ulx3s
+ULX3S_PROGRAM          ?= mr4src/asm/monitor.asm
+ULX3S_WORKER_PROGRAM   ?=
+ULX3S_NOC_CORES        ?= 0
+ULX3S_MEM_WORDS        ?= 65536
+ULX3S_WORKER_MEM_WORDS ?= 2048
+ULX3S_NOC_CHANNELS     ?= 4
+ULX3S_NOC_FIFO_DEPTH   ?= 8
+ULX3S_DEVICE           ?= 85k
+ULX3S_PACKAGE          ?= CABGA381
+ULX3S_CLOCK_MHZ        ?= 48
+ULX3S_LPF              := $(ROHD_DIR)/boards/ulx3s/ulx3s_v20.lpf
+ULX3S_TOP              := Ulx3sTop
+ULX3S_SV               := ulx3s_top_rohd.sv
+ULX3S_BIT              := $(ULX3S_BLD)/ulx3s_top_rohd.bit
 
 YOSYS          ?= yosys
 NEXTPNR_ECP5   ?= nextpnr-ecp5
@@ -78,6 +87,9 @@ help:
 	@echo "  make debug            - Run mr4sim.py in interactive m4db debugger mode"
 	@echo "  make generate         - Alias for generate-ulx3s"
 	@echo "  make generate-ulx3s   - Assemble ULX3S_PROGRAM and generate SV in $(ULX3S_BLD)"
+	@echo "                          Options: ULX3S_NOC_CORES=0|2|3|4... ULX3S_MEM_WORDS=65536"
+	@echo "                                   ULX3S_WORKER_MEM_WORDS=2048 ULX3S_WORKER_PROGRAM=..."
+	@echo "                                   ULX3S_NOC_CHANNELS=4 ULX3S_NOC_FIFO_DEPTH=8"
 	@echo "  make ulx3s-bit        - Synthesize, place & route, and pack $(ULX3S_BIT)"
 	@echo "  make ulx3s-timing     - Show Fmax and critical path from $(ULX3S_BLD)/nextpnr.log"
 	@echo "  make ulx3s-prog       - Load $(ULX3S_BIT) into ULX3S SRAM ($(OPENFPGALOADER))"
@@ -164,8 +176,26 @@ generate-ulx3s: setup | $(ULX3S_BLD)
 		*) \
 			$(MR4ASM) -I $(LIB_DIR) "$(ULX3S_PROGRAM)" --hex -o "$(ULX3S_BLD)/system_image.hex" -l "$(ULX3S_BLD)/program.lst" ;; \
 	esac
+	@if [ -n "$(ULX3S_WORKER_PROGRAM)" ]; then \
+		echo "==> Building worker $(ULX3S_WORKER_PROGRAM) for worker cores 1..N-1..."; \
+		case "$(ULX3S_WORKER_PROGRAM)" in \
+			*.a4) \
+				$(ACT4C) -I $(LIB_DIR) "$(ULX3S_WORKER_PROGRAM)" -o "$(ULX3S_BLD)/worker.asm" && \
+				$(MR4ASM) -I $(LIB_DIR) "$(ULX3S_BLD)/worker.asm" --hex -o "$(ULX3S_BLD)/worker_image.hex" -l "$(ULX3S_BLD)/worker.lst" ;; \
+			*) \
+				$(MR4ASM) -I $(LIB_DIR) "$(ULX3S_WORKER_PROGRAM)" --hex -o "$(ULX3S_BLD)/worker_image.hex" -l "$(ULX3S_BLD)/worker.lst" ;; \
+		esac; \
+	fi
 	@echo "==> Generating SystemVerilog ($(ULX3S_BLD)/$(ULX3S_SV))..."
-	@cd $(ROHD_DIR) && $(DART) run bin/generate.dart --hex system_image.hex --out "$(CURDIR)/$(ULX3S_BLD)"
+	@cd $(ROHD_DIR) && $(DART) run bin/generate.dart \
+		--hex system_image.hex \
+		--out "$(CURDIR)/$(ULX3S_BLD)" \
+		--mem-words "$(ULX3S_MEM_WORDS)" \
+		--worker-mem-words "$(ULX3S_WORKER_MEM_WORDS)" \
+		--noc-cores "$(ULX3S_NOC_CORES)" \
+		--noc-channels "$(ULX3S_NOC_CHANNELS)" \
+		--noc-fifo-depth "$(ULX3S_NOC_FIFO_DEPTH)" \
+		$(if $(ULX3S_WORKER_PROGRAM),--worker-hex worker_image.hex,)
 	@$(DOT_CLEAN_CMD)
 
 ulx3s-bit: generate-ulx3s

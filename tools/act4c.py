@@ -2011,17 +2011,20 @@ def main():
     constants: Dict[str, int] = {}
     parser_obj = Parser(tokens, structs, constants)
 
-    imported_files = {os.path.abspath(args.input)}
+    def canonical_file(filepath: str) -> str:
+        return os.path.normcase(os.path.realpath(os.path.abspath(filepath)))
+
+    imported_files = {canonical_file(args.input)}
     search_dirs = [os.path.dirname(os.path.abspath(args.input))] + list(args.include)
 
     def resolve_import(rel_name: str, base_file: str) -> str:
         local_candidate = os.path.join(os.path.dirname(os.path.abspath(base_file)), rel_name)
         if os.path.exists(local_candidate):
-            return os.path.abspath(local_candidate)
+            return canonical_file(local_candidate)
         for d in search_dirs:
             cand = os.path.join(d, rel_name)
             if os.path.exists(cand):
-                return os.path.abspath(cand)
+                return canonical_file(cand)
         raise CompilerError(f"Imported file not found: '{rel_name}'", filename=base_file, line=1)
 
     def parse_file_with_imports(filepath: str) -> List[ASTNode]:
@@ -2047,7 +2050,7 @@ def main():
         return out_nodes
 
     try:
-        ast = parse_file_with_imports(os.path.abspath(args.input))
+        ast = parse_file_with_imports(canonical_file(args.input))
     except CompilerError as e:
         print(e, file=sys.stderr)
         sys.exit(1)

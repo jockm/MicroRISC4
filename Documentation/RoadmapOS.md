@@ -71,8 +71,8 @@ The ultimate objective of this project is a fully functional, stable operating s
 
 ### Phase 6: System Integration, Stress Testing & Verification
 - [x] **Full-System Simulation:** Complete boot sequence verified in `mr4sim.py` (`make sim-os` with 3 worker cores) from reset through FAT32 mount, interactive shell, and multi-core userland execution.
-- [x] **Automated Test Suite:** Implemented `tools/test_os.py` (`make test-os`) covering compiler/runtime math & structs, `@ trap(N)` ISRs, shell & FAT32 read/write/unlink, async Trap 1, and multi-core `LS.BIN`/`PS.BIN`/`CAT.BIN`/`SYS_WRITE`/`SYS_SPAWN`.
-- [ ] **Stress & Edge Case Testing:** Test process stack overflow, out-of-bounds array access, file descriptor exhaustion, invalid syscall handling, and subdirectory traversal.
+- [x] **Automated Test Suite:** Implemented `tools/test_os.py` (`make test-os`, 8 suites) covering compiler/runtime math & structs, `@ trap(N)` ISRs, shell & FAT32 read/write/unlink, async Trap 1, multi-core `LS.BIN`/`PS.BIN`/`CAT.BIN`/`SYS_WRITE`/`SYS_SPAWN`, and stress/edge cases.
+- [x] **Stress & Edge Case Testing:** Verified shell line-buffer overflow clamping & backspace editing, 8-FD exhaustion + auto-reclamation on exit/kill, invalid Class A/B/C syscall payload draining (`ERR_UNKNOWN`), 3-worker core exhaustion + Trap 14 `kill` recovery, and multi-cluster (>512B) file write/readback/unlink.
 
 ---
 

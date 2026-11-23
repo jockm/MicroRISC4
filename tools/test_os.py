@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from collections import deque
 from pathlib import Path
 
@@ -735,6 +736,369 @@ void main(void) {
             assert ws.mem[0x0005] == 0xFAFF, f"Worker {idx} ASP leaked: 0x{ws.mem[0x0005]:04X}"
 
 
+# ------------------------------------------------------------------------------
+# Test 7: Shell line overflow/editing, worker exhaustion & Trap 14 kill recovery
+# ------------------------------------------------------------------------------
+def test_os_edge_shell_and_kill(_args):
+    spin_src = """
+import "sys.a4";
+
+void main(void) {
+    u16 fd = 0;
+    // Deliberately open an FD and never close it so kill must reclaim it
+    sys_open("README.TXT", O_RDONLY, &fd);
+    while (true) {
+    }
+}
+"""
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td)
+        a4 = p / "spin.a4"
+        spin_bin = p / "spin.bin"
+        a4.write_text(spin_src, encoding="utf-8")
+        compile_and_assemble(a4, spin_bin, org=0x0400, nopreamble=True, sparsebin=True)
+
+        sd_root = p / "sd_root"
+        sd_root.mkdir()
+        shutil.copy(OS_BUILD / "cat.bin", sd_root / "CAT.BIN")
+        shutil.copy(spin_bin, sd_root / "SPIN.BIN")
+        (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
+        sd_img = p / "kill_test.img"
+        subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
+             "-o", str(sd_img), "--size-mb", "16", "--spc", "1"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
+        os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
+        os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+        os_sim.pc = 0x0100
+        uart_out, bad_writes = attach_uart_and_watch(os_sim)
+
+        workers = []
+        for cid in (1, 2, 3):
+            ws = mr4sim.MiniRISC4Sim(core_id=cid)
+            ws.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+            ws.pc = 0x0100
+            ws._poll_stdin = lambda: None
+            workers.append(ws)
+        mr4sim.connect_os_workers(os_sim, workers)
+
+        def step_all(max_steps, stop_fn):
+            for _ in range(max_steps):
+                os_sim.step()
+                for ws in workers:
+                    ws.step()
+                if stop_fn():
+                    return True
+            return False
+
+        def send_cmd(cmd_str, max_steps=6000000):
+            start = len(uart_out)
+            for ch in cmd_str:
+                os_sim.rx_queue.append(ord(ch))
+            ok = step_all(max_steps, lambda: len(uart_out) > start and "".join(uart_out[start:]).endswith("mr4> "))
+            assert ok, f"Command {cmd_str!r} timed out; out={''.join(uart_out[start:])!r}"
+            return "".join(uart_out[start:])
+
+        assert step_all(1500000, lambda: "".join(uart_out).endswith("mr4> ")), "OS boot failed"
+
+        # 1. Shell edge cases: backspace (0x08 & 0x7F), >LINE_MAX clamping, unknown command
+        out_bs = send_cmd("ecxo\x08\x7fho edit_ok\r")
+        assert "\r\nedit_ok\r\n" in out_bs, f"Backspace edit failed: {out_bs!r}"
+
+        long_line = "echo " + ("A" * 80) + "\r"
+        out_long = send_cmd(long_line)
+        # LINE_MAX = 64 -> max 63 chars: "echo " (5) + 58 'A's
+        assert ("A" * 58) in out_long and ("A" * 59) not in out_long, f"Line clamp failed: {out_long!r}"
+
+        out_unk = send_cmd("boguscmd\r")
+        assert "Unknown command: boguscmd" in out_unk
+
+        # 2. Exhaust all 3 worker cores with runaway SPIN.BIN instances
+        assert "Spawned PID 1" in send_cmd("run SPIN.BIN\r")
+        assert "Spawned PID 2" in send_cmd("run SPIN.BIN\r")
+        assert "Spawned PID 3" in send_cmd("run SPIN.BIN\r")
+        assert "No free worker core" in send_cmd("run SPIN.BIN\r")
+
+        # Give workers time to execute their sys_open("README.TXT") and enter spin loop
+        fds_addr = os_sim.sym_to_addr["_fds"]
+        assert step_all(
+            2000000,
+            lambda: sum(1 for i in range(8) if os_sim.mem[fds_addr + i * 15] != 0) == 3,
+        ), "Expected all 3 runaway workers to hold open FDs"
+
+        out_ps = send_cmd("ps\r")
+        assert "1    RUN    SPIN.BIN" in out_ps
+        assert "2    RUN    SPIN.BIN" in out_ps
+        assert "3    RUN    SPIN.BIN" in out_ps
+
+        # 3. Invalid kill targets + kill PIDs 1..3 via Mailbox Trap 14
+        assert "kill failed" in send_cmd("kill 0\r")
+        assert "kill failed" in send_cmd("kill 9\r")
+        assert "Killed PID 1" in send_cmd("kill 1\r")
+        assert "Killed PID 2" in send_cmd("kill 2\r")
+        assert "Killed PID 3" in send_cmd("kill 3\r")
+        assert "kill failed" in send_cmd("kill 1\r")
+
+        # Verify all 3 leaked FDs were reclaimed by fat32_close_owner
+        open_fds = [i for i in range(8) if os_sim.mem[fds_addr + i * 15] != 0]
+        assert not open_fds, f"Leaked FDs after kill: {open_fds}"
+
+        # 4. Verify killed worker Core 1 cleanly resets and executes CAT.BIN
+        procs_addr = os_sim.sym_to_addr["_procs"]
+        pid1_state = procs_addr + 10
+        cat_start = len(uart_out)
+        assert "Spawned PID 1" in send_cmd("run CAT.BIN\r")
+        assert step_all(
+            6000000,
+            lambda: os_sim.mem[pid1_state] == 0
+            and "Hello from MiniRISC4 FAT32 SD card!" in "".join(uart_out[cat_start:]),
+        ), f"Worker 1 failed to run CAT.BIN after Trap 14 kill: {''.join(uart_out[cat_start:])!r}"
+        assert os_sim.mem[pid1_state + 1] == 0
+        send_cmd("ps\r")
+
+        assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
+        assert os_sim.mem[0x0005] == 0xFAFF
+        for idx, ws in enumerate(workers, start=1):
+            assert ws.mem[0x0004] == 0xFEFF, f"Worker {idx} RSP leaked: 0x{ws.mem[0x0004]:04X}"
+            assert ws.mem[0x0005] == 0xFAFF, f"Worker {idx} ASP leaked: 0x{ws.mem[0x0005]:04X}"
+
+
+# ------------------------------------------------------------------------------
+# Test 8: FD exhaustion, invalid syscalls (Class A/B/C), & multi-cluster write/read
+# ------------------------------------------------------------------------------
+def test_os_stress_fd_syscalls_multicluster(_args):
+    stress_src = """
+import "sys.a4";
+
+u16 fds_open[8];
+u16 io_buf[64];
+
+void fail(u16 code) {
+    sys_puts("STRESS_FAIL:");
+    sys_putc(code);
+    sys_puts("\\r\\n");
+    sys_exit(code);
+}
+
+void main(void) {
+    u16 i = 0;
+    u16 chunk = 0;
+    u16 fd = 0;
+    u16 extra_fd = 0;
+    u16 written = 0;
+    u16 nwords = 0;
+    u16 expected = 0;
+    u16 got = 0;
+    u16 st = 0;
+
+    // 1. Invalid syscalls: Class A (0x0F), Class B (0x1F), Class C (0x2F)
+    // Verify Core 0 drains FIFO payload cleanly and returns ERR_UNKNOWN (0xFFFF)
+    _sys_p1 = 0x1234;
+    _sys_p2 = 0x5678;
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x0F
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+    }
+    if (_sys_r1 != 0xFFFF) { fail(65); }
+
+    _sys_p1 = io_buf;
+    _sys_p2 = 3;
+    _sys_p3 = 0x00AA;
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LOAD16  R0, __sys_p3
+        LD      R3, (R0)
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x1F
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+    }
+    if (_sys_r1 != 0xFFFF) { fail(66); }
+
+    _sys_p1 = io_buf;
+    _sys_p2 = 4;
+    _sys_p3 = 0;
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LOAD16  R0, __sys_p3
+        LD      R3, (R0)
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x2F
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+    }
+    if (_sys_r1 != 0xFFFF) { fail(67); }
+
+    // 2. Multi-cluster file write (640 bytes = 5 x 128B > 512B cluster size)
+    if (sys_open("BIG.TXT", O_WRONLY, &fd) != 0) { fail(68); }
+    chunk = 0;
+    while (chunk < 5) {
+        i = 0;
+        while (i < 128) {
+            setbyte(io_buf, i, ((chunk * 17) + i) & 0x00FF);
+            i++;
+        }
+        if (sys_write(fd, io_buf, 128, &written) != 0 || written != 128) { fail(69); }
+        chunk++;
+    }
+    sys_close(fd);
+
+    // Read all 640 bytes back across the 512-byte cluster boundary and verify every byte
+    if (sys_open("BIG.TXT", O_RDONLY, &fd) != 0) { fail(70); }
+    chunk = 0;
+    while (chunk < 5) {
+        if (sys_read(fd, io_buf, 64, &nwords) != 0 || nwords != 64) { fail(71); }
+        i = 0;
+        while (i < 128) {
+            expected = ((chunk * 17) + i) & 0x00FF;
+            got = getbyte(io_buf, i);
+            if (got != expected) { fail(72); }
+            i++;
+        }
+        chunk++;
+    }
+    // Next read must return EOF (non-zero)
+    if (sys_read(fd, io_buf, 64, &nwords) == 0) { fail(73); }
+    sys_close(fd);
+
+    // Unlink BIG.TXT via SYS_UNLINK to free both allocated clusters
+    if (sys_unlink("BIG.TXT") != 0) { fail(74); }
+    if (sys_open("BIG.TXT", O_RDONLY, &fd) == 0) { fail(75); }
+
+    // 3. FD exhaustion: open all 8 FDs, verify 9th fails, close 1, reopen 1,
+    // and deliberately exit with all 8 still open so kernel reclaims them!
+    i = 0;
+    while (i < 8) {
+        if (sys_open("README.TXT", O_RDONLY, &fd) != 0) { fail(76); }
+        fds_open[i] = fd;
+        i++;
+    }
+    st = sys_open("README.TXT", O_RDONLY, &extra_fd);
+    if (st == 0) { fail(77); }
+
+    sys_close(fds_open[3]);
+    if (sys_open("README.TXT", O_RDONLY, &extra_fd) != 0) { fail(78); }
+    if (extra_fd != fds_open[3]) { fail(79); }
+
+    sys_puts("STRESS_OK\\r\\n");
+    sys_exit(0);
+}
+"""
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td)
+        a4 = p / "stress.a4"
+        st_bin = p / "stress.bin"
+        a4.write_text(stress_src, encoding="utf-8")
+        compile_and_assemble(a4, st_bin, org=0x0400, nopreamble=True, sparsebin=True)
+
+        sd_root = p / "sd_root"
+        sd_root.mkdir()
+        shutil.copy(st_bin, sd_root / "STRESS.BIN")
+        (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
+        sd_img = p / "stress_test.img"
+        subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
+             "-o", str(sd_img), "--size-mb", "16", "--spc", "1"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        init_img = sd_img.read_bytes()
+        part_lba = struct.unpack_from("<I", init_img, 454)[0]
+        bpb = init_img[part_lba * 512 : (part_lba + 1) * 512]
+        rsvd = struct.unpack_from("<H", bpb, 14)[0]
+        fat_sz = struct.unpack_from("<I", bpb, 36)[0]
+        fat1_off = (part_lba + rsvd) * 512
+        fat2_off = (part_lba + rsvd + fat_sz) * 512
+
+        def count_used_clusters(img_buf, fat_off):
+            return sum(
+                1 for c in range(2, 64)
+                if (struct.unpack_from("<I", img_buf, fat_off + c * 4)[0] & 0x0FFFFFFF) != 0
+            )
+
+        init_used_f1 = count_used_clusters(init_img, fat1_off)
+
+        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim.sd_card = mr4sim.SpiSdCard(init_img)
+        os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
+        os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+        os_sim.pc = 0x0100
+        uart_out, bad_writes = attach_uart_and_watch(os_sim)
+
+        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+        worker_sim.pc = 0x0100
+        worker_sim._poll_stdin = lambda: None
+        mr4sim.connect_os_worker(os_sim, worker_sim)
+
+        assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
+        procs_addr = os_sim.sym_to_addr["_procs"]
+        pid1_state = procs_addr + 10
+
+        start = len(uart_out)
+        for ch in "run STRESS.BIN\r":
+            os_sim.rx_queue.append(ord(ch))
+        assert run_until_prompt(os_sim, uart_out, 15000000, worker=worker_sim), (
+            f"run STRESS.BIN prompt timeout; out={''.join(uart_out[start:])!r}"
+        )
+
+        done = False
+        for _ in range(15000000):
+            os_sim.step()
+            worker_sim.step()
+            if os_sim.mem[pid1_state] == 0 and ("STRESS_OK" in "".join(uart_out[start:]) or "STRESS_FAIL" in "".join(uart_out[start:])):
+                done = True
+                break
+        seg = "".join(uart_out[start:])
+        assert done, f"STRESS.BIN timed out; output:\n{seg}"
+        assert "STRESS_OK" in seg, f"STRESS.BIN failed; output:\n{seg}"
+        assert os_sim.mem[pid1_state + 1] == 0, f"STRESS.BIN exit={os_sim.mem[pid1_state + 1]}"
+
+        # Settle to prompt via `ps`
+        for ch in "ps\r":
+            os_sim.rx_queue.append(ord(ch))
+        assert run_until_prompt(os_sim, uart_out, 2000000, worker=worker_sim)
+
+        # Verify ALL 8 leaked FDs were auto-reclaimed on exit
+        fds_addr = os_sim.sym_to_addr["_fds"]
+        open_fds = [i for i in range(8) if os_sim.mem[fds_addr + i * 15] != 0]
+        assert not open_fds, f"Leaked FDs after STRESS.BIN exit: {open_fds}"
+
+        # Verify multi-cluster BIG.TXT freed BOTH clusters cleanly in FAT1 & FAT2
+        end_used_f1 = count_used_clusters(os_sim.sd_card.image, fat1_off)
+        end_used_f2 = count_used_clusters(os_sim.sd_card.image, fat2_off)
+        assert end_used_f1 == init_used_f1 and end_used_f2 == init_used_f1, (
+            f"FAT cluster leak: init={init_used_f1}, after FAT1={end_used_f1}, FAT2={end_used_f2}"
+        )
+
+        assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
+        assert os_sim.mem[0x0005] == 0xFAFF
+        assert worker_sim.mem[0x0004] == 0xFEFF
+        assert worker_sim.mem[0x0005] == 0xFAFF
+
+
 TESTS = [
     ("compiler_runtime", test_compiler_runtime),
     ("trap_isr", test_trap_isr),
@@ -742,6 +1106,8 @@ TESTS = [
     ("os_async_trap1", test_os_async_trap1),
     ("os_multicore_apps", test_os_multicore_apps),
     ("os_spawn_multiworker", test_os_spawn_multiworker),
+    ("os_edge_shell_and_kill", test_os_edge_shell_and_kill),
+    ("os_stress_fd_syscalls_multicluster", test_os_stress_fd_syscalls_multicluster),
 ]
 
 
@@ -770,6 +1136,7 @@ def main() -> int:
         except Exception as exc:
             dt = time.monotonic() - t0
             print(f"[FAIL] {name} ({dt:.2f}s): {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
             failed += 1
 
     total_dt = time.monotonic() - t_start

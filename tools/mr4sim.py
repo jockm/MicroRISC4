@@ -1054,6 +1054,10 @@ def connect_os_workers(os_sim: MiniRISC4Sim, worker_sims: list[MiniRISC4Sim]):
                     os_in_q.append(q.popleft())
             target = cores.get(dst_core)
             if target is not None and not target.halted:
+                if trap_num == 14 and dst_core in worker_in:
+                    # Drop stale inbound/outbound FIFO words when force-killing a worker
+                    worker_in[dst_core].clear()
+                    worker_stage[dst_core].clear()
                 target.pending_traps.append(trap_num)
         return on_mailbox
 

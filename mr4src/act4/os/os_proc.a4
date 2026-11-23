@@ -56,9 +56,9 @@ void proc_mark_exited(u16 pid, u16 code) {
     if (pid == 0 || pid >= MAX_CORES) {
         return;
     }
-    procs[pid].state = PROC_FREE;
     procs[pid].exit_code = code;
     fat32_close_owner(pid);
+    procs[pid].state = PROC_FREE;
 }
 
 // Force-kill a running worker core via Mailbox Trap 14
@@ -70,9 +70,9 @@ u16 proc_kill(u16 pid) {
         return 2;                   // ERR_NOT_RUNNING
     }
     mailbox = (pid << 8) | TRAP_KILL;
-    procs[pid].state = PROC_FREE;
     procs[pid].exit_code = 0xFFFF;
     fat32_close_owner(pid);
+    procs[pid].state = PROC_FREE;
     return 0;
 }
 

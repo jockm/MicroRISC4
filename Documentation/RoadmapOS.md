@@ -51,7 +51,7 @@ The ultimate objective of this project is a fully functional, stable operating s
 
 ### Phase 2: OS Kernel Core & Memory Initialization
 - [x] **Kernel Bootstrap & Stacks:** Validated `_reset_slot` (`0x0100`), `RSP`/`ASP` initialization, and zero-leak stack integrity (`ASP=0xFAFF`, `0` low-memory corruptions).
-- [x] **Process Control Block (PCB) Management:** Process table allocation (`_procs`), state transitions (`FREE`, `LOAD`, `RUN`), PID tracking, `ps`, `kill`, and automatic per-owner FD cleanup (`fat32_close_owner`).
+- [x] **Process Control Block (PCB) Management:** Process table allocation (`_procs`), state transitions (`FREE`, `LOAD`, `RUN`), PID tracking, per-PID CWD isolation (`_proc_cwd_hi`/`_proc_cwd_lo`, inherited on spawn and guarded in `rmdir`), per-PID command-line arguments (`_proc_args`), `ps`, `kill`, and automatic per-owner FD cleanup (`fat32_close_owner`).
 - [x] **Memory & Buffer Layout:** Established clean boundaries for kernel buffers (`_sys_buf`, sector-streaming loader via `_sec_buf` without a 4K static image buffer), `0x0400` userland `--nopreamble`/`--sparsebin` entry trampoline, and stack regions.
 - [x] **Trap & Interrupt Handling:** Direct-stride `@ trap(N)` ISR prologue/epilogue (`RPUSH`/`RPOP` `R0`–`R3`, nested trap support, early `return;` via `_iret`) aligned across `act4c.py`, `mr4sim.py`, and `cpu_core.dart`.
 

@@ -106,7 +106,9 @@ void shell_cmd_cd(void) {
         return;
     }
     err = fat32_chdir(sh_arg);
-    if (err != 0) {
+    if (err == 0) {
+        proc_save_cwd(0);
+    } else {
         uart_puts("Directory not found: ");
         uart_puts(sh_arg);
         uart_nl();
@@ -390,7 +392,7 @@ void shell_cmd_run(u16 foreground, u16 arg_off) {
     if (foreground != 0) {
         mode = 2;
     }
-    pid = proc_spawn_from_file(sh_arg, sh_line, arg_off, mode);
+    pid = proc_spawn_from_file(0, sh_arg, sh_line, arg_off, mode);
     if (pid == 0) {
         if (proc_last_err == SPAWN_ERR_CORE) {
             uart_puts("No free worker core\r\n");

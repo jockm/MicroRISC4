@@ -37,6 +37,8 @@ type ProcEntry {
 ProcEntry procs[MAX_CORES];
 u16 proc_con_out[MAX_CORES];        // 1 = allowed to write to UART console
 u16 proc_args[PROC_ARG_TOTAL];      // Per-core packed NUL-terminated argument string
+u16 proc_cwd_hi[MAX_CORES];         // Per-core CWD cluster high word
+u16 proc_cwd_lo[MAX_CORES];         // Per-core CWD cluster low word
 u16 fg_pid = 0;                     // 0 = Core 0 shell owns UART RX, else worker PID
 u16 proc_last_words = 0;            // Word count of last streamed binary
 u16 proc_last_err   = 0;            // Last spawn error (SPAWN_*)
@@ -74,6 +76,8 @@ void proc_init(void) {
     procs[0].state = PROC_RUN;
     proc_con_out[0] = 1;
     proc_args[0] = 0;
+    proc_cwd_hi[0] = 0;
+    proc_cwd_lo[0] = 0;
     str_copy(procs[0].name, "os_kernel", 16);
     fg_pid = 0;
     fg_rx_clear();
@@ -84,9 +88,52 @@ void proc_init(void) {
         procs[i].exit_code = 0;
         proc_con_out[i] = 0;
         proc_args[i * PROC_ARG_WORDS] = 0;
+        proc_cwd_hi[i] = 0;
+        proc_cwd_lo[i] = 0;
         setbyte(procs[i].name, 0, 0);
         i++;
     }
+}
+
+// Initialize all cores' CWD clusters to root_clus after fat32_mount()
+void proc_cwd_init_all(void) {
+    u16 i = 0;
+    while (i < MAX_CORES) {
+        proc_cwd_hi[i] = root_clus_hi;
+        proc_cwd_lo[i] = root_clus_lo;
+        i++;
+    }
+}
+
+// Bind FAT32 active CWD globals to `pid`'s CWD cluster
+void proc_use_cwd(u16 pid) {
+    if (pid < MAX_CORES && (proc_cwd_hi[pid] != 0 || proc_cwd_lo[pid] >= 2)) {
+        cwd_clus_hi = proc_cwd_hi[pid];
+        cwd_clus_lo = proc_cwd_lo[pid];
+    } else {
+        cwd_clus_hi = root_clus_hi;
+        cwd_clus_lo = root_clus_lo;
+    }
+}
+
+// Save FAT32 active CWD globals back into `pid`'s CWD slot
+void proc_save_cwd(u16 pid) {
+    if (pid < MAX_CORES) {
+        proc_cwd_hi[pid] = cwd_clus_hi;
+        proc_cwd_lo[pid] = cwd_clus_lo;
+    }
+}
+
+// Return 1 if any running core (including Core 0) currently has (clus_hi:clus_lo) as its CWD
+u16 proc_is_cwd_in_use(u16 clus_hi, u16 clus_lo) {
+    u16 i = 0;
+    while (i < MAX_CORES) {
+        if (procs[i].state != PROC_FREE && proc_cwd_hi[i] == clus_hi && proc_cwd_lo[i] == clus_lo) {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
 }
 
 // Copy NUL-terminated packed string from src starting at byte offset `src_off`
@@ -193,6 +240,8 @@ u16 proc_mark_exited(u16 pid, u16 code) {
     }
     proc_con_out[pid] = 0;
     proc_args[pid * PROC_ARG_WORDS] = 0;
+    proc_cwd_hi[pid] = root_clus_hi;
+    proc_cwd_lo[pid] = root_clus_lo;
     if (fg_pid == pid) {
         fg_pid = 0;
         fg_rx_clear();
@@ -215,6 +264,8 @@ u16 proc_kill(u16 pid) {
     mailbox = (pid << 8) | TRAP_KILL;
     proc_con_out[pid] = 0;
     proc_args[pid * PROC_ARG_WORDS] = 0;
+    proc_cwd_hi[pid] = root_clus_hi;
+    proc_cwd_lo[pid] = root_clus_lo;
     if (fg_pid == pid) {
         fg_pid = 0;
         fg_rx_clear();
@@ -226,10 +277,10 @@ u16 proc_kill(u16 pid) {
 }
 
 // Stream a FAT32 binary directly sector-by-sector into a free worker core and launch it.
-// arg_src / arg_off specify optional packed command-line argument string (arg_src == 0 for none).
+// Inherits CWD from parent_pid. arg_src / arg_off specify optional command-line args.
 // con_mode: 0 = background (muted), 1 = inherit output only, 2 = exclusive foreground.
 // Returns allocated PID (1..MAX_CORES-1) on success, or 0 on error (see proc_last_err).
-u16 proc_spawn_from_file(u16 *path, u16 *arg_src, u16 arg_off, u16 con_mode) {
+u16 proc_spawn_from_file(u16 parent_pid, u16 *path, u16 *arg_src, u16 arg_off, u16 con_mode) {
     u16 fd         = 0xFFFF;
     u16 pid        = 0;
     u16 sz_lo      = 0;
@@ -271,6 +322,13 @@ u16 proc_spawn_from_file(u16 *path, u16 *arg_src, u16 arg_off, u16 con_mode) {
     procs[pid].state = PROC_LOAD;
     str_copy(procs[pid].name, path, 16);
     proc_set_args_from(pid, arg_src, arg_off);
+    if (parent_pid < MAX_CORES && (proc_cwd_hi[parent_pid] != 0 || proc_cwd_lo[parent_pid] >= 2)) {
+        proc_cwd_hi[pid] = proc_cwd_hi[parent_pid];
+        proc_cwd_lo[pid] = proc_cwd_lo[parent_pid];
+    } else {
+        proc_cwd_hi[pid] = root_clus_hi;
+        proc_cwd_lo[pid] = root_clus_lo;
+    }
 
     if (con_mode == 2) {
         proc_clear_worker_con_out();

@@ -1443,7 +1443,8 @@ u16 fat32_rmdir(u16 *path) {
     target_lo     = fat_ent_clus_lo;
 
     if ((target_hi == root_clus_hi && target_lo == root_clus_lo) ||
-        (target_hi == cwd_clus_hi && target_lo == cwd_clus_lo)) {
+        (target_hi == cwd_clus_hi && target_lo == cwd_clus_lo) ||
+        proc_is_cwd_in_use(target_hi, target_lo) != 0) {
         return 4;
     }
 
@@ -1502,7 +1503,32 @@ u16 fat32_rmdir(u16 *path) {
     return 0;
 }
 
-// Change Current Working Directory (empty path = "/").
+// Change active CWD cluster only (used by worker SYS_CHDIR without touching shell cwd_path).
+// Returns 0 = OK, 1 = I/O / not mounted, 2 = not found / not a directory.
+u16 fat32_chdir_clus(u16 *path) {
+    u16 err = 0;
+
+    if (fat_mounted == 0) {
+        return 1;
+    }
+
+    if (getbyte(path, 0) == 0) {
+        cwd_clus_hi = root_clus_hi;
+        cwd_clus_lo = root_clus_lo;
+        return 0;
+    }
+
+    err = fat32_resolve_dir(path);
+    if (err != 0) {
+        return err;
+    }
+
+    cwd_clus_hi = fat_dir_clus_hi;
+    cwd_clus_lo = fat_dir_clus_lo;
+    return 0;
+}
+
+// Change Current Working Directory and normalize shell cwd_path (empty path = "/").
 // Returns 0 = OK, 1 = I/O / not mounted, 2 = not found / not a directory.
 u16 fat32_chdir(u16 *path) {
     u16 err = 0;
@@ -1515,25 +1541,16 @@ u16 fat32_chdir(u16 *path) {
     u16 max_len = (CWD_PATH_WORDS << 1) - 1;
     u16 comp[8];
 
-    if (fat_mounted == 0) {
-        return 1;
-    }
-
-    if (getbyte(path, 0) == 0) {
-        cwd_clus_hi = root_clus_hi;
-        cwd_clus_lo = root_clus_lo;
-        setbyte(cwd_path, 0, 47);
-        setbyte(cwd_path, 1, 0);
-        return 0;
-    }
-
-    err = fat32_resolve_dir(path);
+    err = fat32_chdir_clus(path);
     if (err != 0) {
         return err;
     }
 
-    cwd_clus_hi = fat_dir_clus_hi;
-    cwd_clus_lo = fat_dir_clus_lo;
+    if (getbyte(path, 0) == 0) {
+        setbyte(cwd_path, 0, 47);
+        setbyte(cwd_path, 1, 0);
+        return 0;
+    }
 
     // Normalize cwd_path string
     if (getbyte(path, 0) == 47) {

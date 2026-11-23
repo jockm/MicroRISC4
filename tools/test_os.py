@@ -1245,6 +1245,47 @@ void main(void) {
         shutil.copy(OS_BUILD / "ls.bin", sd_root / "LS.BIN")
         shutil.copy(OS_BUILD / "cat.bin", sd_root / "CAT.BIN")
         shutil.copy(app_bin, sd_root / "DIRAPP.BIN")
+
+        cwdapp_src = """
+import "sys.a4";
+
+void fail(u16 code) {
+    sys_puts("CWDAPP_FAIL:");
+    sys_putc(code);
+    sys_puts("\\r\\n");
+    sys_exit(code);
+}
+
+void main(void) {
+    u16 fd = 0;
+    u16 wr = 0;
+
+    if (sys_mkdir("/WDIR") != 0) {
+        fail(65);               // 'A'
+    }
+    if (sys_chdir("/WDIR") != 0) {
+        fail(66);               // 'B'
+    }
+    if (sys_open("REL.TXT", O_WRONLY, &fd) != 0) {
+        fail(67);               // 'C'
+    }
+    if (sys_write(fd, "worker_cwd_ok\\n", 14, &wr) != 0 || wr != 14) {
+        fail(68);               // 'D'
+    }
+    sys_close(fd);
+    // Core 0 shell is in /DOCS -> rmdir must fail (busy)
+    if (sys_rmdir("/DOCS") == 0) {
+        fail(69);               // 'E'
+    }
+    // Deliberately exit while still chdir'd in /WDIR; Core 0 shell must stay in /DOCS
+    sys_puts("CWDAPP_OK\\r\\n");
+    sys_exit(0);
+}
+"""
+        cwd_a4 = p / "cwdapp.a4"
+        cwd_bin = sd_root / "CWDAPP.BIN"
+        cwd_a4.write_text(cwdapp_src, encoding="utf-8")
+        compile_and_assemble(cwd_a4, cwd_bin, org=0x0400, nopreamble=True, sparsebin=True)
         (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
         sd_img = p / "subdir_test.img"
         subprocess.run(
@@ -1329,6 +1370,23 @@ void main(void) {
         assert "SUBDIR_APP_OK" in seg, f"DIRAPP.BIN failed:\n{seg}"
         assert os_sim.mem[pid1_state + 1] == 0, f"DIRAPP.BIN exit={os_sim.mem[pid1_state + 1]}"
         assert "APPDIR" not in send_cmd("ls\r")
+
+        # 6. Per-PID CWD isolation: child inherits shell CWD, worker chdir never mutates shell CWD
+        send_cmd("cd docs\r")
+        assert "\r\n/DOCS\r\n" in send_cmd("pwd\r")
+        out_inh_ls = send_cmd("! /LS.BIN\r", max_steps=16000000)
+        assert "NOTE.TXT" in out_inh_ls, f"Inherited CWD ! /LS.BIN missed NOTE.TXT:\n{out_inh_ls}"
+
+        out_cwdapp = send_cmd("! /CWDAPP.BIN\r", max_steps=16000000)
+        assert "CWDAPP_OK" in out_cwdapp, f"CWDAPP.BIN failed:\n{out_cwdapp}"
+        assert os_sim.mem[pid1_state + 1] == 0
+        # Shell must still be in /DOCS and /WDIR/REL.TXT must exist & be removable now that PID 1 exited
+        assert "\r\n/DOCS\r\n" in send_cmd("pwd\r")
+        assert "NOTE.TXT" in send_cmd("ls\r")
+        assert "worker_cwd_ok" in send_cmd("cat /wdir/rel.txt\r")
+        assert "Removed /wdir/rel.txt" in send_cmd("rm /wdir/rel.txt\r")
+        assert "Removed dir /wdir" in send_cmd("rmdir /wdir\r")
+        send_cmd("cd /\r")
 
         # Verify no FD/stack leaks and zero bad low-memory writes
         fds_addr = os_sim.sym_to_addr["_fds"]

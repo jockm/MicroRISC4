@@ -93,8 +93,9 @@ void handle_syscall(void) {
     u16 ch    = 0;
     u16 fd    = 0;
 
-    // Direct all FIFO replies for this syscall to the requesting worker core
+    // Direct all FIFO replies and FAT32 relative paths to the requesting worker core
     fifo_sel = pid;
+    proc_use_cwd(pid);
 
     if (id == SYS_EXIT) {
         arg1 = fifo_in;
@@ -191,9 +192,9 @@ void handle_syscall(void) {
             ch = 1;                     // Child inherits console output from parent
         }
         if (arg1 != 0) {
-            arg2 = proc_spawn_from_file(sys_buf, sys_buf, arg1, ch);
+            arg2 = proc_spawn_from_file(pid, sys_buf, sys_buf, arg1, ch);
         } else {
-            arg2 = proc_spawn_from_file(sys_buf, 0, 0, ch);
+            arg2 = proc_spawn_from_file(pid, sys_buf, 0, 0, ch);
         }
         fifo_sel = pid;
         if (arg2 == 0) {
@@ -316,8 +317,9 @@ void handle_syscall(void) {
         extra = fifo_in;
         wlen  = fifo_in;
         read_fifo_str(wlen);
-        arg2 = fat32_chdir(sys_buf);
+        arg2 = fat32_chdir_clus(sys_buf);
         if (arg2 == 0) {
+            proc_save_cwd(pid);
             fifo_out = ERR_OK;
         } else {
             fifo_out = ERR_IO;
@@ -436,6 +438,7 @@ void main(void) {
 
     uart_puts("\r\nMiniRISC4 OS v0.1 (Core 0)\r\n");
     if (fat32_mount() == 0) {
+        proc_cwd_init_all();
         uart_puts("FAT32 mounted OK\r\n");
     } else {
         uart_puts("FAT32 mount skipped/failed\r\n");
@@ -446,6 +449,7 @@ void main(void) {
         if (msg_pending != 0) {
             msg_pending--;
             handle_syscall();
+            proc_use_cwd(0);
         }
         shell_poll();
     }

@@ -137,7 +137,7 @@ make ulx3s-timing
 - [x] Wire worker `CpuCore`s (`1..N`) and `mboxTrapReq` cross-traps in `Ulx3sTop` (configurable via `Makefile` `ULX3S_NOC_CORES` & `generate.dart`; `ext_trap_ack` + `mbox_trap_inflight` handshake; live 3-CPU multi-hop IPC + Trap 14 round-trip verified in ROHD Dart & Icarus Verilog: **107.25 MHz** 1-core 65K, **106.15 MHz** 4-CPU `4×2K`, **102.06 MHz** 8-CPU `8×2K`).
 
 ### Priority 4: I/D Cache & SDRAM Controller Integration
-- [ ] Develop I-Cache and D-Cache controllers in ROHD.
+- [x] Develop I-Cache and D-Cache controllers in ROHD (`hdl/rohd/lib/cache_controllers.dart`: BRAM-backed direct-mapped `ICache` with 1-cycle `flushAll`/single-line `invalValid` + write-back/write-allocate `DCache` with zero-buffer burst writeback; private non-overlapping 64K-word SDRAM partition `{coreId[7:0], addr[15:0]}` per core; verified in ROHD Dart & Icarus Verilog: **`125.98 MHz`**, `859 LUT4`, `336 FF`, `16 DPR16X4`, `2 DP16KD` for 512-word I-Cache + 512-word D-Cache pair).
 - [ ] Interface cache controllers with external ULX3S SDRAM memory controller.
 - [ ] Reduce local core BRAM size (`memWords = 2048`) while maintaining high-capacity backing storage.
 

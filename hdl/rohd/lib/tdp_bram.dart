@@ -92,10 +92,13 @@ class TdpBram extends Module with SystemVerilog {
         }
       }
 
-      Simulator.injectAction(() {
-        portARdata.put(prevARaw);
-        portBRdata.put(prevBRaw);
-      });
+      Simulator.clkStable.first.then(
+        (_) {
+          portARdata.put(prevARaw);
+          portBRdata.put(prevBRaw);
+        },
+        onError: (_) {},
+      );
     });
   }
 
@@ -127,7 +130,6 @@ module $definitionType (
   (* ram_style = "block" *)
   logic [${dataWidth - 1}:0] mem [0:${depth - 1}];
 $initBlock
-  logic [${dataWidth - 1}:0] port_a_rdata_raw;
   logic [${dataWidth - 1}:0] port_a_rdata_raw;
   logic [${dataWidth - 1}:0] port_b_rdata_raw;
 

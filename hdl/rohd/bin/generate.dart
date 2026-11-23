@@ -13,6 +13,7 @@ void main(List<String> args) async {
   var outDir = '.';
   var memWords = 65536;
   var nocCores = 0;
+  var resetHoldBits = 19; // ~10.9 ms POR & btn_pwr_n debounce at 48 MHz
 
   for (var i = 0; i < args.length; i++) {
     if (args[i] == '--hex' && i + 1 < args.length) {
@@ -23,6 +24,8 @@ void main(List<String> args) async {
       memWords = int.tryParse(args[++i]) ?? memWords;
     } else if (args[i] == '--noc-cores' && i + 1 < args.length) {
       nocCores = int.tryParse(args[++i]) ?? nocCores;
+    } else if (args[i] == '--reset-hold-bits' && i + 1 < args.length) {
+      resetHoldBits = int.tryParse(args[++i]) ?? resetHoldBits;
     }
   }
 
@@ -49,6 +52,7 @@ void main(List<String> args) async {
     ftdiTxd: ftdiTxd,
     config: cfg,
     nocCores: nocCores,
+    resetHoldBits: resetHoldBits,
     initHexFile: hexPath,
   );
 

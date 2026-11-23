@@ -28,6 +28,7 @@ class Ulx3sTop extends Module {
       memWords: 65536,
     ),
     int nocCores = 0,
+    int resetHoldBits = 2,
     String? initHexFile = 'system_image.hex',
     Map<int, int>? initialMemory,
     super.name = 'ulx3s_top',
@@ -43,10 +44,35 @@ class Ulx3sTop extends Module {
     // Keep onboard ESP32 out of bootloader/reset interference
     wifiGpio0 <= Const(1);
 
-    // 25 MHz -> 24 MHz PLL for exact 3 Mbaud UART
+    // 25 MHz -> 48 MHz PLL for exact 3 Mbaud UART (divisor = 16)
     final pll = Ecp5Pll25To24(clkIn: clk25mhz);
-    final clk24mhz = pll.clkOut;
-    final sysRstN = btnPwrN & pll.locked;
+    final clk48mhz = pll.clkOut;
+
+    // 2-FF synchronizer + power-on / button-debounce reset hold counter.
+    // Raw async input (btnPwrN & pll.locked) only feeds rstSync0 so the
+    // CPU/UART/NoC domain receives a clean synchronous single-register reset.
+    final rawRstN = btnPwrN & pll.locked;
+    final rstSync0 = Logic(name: 'rst_sync_0');
+    final rstSync1 = Logic(name: 'rst_sync_1');
+    final rstHoldCnt = Logic(name: 'rst_hold_cnt', width: resetHoldBits);
+    final sysRstN = Logic(name: 'sys_rst_n');
+    final rstHoldMax = Const((1 << resetHoldBits) - 1, width: resetHoldBits);
+
+    Sequential(clk48mhz, [
+      rstSync0 < rawRstN,
+      rstSync1 < rstSync0,
+      If(~rstSync1, then: [
+        rstHoldCnt < 0,
+        sysRstN < 0,
+      ], orElse: [
+        If(rstHoldCnt.eq(rstHoldMax), then: [
+          sysRstN < 1,
+        ], orElse: [
+          rstHoldCnt < rstHoldCnt + 1,
+          sysRstN < 0,
+        ]),
+      ]),
+    ]);
     final uartReset = ~sysRstN;
 
     // UART MMIO Registers
@@ -80,7 +106,7 @@ class Ulx3sTop extends Module {
     cpuTxStatus <= mux(txBusyLatch, Const(1, width: 16), Const(0, width: 16));
 
     cpu = CpuCore(
-      clk: clk24mhz,
+      clk: clk48mhz,
       rstN: sysRstN,
       mmioRxData: cpuRxData,
       mmioTxStatus: cpuTxStatus,
@@ -91,7 +117,7 @@ class Ulx3sTop extends Module {
     );
 
     final uart = Uart(
-      clk: clk24mhz,
+      clk: clk48mhz,
       reset: uartReset,
       serialRxd: ftdiTxd,
       txd: cpu.txData,
@@ -134,7 +160,7 @@ class Ulx3sTop extends Module {
       final netOutReady = List.generate(nocCores, (i) => Const(1));
 
       final nocFabric = NocMultiCoreCacheWrapper(
-        clk: clk24mhz,
+        clk: clk48mhz,
         reset: uartReset,
         mmioAddr: mmioAddr,
         mmioWdata: mmioWdata,
@@ -165,7 +191,7 @@ class Ulx3sTop extends Module {
       led <= [pll.locked, cpu.debugPc.slice(6, 0)].swizzle();
     }
 
-    Sequential(clk24mhz, reset: uartReset, resetValues: {
+    Sequential(clk48mhz, reset: uartReset, resetValues: {
       uartRxValid: 0,
       uartRxdLatch: 0,
     }, [
@@ -179,7 +205,7 @@ class Ulx3sTop extends Module {
       ]),
     ]);
 
-    Sequential(clk24mhz, reset: uartReset, resetValues: {
+    Sequential(clk48mhz, reset: uartReset, resetValues: {
       txBusyLatch: 0,
     }, [
       If(cpu.txStrobe, then: [

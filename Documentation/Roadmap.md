@@ -2,18 +2,18 @@
 
 ---
 
-## 0. Priority 1 (CRITICAL): Hardware UART TX Bring-Up on ULX3S-85F
-- [ ] **Diagnose and Fix Zero-Byte Output on `make ulx3s-term`:**
-  - **Symptom:** `make ulx3s-bit && make ulx3s-prog` synthesizes and programs the ECP5-85k successfully. `openFPGALoader` finishes at 100%, `pll.locked` (`led[7]`) lights up, and typing keys in `make ulx3s-term` causes `debug_pc` / `led[6:0]` to flicker (confirming `ftdi_txd` input and execution response). However, `ulx3s_term.py` receives 0 bytes from `ftdi_rxd` (no monitor banner, no echo).
-  - [ ] **Verify `PUTC` / `0x000F` Write Strobe Execution:**
-    - [ ] Trace `_reset_vector` (`0x0100`) -> `_main` (`0x0200`) -> `msg_banner` `puts` loop in `mr4src/asm/monitor.asm`.
-    - [ ] Confirm whether `PUTC` (`LD R0, 15`, polling `(R0)` for `0`, then `LD (R0), reg`) gets stuck in the polling wait loop (`._PUTC_WAIT_%`) or if `txBusyLatch` / `txd_ready` polarity prevents `ready` from reading as `0` (idle).
-  - [ ] **Verify `UartTx` Strobe & Shift Logic in Hardware:**
-    - [ ] Inspect generated SystemVerilog `build/ulx3s/ulx3s_top_rohd.sv` to ensure `cpu.txStrobe` pulse reaches `uart.txd_strobe` and `uart_tx.data_strobe`.
-    - [ ] Verify `ftdi_rxd` pin assignment (`L4` on ULX3S) and ensure pin direction / pullup settings in `ulx3s_v20.lpf` do not conflict with FTDI chip pin mapping.
-  - [ ] **Validate 3 Mbaud UART Transmission on Host:**
-    - [ ] Confirm `DivideByN_0` counter limit (`32'hf` = 16 clocks per bit at 48 MHz) matches exact `3,000,000` baud.
-    - [ ] Test serial reception with an external logic analyzer / oscilloscope or raw serial utility to isolate hardware `ftdi_rxd` output from host driver speed configuration.
+## 0. Priority 1 (CRITICAL): Hardware UART TX Bring-Up on ULX3S-85F — COMPLETE
+- [x] **Diagnose and Fix Zero-Byte Output on `make ulx3s-term`:**
+  - **Root Cause & Fix:** Commit `ed54cf7` added 2 extra Port A pipeline registers (`aBankStage` → `aRdataQ`) after 2-cycle `TdpBram` with only 1 extra wait state, causing every non-sequential branch (`JMP`/`LINK`/`JMP.Z`/`JMP.M`/`TRAP`) to execute the stale prefetched instruction in synthesized SystemVerilog (masked in Dart sim by `TdpBram` using `Simulator.injectAction` instead of `Simulator.clkStable`). Fixed in `cpu_core.dart` and `tdp_bram.dart`; hardened `ulx3s_top.dart` with a 2-FF synchronizer + 19-bit (~10.9 ms) reset/debounce counter and minimized `DivideByN` width/comparison in `util.dart`; fixed `XCHG R2` shadow-register clobbering across `RCALL` in `monitor.asm` (`cmd_change`, `cmd_go`, `print_hex16`).
+  - [x] **Verify `PUTC` / `0x000F` Write Strobe Execution:**
+    - [x] Traced `_reset_vector` (`0x0100`) -> `_main` (`0x0200`) -> `msg_banner` `puts` loop in `mr4src/asm/monitor.asm` in Icarus Verilog & ROHD Dart.
+    - [x] Confirmed `PUTC` polling polarity (`0` = Ready, `1` = Busy) and `txBusyLatch` / `txd_ready` handshake.
+  - [x] **Verify `UartTx` Strobe & Shift Logic in Hardware:**
+    - [x] Verified generated SystemVerilog `build/ulx3s/ulx3s_top_rohd.sv` in Icarus Verilog (0 framing errors across banner + interactive `c`/`e` commands).
+    - [x] Verified `ftdi_rxd` (`L4`) and `ftdi_txd` (`M1`) pin mappings in `ulx3s_v20.lpf`.
+  - [x] **Validate 3 Mbaud UART Transmission on Host:**
+    - [x] Confirmed `DivideByN` (4-bit counter, limit `15` = 16 clocks/bit at 48 MHz) produces exact `3,000,000` baud.
+    - [x] Verified live on ULX3S-85F via `make ulx3s-prog && make ulx3s-term`: clean single-press `PWR` boot banner, prompt, `e 100`, and `c 100 1234` readback at 3 Mbaud.
 
 ---
 
@@ -21,7 +21,7 @@
 
 ### Core Architecture Summary
 * **Word Size:** 16-bit word-addressed memory and registers (`r0`, `r1`, `r2`, `r3`, plus shadow registers `shadowR`).
-* **Instruction Staging:** Multi-cycle FSM executing two 8-bit instruction slots (`slotByte0`, `slotByte1`) per 16-bit word fetch (`_stReset` -> `_stFetch` -> `_stFetchWait` -> `_stMemWait2` -> `_stFetchLatch` -> `_stExec`).
+* **Instruction Staging:** Multi-cycle FSM executing two 8-bit instruction slots (`slotByte0`, `slotByte1`) per 16-bit word fetch (`_stReset` -> `_stFetch` -> `_stFetchWait` -> `_stFetchLatch` -> `_stExec`).
 * **Vector Table:** Direct Stride Vector Table starting at `0x0100` (`config.trapTableBase`). Stride = 16 words (32 bytes) per vector slot. Hardware jump dispatch calculates `PC <- 0x0100 + (vector << 4)`. Reset trap is at `0x0100`.
 * **Execution Start:** Reset vector jumps to `_main` at `0x0200` in `monitor.asm`.
 
@@ -106,11 +106,10 @@ make ulx3s-timing
 - [x] 48 MHz PLL clock generation (`Ecp5Pll25To24`) with 3 Mbaud UART divisor (`16`).
 - [x] ACT4 array indexing fix (`LD R1, R0` instead of `LD R1, (R0)`).
 - [x] FPGA synthesis (`Yosys`), P&R (`nextpnr-ecp5`), bitstream packing, and JTAG flashing (`openFPGALoader`).
-- [x] RX path hardware activity (typing in terminal triggers `debug_pc` LED changes).
+- [x] RX/TX path verified end-to-end on ULX3S-85F hardware at 3 Mbaud (`make ulx3s-term`: boot banner, prompt, `e`, `c` verified with debounced synchronous reset).
 
 ### In Progress / Pending Verification
-- [ ] **Hardware UART TX output on `make ulx3s-term` (Priority 1).**
-- [ ] Pipeline staging to eliminate wide BRAM mux critical path and raise $F_{\max}$ from 68.25 MHz to `>100 MHz`.
+- [ ] Pipeline staging to eliminate wide BRAM mux critical path and raise $F_{\max}$ from 66.27 MHz (65K BRAM) to `>100 MHz`.
 - [ ] Integration of I-Cache, D-Cache, and ULX3S SDRAM controller.
 - [ ] Multi-word per-channel RX FIFOs with backpressure in `NocRouterNi` (`hdl/rohd/lib/noc_router.dart`).
 - [ ] Multi-hop ring routing in `RegisteredNocHop` (`hdl/rohd/lib/noc_cache_wrapper.dart`).
@@ -121,12 +120,12 @@ make ulx3s-timing
 
 ## 5. Detailed Task Roadmap
 
-### Priority 1: Hardware UART TX Bring-Up
-- [ ] Verify `PUTC` macro execution and UART TX status register (`0x000F`) read polarity.
-- [ ] Audit `txBusyLatch` and `txd_ready` signaling in `hdl/rohd/lib/ulx3s_top.dart`.
-- [ ] Inspect generated `build/ulx3s/ulx3s_top_rohd.sv` for `serial_txd` signal connectivity.
-- [ ] Confirm FTDI `ftdi_rxd` pin mapping (`L4`) in FPGA configuration.
-- [ ] Validate character output on host terminal emulator at 3 Mbaud.
+### Priority 1: Hardware UART TX Bring-Up — COMPLETE
+- [x] Verify `PUTC` macro execution and UART TX status register (`0x000F`) read polarity.
+- [x] Audit `txBusyLatch` and `txd_ready` signaling in `hdl/rohd/lib/ulx3s_top.dart`.
+- [x] Inspect generated `build/ulx3s/ulx3s_top_rohd.sv` for `serial_txd` signal connectivity.
+- [x] Confirm FTDI `ftdi_rxd` pin mapping (`L4`) in FPGA configuration.
+- [x] Validate character output on host terminal emulator at 3 Mbaud (and fix reset synchronizer/debounce + `DivideByN` + `monitor.asm` `c`/`g`/`print_hex16`).
 
 ### Priority 2: Timing & Pipeline Bottlenecks (`>100 MHz`)
 - [ ] Redesign `TdpBram` read staging to remove wide multi-BRAM output muxes from critical path.

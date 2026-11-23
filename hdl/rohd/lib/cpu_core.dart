@@ -112,10 +112,6 @@ class CpuCore extends Module {
     final portBWe = Logic(name: 'port_b_we');
     final portBEn = Logic(name: 'port_b_en');
     final portBRdata = Logic(name: 'port_b_rdata', width: 16);
-    final aRdataQ = Logic(name: 'a_rdata_q', width: 16);
-    final bRdataQ = Logic(name: 'b_rdata_q', width: 16);
-    final aBankStage = Logic(name: 'a_bank_stage', width: 16);
-    final bBankStage = Logic(name: 'b_bank_stage', width: 16);
 
     // Expose Port B bus for external peripherals / multi-core glue
     final portBAddrOut = addOutput('port_b_addr_out', width: 16);
@@ -286,10 +282,6 @@ class CpuCore extends Module {
     // Execution FSM
     Sequential(clk, reset: resetActive, resetValues: {
       state: Const(_stReset, width: 3),
-      aRdataQ: Const(0, width: 16),
-      bRdataQ: Const(0, width: 16),
-      aBankStage: Const(0, width: 16),
-      bBankStage: Const(0, width: 16),
       pc: trapTableBaseConst,
       slot: Const(MiniRISC4Constants.slotByte0, width: 1),
       instReg: Const(0, width: 16),
@@ -330,10 +322,6 @@ class CpuCore extends Module {
             ),
           ],
           orElse: [
-            aBankStage < portARdata,
-            bBankStage < portBRdata,
-            aRdataQ < aBankStage,
-            bRdataQ < bBankStage,
             Case(state, [
               // ST_RESET: Kick off synchronous fetch of reset entry (0x0100)
               CaseItem(Const(_stReset, width: 3), [
@@ -356,20 +344,20 @@ class CpuCore extends Module {
                 state < Const(_stFetchWait, width: 3),
               ]),
 
-              // ST_FETCH_WAIT: Cycle 2 of BRAM read (advance into staged bank/capture pipeline)
+              // ST_FETCH_WAIT: Cycle 2 of 2-cycle BRAM read (portARdata settles)
               CaseItem(Const(_stFetchWait, width: 3), [
                 portAEn < 1,
                 portBEn < 0,
                 portBWe < 0,
                 slot < MiniRISC4Constants.slotByte0,
-                state < Const(_stMemWait2, width: 3),
+                state < Const(_stFetchLatch, width: 3),
               ]),
 
               // ST_FETCH_LATCH: Latch settled mem[pc] into instReg and start prefetch of pc+1
               CaseItem(Const(_stFetchLatch, width: 3), [
-                instReg < aRdataQ,
+                instReg < portARdata,
                 ..._latchExecByte(
-                  aRdataQ.slice(7, 0),
+                  portARdata.slice(7, 0),
                   decOpQ,
                   decRrQ,
                   decRlQ,
@@ -631,17 +619,13 @@ class CpuCore extends Module {
                 state < Const(_stMemWait2, width: 3),
               ]),
 
-              // ST_MEM_WAIT2: Stage MMIO read bus & complete 2-stage bank/capture settling
+              // ST_MEM_WAIT2: Cycle 2 of Port B BRAM read (stage MMIO read bus)
               CaseItem(Const(_stMemWait2, width: 3), [
                 portBEn < 0,
                 portBWe < 0,
                 mmioRdataReg < mmioOnlyData,
                 isMmioRdReg < isMmio,
-                If(portAEn.eq(1), then: [
-                  state < Const(_stFetchLatch, width: 3),
-                ], orElse: [
-                  state < Const(_stMemRd, width: 3),
-                ]),
+                state < Const(_stMemRd, width: 3),
               ]),
 
               // ST_MEM_RD: Latch settled Port B / staged MMIO read data into destReg

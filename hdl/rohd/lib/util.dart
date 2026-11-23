@@ -19,10 +19,15 @@ class DivideByN extends Module {
     reset = addInput('reset', reset);
     final out = addOutput('out');
 
-    final counter = Logic(name: 'counter', width: 32);
+    final width = n > 1 ? (n - 1).bitLength : 1;
+    final limit = Const(n > 1 ? n - 1 : 0, width: width);
+    final counter = Logic(name: 'counter', width: width);
 
-    Sequential(clk, reset: reset, [
-      If(counter.eq(n - 1), then: [
+    Sequential(clk, reset: reset, resetValues: {
+      counter: 0,
+      out: 0,
+    }, [
+      If(counter.gte(limit), then: [
         counter < 0,
         out < 1,
       ], orElse: [

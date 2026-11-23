@@ -174,17 +174,21 @@ monitor_loop:
 cmd_go:
     RCALL   skip_spaces
     RCALL   parse_hex           ; Returns target address in R1
-    LD      R2, R1              ; R2 = target execution address
+    LOAD16  R2, scratch_addr
+    LD      (R2), R1            ; Save target execution address
 
     LOAD16  R1, msg_running
     RCALL   puts
 
-    LD      R1, R2
+    LOAD16  R2, scratch_addr
+    LD      R1, (R2)
     RCALL   print_hex16
 
     LOAD16  R1, msg_run_tail
     RCALL   puts
 
+    LOAD16  R2, scratch_addr
+    LD      R2, (R2)            ; Restore target execution address
     LOAD16  R0, .go_return
     RPUSH   R0                  ; Save return link on Return Stack
     LINK    R2, R0              ; Call target
@@ -275,27 +279,30 @@ cmd_examine:
 cmd_change:
     RCALL   skip_spaces
     RCALL   parse_hex           ; R1 = target address
-    LD      R2, R1              ; R2 = Address
+    LOAD16  R2, scratch_addr
+    LD      (R2), R1            ; Save Address
 
     RCALL   skip_spaces
-    XCHG    R2                  ; shadow_r[2] = Address
     RCALL   parse_hex           ; R1 = Value
-    XCHG    R2                  ; R2 = Address restored, shadow_r[2] = Value
+    LOAD16  R2, scratch_val
+    LD      (R2), R1            ; Save Value
 
+    LOAD16  R2, scratch_addr
+    LD      R2, (R2)            ; R2 = Address
     LD      (R2), R1            ; [Address] = Value
 
     LOAD16  R1, msg_wrote
     RCALL   puts
 
-    XCHG    R2                  ; R2 = Value, shadow_r[2] = Address
-    LD      R1, R2
+    LOAD16  R2, scratch_val
+    LD      R1, (R2)
     RCALL   print_hex16         ; Print value
 
     LOAD16  R1, msg_to
     RCALL   puts
 
-    XCHG    R2                  ; R2 = Address, shadow_r[2] = Value
-    LD      R1, R2
+    LOAD16  R2, scratch_addr
+    LD      R1, (R2)
     RCALL   print_hex16         ; Print address
 
     LOAD16  R1, msg_bracket_nl
@@ -358,7 +365,7 @@ print_newline:
 ; ------------------------------------------------------------------------------
 print_hex16:
     RPUSH   R0
-    XCHG    R2                  ; Preserve caller R2 in shadow register
+    APUSH   R2                  ; Preserve caller R2 on Argument Stack
     LD      R2, R1              ; R2 = 16-bit word
 
     ; Nibble 3 [15:12]
@@ -389,7 +396,7 @@ print_hex16:
     AND     R1, R0
     RCALL   print_nibble
 
-    XCHG    R2                  ; Restore caller R2
+    APOP    R2                  ; Restore caller R2
     RRET
 
 ; ------------------------------------------------------------------------------
@@ -671,6 +678,12 @@ dump_ptr:
     .word 0x0000
 
 dump_cnt:
+    .word 0x0000
+
+scratch_addr:
+    .word 0x0000
+
+scratch_val:
     .word 0x0000
 
 line_buffer:

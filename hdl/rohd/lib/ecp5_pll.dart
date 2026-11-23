@@ -1,6 +1,6 @@
 // ==============================================================================
 // FILE: hdl/rohd/lib/ecp5_pll.dart
-// Lattice ECP5 EHXPLLL Wrapper (25 MHz -> 24 MHz via 600 MHz VCO / CLKOS)
+// Lattice ECP5 EHXPLLL Wrapper (25 MHz -> 48 MHz via 480 MHz VCO / CLKOS)
 // ==============================================================================
 
 import 'package:rohd/rohd.dart';

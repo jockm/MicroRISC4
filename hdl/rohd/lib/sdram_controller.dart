@@ -1,14 +1,54 @@
 // ==============================================================================
 // FILE: hdl/rohd/lib/sdram_controller.dart
-// Architecture: MiniRISC4 SDRAM PHY & Burst Controller
+// Architecture: MiniRISC4 JEDEC SDRAM PHY & Burst Controller (ULX3S IS42S16160G)
 // Framework: Intel ROHD (Dart)
 // ==============================================================================
 
 import 'package:rohd/rohd.dart';
 
+/// Synthesizable JEDEC SDRAM controller targeting the ULX3S-85F 32 MB
+/// `IS42S16160G` (16M x 16-bit: 4 banks x 8192 rows x 512 cols).
+///
+/// Features:
+/// - JEDEC power-on init (configurable wait + PRECHARGE ALL + 8x AUTO REFRESH + LMR)
+/// - Programmed sequential burst length (`burstLen`: 1, 2, 4, or 8 words) & CAS latency
+/// - Periodic `tREFI` AUTO REFRESH scheduler (`refPendingQ`) preempting idle cycles
+/// - Clean ready/valid burst read (`rdata`/`rdata_valid`) and burst write
+///   (`wdata`/`wdata_valid`/`wdata_ready`) with proper `tRCD`, `tWR`, `tRP`, `tRFC`
 class SdramController extends Module {
   final int clkFreqMhz;
   final int casLatency;
+  final int burstLen;
+  final int initWaitCycles;
+  final int refreshCycles;
+
+  static const int _stWait = 0;
+  static const int _stInitPre = 1;
+  static const int _stInitRef = 2;
+  static const int _stLmr = 3;
+  static const int _stIdle = 4;
+  static const int _stRef = 5;
+  static const int _stAct = 6;
+  static const int _stRd = 7;
+  static const int _stWrStart = 8;
+  static const int _stWr = 9;
+  static const int _stWrRec = 10;
+  static const int _stPchg = 11;
+
+  static int _burstCode(int len) {
+    switch (len) {
+      case 1:
+        return 0;
+      case 2:
+        return 1;
+      case 4:
+        return 2;
+      case 8:
+        return 3;
+      default:
+        throw ArgumentError('SDRAM burstLen must be 1, 2, 4, or 8 (got $len)');
+    }
+  }
 
   SdramController({
     required Logic clk,
@@ -20,10 +60,28 @@ class SdramController extends Module {
     required Logic wdata,
     required Logic wdataValid,
     required Logic sdramDqIn,
-    this.clkFreqMhz = 25,
+    this.clkFreqMhz = 48,
     this.casLatency = 2,
+    this.burstLen = 8,
+    int? initWaitCycles,
+    int? refreshCycles,
     super.name = 'sdram_controller',
-  }) {
+  })  : initWaitCycles = initWaitCycles ?? 10,
+        refreshCycles = refreshCycles ?? ((clkFreqMhz * 75) ~/ 10) {
+    assert(casLatency == 2 || casLatency == 3, 'casLatency must be 2 or 3');
+    final lmrVal = ((casLatency & 0x7) << 4) | _burstCode(burstLen);
+
+    // Timing cycles derived from clkFreqMhz (IS42S16160G-7TL datasheet minimums)
+    int nsToCycles(int ns, int minCycles) {
+      final c = ((ns * clkFreqMhz) + 999) ~/ 1000;
+      return c < minCycles ? minCycles : c;
+    }
+
+    final tRp = nsToCycles(20, 2);
+    final tRcd = nsToCycles(20, 2);
+    final tRfc = nsToCycles(66, 4);
+    final tWr = nsToCycles(15, 2);
+
     clk = addInput('clk', clk);
     rstN = addInput('rst_n', rstN);
     cmdReq = addInput('cmd_req', cmdReq);
@@ -55,44 +113,53 @@ class SdramController extends Module {
     sdramCke <= Const(1);
     sdramDqm <= Const(0, width: 2);
 
-    // Active-high reset for ROHD Sequential
     final reset = ~rstN;
 
-    // Internal Registers
     final state = Logic(name: 'state', width: 4);
-    final timer = Logic(name: 'timer', width: 16);
+    final effInitWait = this.initWaitCycles;
+    final effRefresh = this.refreshCycles;
+    final timerWidth = effInitWait > 16 ? effInitWait.bitLength : 16;
+    final timer = Logic(name: 'timer', width: timerWidth);
+    final initRefCnt = Logic(name: 'init_ref_cnt', width: 3);
     final burstCnt = Logic(name: 'burst_cnt', width: 8);
     final casTimer = Logic(name: 'cas_timer', width: 4);
+
+    // Periodic AUTO REFRESH timer
+    final refCntWidth = effRefresh > 1 ? (effRefresh - 1).bitLength : 1;
+    final refTimer = Logic(name: 'ref_timer', width: refCntWidth);
+    final refPendingQ = Logic(name: 'ref_pending_q');
 
     final reqRw = Logic(name: 'req_rw');
     final reqBank = Logic(name: 'req_bank', width: 2);
     final reqRow = Logic(name: 'req_row', width: 13);
     final reqCol = Logic(name: 'req_col', width: 9);
+    final reqBurstLen = Logic(name: 'req_burst_len', width: 8);
 
-    // States
-    const stWait = 0;
-    const stPre = 1;
-    const stRef0 = 2;
-    const stRef1 = 3;
-    const stLmr = 4;
-    const stIdle = 5;
-    const stAct = 6;
-    const stRd = 7;
-    const stWr = 8;
-    const stPchg = 9;
+    final isIdle = state.eq(Const(_stIdle, width: 4));
+    final isWrStart = state.eq(Const(_stWrStart, width: 4));
+    final isWr = state.eq(Const(_stWr, width: 4));
+
+    // Clean combinational handshakes straight from registered FSM state
+    cmdReady <= isIdle & (~refPendingQ);
+    busy <= ~isIdle;
+    wdataReady <= isWrStart | isWr;
+
+    final inInit = state.lt(Const(_stIdle, width: 4));
+    final refTick = (~inInit) & refTimer.eq(Const(0, width: refCntWidth));
 
     Sequential(clk, reset: reset, resetValues: {
-      state: Const(stWait, width: 4),
-      timer: Const(10, width: 16),
+      state: Const(_stWait, width: 4),
+      timer: Const(effInitWait, width: timerWidth),
+      initRefCnt: Const(7, width: 3), // 8 AUTO REFRESH cycles during init
       burstCnt: Const(0, width: 8),
       casTimer: Const(0, width: 4),
+      refTimer: Const(effRefresh - 1, width: refCntWidth),
+      refPendingQ: Const(0),
       reqRw: Const(0),
       reqBank: Const(0, width: 2),
       reqRow: Const(0, width: 13),
       reqCol: Const(0, width: 9),
-      cmdReady: Const(0),
-      busy: Const(1),
-      wdataReady: Const(0),
+      reqBurstLen: Const(burstLen, width: 8),
       rdata: Const(0, width: 16),
       rdataValid: Const(0),
       sdramDqOe: Const(0),
@@ -104,167 +171,202 @@ class SdramController extends Module {
       sdramBa: Const(0, width: 2),
       sdramA: Const(0, width: 13),
     }, [
-      // Default deassertions every cycle
+      // Default NOP on SDRAM command pins every cycle
       sdramCsN < 0,
       sdramRasN < 1,
       sdramCasN < 1,
-      sdramWeN < 1, // NOP default
+      sdramWeN < 1,
       rdataValid < 0,
-      wdataReady < 0,
+
+      // Periodic refresh countdown (active once init finishes)
+      If(~inInit, then: [
+        If(refTick, then: [
+          refTimer < Const(effRefresh - 1, width: refCntWidth),
+          refPendingQ < 1,
+        ], orElse: [
+          refTimer < refTimer - Const(1, width: refCntWidth),
+        ]),
+      ]),
 
       Case(state, [
-        // 1. Wait initial cycles, then Precharge All
-        CaseItem(Const(stWait, width: 4), [
+        // 0. Power-on wait -> PRECHARGE ALL
+        CaseItem(Const(_stWait, width: 4), [
           If(timer.eq(0), then: [
             sdramRasN < 0,
             sdramWeN < 0, // PRECHARGE ALL
             sdramA < Const(1 << 10, width: 13),
-            timer < Const(2, width: 16),
-            state < Const(stPre, width: 4),
+            timer < Const(tRp - 1, width: timerWidth),
+            state < Const(_stInitPre, width: 4),
           ], orElse: [
-            timer < timer - 1,
+            timer < timer - Const(1, width: timerWidth),
           ]),
         ]),
 
-        // 2. Precharge delay -> Refresh 0
-        CaseItem(Const(stPre, width: 4), [
+        // 1. Precharge delay -> first AUTO REFRESH
+        CaseItem(Const(_stInitPre, width: 4), [
           If(timer.eq(0), then: [
             sdramRasN < 0,
-            sdramCasN < 0, // REFRESH 0
-            timer < Const(4, width: 16),
-            state < Const(stRef0, width: 4),
+            sdramCasN < 0, // AUTO REFRESH
+            timer < Const(tRfc - 1, width: timerWidth),
+            state < Const(_stInitRef, width: 4),
           ], orElse: [
-            timer < timer - 1,
+            timer < timer - Const(1, width: timerWidth),
           ]),
         ]),
 
-        // 3. Refresh 0 delay -> Refresh 1
-        CaseItem(Const(stRef0, width: 4), [
+        // 2. 8x AUTO REFRESH -> Load Mode Register (LMR)
+        CaseItem(Const(_stInitRef, width: 4), [
           If(timer.eq(0), then: [
-            sdramRasN < 0,
-            sdramCasN < 0, // REFRESH 1
-            timer < Const(4, width: 16),
-            state < Const(stRef1, width: 4),
+            If(initRefCnt.gt(0), then: [
+              sdramRasN < 0,
+              sdramCasN < 0, // AUTO REFRESH
+              initRefCnt < initRefCnt - Const(1, width: 3),
+              timer < Const(tRfc - 1, width: timerWidth),
+            ], orElse: [
+              sdramRasN < 0,
+              sdramCasN < 0,
+              sdramWeN < 0, // LMR
+              sdramBa < Const(0, width: 2),
+              sdramA < Const(lmrVal, width: 13),
+              timer < Const(2, width: timerWidth),
+              state < Const(_stLmr, width: 4),
+            ]),
           ], orElse: [
-            timer < timer - 1,
+            timer < timer - Const(1, width: timerWidth),
           ]),
         ]),
 
-        // 4. Refresh 1 delay -> Load Mode Register
-        CaseItem(Const(stRef1, width: 4), [
+        // 3. LMR tMRD delay -> IDLE
+        CaseItem(Const(_stLmr, width: 4), [
           If(timer.eq(0), then: [
-            sdramRasN < 0,
-            sdramCasN < 0,
-            sdramWeN < 0, // LMR
-            sdramBa < Const(0, width: 2),
-            sdramA < Const(casLatency == 2 ? 0x0020 : 0x0030, width: 13),
-            timer < Const(2, width: 16),
-            state < Const(stLmr, width: 4),
+            state < Const(_stIdle, width: 4),
           ], orElse: [
-            timer < timer - 1,
+            timer < timer - Const(1, width: timerWidth),
           ]),
         ]),
 
-        // 5. LMR delay -> Enter IDLE
-        CaseItem(Const(stLmr, width: 4), [
-          If(timer.eq(0), then: [
-            state < Const(stIdle, width: 4),
-            cmdReady < 1,
-            busy < 0,
-          ], orElse: [
-            timer < timer - 1,
-          ]),
-        ]),
-
-        // 6. Idle: await command
-        CaseItem(Const(stIdle, width: 4), [
+        // 4. IDLE: service pending AUTO REFRESH first, otherwise accept cmdReq
+        CaseItem(Const(_stIdle, width: 4), [
           sdramDqOe < 0,
-          If(cmdReq, then: [
-            cmdReady < 0,
-            busy < 1,
-            reqRw < cmdRw,
-            reqBank < cmdAddr.slice(23, 22),
-            reqRow < cmdAddr.slice(21, 9),
-            reqCol < cmdAddr.slice(8, 0),
-            sdramRasN < 0, // ACTIVE
-            sdramBa < cmdAddr.slice(23, 22),
-            sdramA < cmdAddr.slice(21, 9),
-            timer < Const(2, width: 16),
-            state < Const(stAct, width: 4),
+          If(refPendingQ, then: [
+            sdramRasN < 0,
+            sdramCasN < 0, // AUTO REFRESH
+            refPendingQ < 0,
+            timer < Const(tRfc - 1, width: timerWidth),
+            state < Const(_stRef, width: 4),
           ], orElse: [
-            cmdReady < 1,
-            busy < 0,
+            If(cmdReq, then: [
+              reqRw < cmdRw,
+              reqBank < cmdAddr.slice(23, 22),
+              reqRow < cmdAddr.slice(21, 9),
+              reqCol < cmdAddr.slice(8, 0),
+              reqBurstLen <
+                  mux(cmdBurstLen.eq(0), Const(burstLen, width: 8), cmdBurstLen),
+              sdramRasN < 0, // ACTIVE
+              sdramBa < cmdAddr.slice(23, 22),
+              sdramA < cmdAddr.slice(21, 9),
+              timer < Const(tRcd - 1, width: timerWidth),
+              state < Const(_stAct, width: 4),
+            ]),
           ]),
         ]),
 
-        // 7. ACTIVE delay -> Issue READ or WRITE command
-        CaseItem(Const(stAct, width: 4), [
+        // 5. Periodic AUTO REFRESH tRFC wait -> IDLE
+        CaseItem(Const(_stRef, width: 4), [
           If(timer.eq(0), then: [
-            burstCnt < cmdBurstLen,
+            state < Const(_stIdle, width: 4),
+          ], orElse: [
+            timer < timer - Const(1, width: timerWidth),
+          ]),
+        ]),
+
+        // 6. ACTIVE tRCD delay -> READ or WRITE burst start
+        CaseItem(Const(_stAct, width: 4), [
+          If(timer.eq(0), then: [
+            burstCnt < reqBurstLen,
             If(~reqRw, then: [
               sdramCasN < 0, // READ
               sdramBa < reqBank,
               sdramA < [Const(0, width: 4), reqCol].swizzle(),
               casTimer < Const(casLatency, width: 4),
-              state < Const(stRd, width: 4),
+              state < Const(_stRd, width: 4),
             ], orElse: [
-              sdramCasN < 0,
-              sdramWeN < 0, // WRITE
-              sdramBa < reqBank,
-              sdramA < [Const(0, width: 4), reqCol].swizzle(),
-              sdramDqOe < 1,
-              sdramDqOut < wdata,
-              wdataReady < 1,
-              burstCnt < cmdBurstLen - 1,
-              state < Const(stWr, width: 4),
+              state < Const(_stWrStart, width: 4),
             ]),
           ], orElse: [
-            timer < timer - 1,
+            timer < timer - Const(1, width: timerWidth),
           ]),
         ]),
 
-        // 8. Read burst
-        CaseItem(Const(stRd, width: 4), [
+        // 7. Read burst (wait CAS latency, then capture reqBurstLen words)
+        CaseItem(Const(_stRd, width: 4), [
           If(casTimer.gt(0), then: [
-            casTimer < casTimer - 1,
+            casTimer < casTimer - Const(1, width: 4),
           ], orElse: [
             rdata < sdramDqIn,
             rdataValid < 1,
-            burstCnt < burstCnt - 1,
+            burstCnt < burstCnt - Const(1, width: 8),
             If(burstCnt.lte(1), then: [
               sdramRasN < 0,
-              sdramWeN < 0, // PRECHARGE
-              timer < Const(2, width: 16),
-              state < Const(stPchg, width: 4),
+              sdramWeN < 0, // PRECHARGE ALL
+              sdramA < Const(1 << 10, width: 13),
+              timer < Const(tRp - 1, width: timerWidth),
+              state < Const(_stPchg, width: 4),
             ]),
           ]),
         ]),
 
-        // 9. Write burst
-        CaseItem(Const(stWr, width: 4), [
-          If(burstCnt.eq(0), then: [
-            sdramDqOe < 0,
-            sdramRasN < 0,
-            sdramWeN < 0, // PRECHARGE
-            timer < Const(2, width: 16),
-            state < Const(stPchg, width: 4),
-          ], orElse: [
+        // 8. Write beat 0: issue WRITE command on exact cycle wdataValid=1
+        CaseItem(Const(_stWrStart, width: 4), [
+          If(wdataValid, then: [
+            sdramCasN < 0,
+            sdramWeN < 0, // WRITE
+            sdramBa < reqBank,
+            sdramA < [Const(0, width: 4), reqCol].swizzle(),
             sdramDqOe < 1,
             sdramDqOut < wdata,
-            wdataReady < 1,
-            burstCnt < burstCnt - 1,
+            burstCnt < burstCnt - Const(1, width: 8),
+            If(burstCnt.lte(1), then: [
+              timer < Const(tWr - 1, width: timerWidth),
+              state < Const(_stWrRec, width: 4),
+            ], orElse: [
+              state < Const(_stWr, width: 4),
+            ]),
           ]),
         ]),
 
-        // 10. Precharge delay -> Back to IDLE
-        CaseItem(Const(stPchg, width: 4), [
+        // 9. Write beats 1..N-1 (1 word/cycle sequential burst)
+        CaseItem(Const(_stWr, width: 4), [
+          sdramDqOe < 1,
+          sdramDqOut < wdata,
+          burstCnt < burstCnt - Const(1, width: 8),
+          If(burstCnt.lte(1), then: [
+            timer < Const(tWr - 1, width: timerWidth),
+            state < Const(_stWrRec, width: 4),
+          ]),
+        ]),
+
+        // 10. Write recovery tWR -> PRECHARGE ALL
+        CaseItem(Const(_stWrRec, width: 4), [
           sdramDqOe < 0,
           If(timer.eq(0), then: [
-            state < Const(stIdle, width: 4),
-            cmdReady < 1,
-            busy < 0,
+            sdramRasN < 0,
+            sdramWeN < 0, // PRECHARGE ALL
+            sdramA < Const(1 << 10, width: 13),
+            timer < Const(tRp - 1, width: timerWidth),
+            state < Const(_stPchg, width: 4),
           ], orElse: [
-            timer < timer - 1,
+            timer < timer - Const(1, width: timerWidth),
+          ]),
+        ]),
+
+        // 11. Precharge tRP -> IDLE
+        CaseItem(Const(_stPchg, width: 4), [
+          sdramDqOe < 0,
+          If(timer.eq(0), then: [
+            state < Const(_stIdle, width: 4),
+          ], orElse: [
+            timer < timer - Const(1, width: timerWidth),
           ]),
         ]),
       ]),

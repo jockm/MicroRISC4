@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:rohd/rohd.dart';
 import 'package:test/test.dart';
 import 'package:minirisc4_rohd/cache_controllers.dart';
+import 'package:minirisc4_rohd/cache_subsystem_top.dart';
+import 'sdram_controller_test.dart' show JedecSdramSimModel;
 
 void main() {
   group('BRAM ICache & Write-Back DCache Tests', () {
@@ -386,6 +388,146 @@ void main() {
       expect(hWa4, isTrue);
       expect(rWa5, equals(0x3015)); // neighbor word preserved from refill!
       expect(hWa5, isTrue);
+
+      Simulator.endSimulation();
+      await Simulator.simulationEnded;
+    });
+
+    test('SdramCacheCluster 2-core I/D caches + round-robin arbiter + pin-level JEDEC SDRAM', () async {
+      const numCores = 2;
+      const numLines = 32;
+      const lineWords = 8;
+
+      final clk = SimpleClockGenerator(10).clk;
+      final rstN = Logic(name: 'rst_n');
+      final icV = List.generate(numCores, (i) => Logic(name: 'ic_v_$i'));
+      final icA = List.generate(numCores, (i) => Logic(name: 'ic_a_$i', width: 16));
+      final dcV = List.generate(numCores, (i) => Logic(name: 'dc_v_$i'));
+      final dcWe = List.generate(numCores, (i) => Logic(name: 'dc_we_$i'));
+      final dcA = List.generate(numCores, (i) => Logic(name: 'dc_a_$i', width: 16));
+      final dcW = List.generate(numCores, (i) => Logic(name: 'dc_w_$i', width: 16));
+      final sdramDqIn = Logic(name: 'sdram_dq_in', width: 16);
+
+      final cluster = SdramCacheCluster(
+        clk: clk,
+        rstN: rstN,
+        icReqValid: icV,
+        icReqAddr: icA,
+        dcReqValid: dcV,
+        dcReqWe: dcWe,
+        dcReqAddr: dcA,
+        dcReqWdata: dcW,
+        sdramDqIn: sdramDqIn,
+        numCores: numCores,
+        numLines: numLines,
+        lineWords: lineWords,
+        clkFreqMhz: 48,
+        casLatency: 2,
+        initWaitCycles: 10,
+        refreshCycles: 200,
+      );
+      await cluster.build();
+
+      // Pre-populate non-overlapping 64K-word SDRAM partitions for Core 0 & Core 1
+      final sdramModel = JedecSdramSimModel()..attach(clk, cluster, sdramDqIn);
+      for (var w = 0; w < 8; w++) {
+        sdramModel.mem[(0 << 16) | (0x0100 + w)] = 0x1000 + w; // Core 0 code
+        sdramModel.mem[(0 << 16) | (0x1000 + w)] = 0x2000 + w; // Core 0 data A
+        sdramModel.mem[(0 << 16) | (0x2000 + w)] = 0x3000 + w; // Core 0 data B (evicts A)
+        sdramModel.mem[(1 << 16) | (0x0100 + w)] = 0x5000 + w; // Core 1 code (same local addr!)
+        sdramModel.mem[(1 << 16) | (0x1000 + w)] = 0x6000 + w; // Core 1 data A (same local addr!)
+      }
+
+      rstN.put(0);
+      for (var c = 0; c < numCores; c++) {
+        icV[c].put(0);
+        icA[c].put(0);
+        dcV[c].put(0);
+        dcWe[c].put(0);
+        dcA[c].put(0);
+        dcW[c].put(0);
+      }
+
+      Simulator.setMaxSimTime(15000);
+      unawaited(Simulator.run());
+
+      Future<void> step() async {
+        await clk.nextPosedge;
+        await clk.nextNegedge;
+      }
+
+      await step();
+      await step();
+      rstN.put(1);
+
+      // Issue simultaneous cold misses from BOTH Core 0 (I+D) AND Core 1 (I+D)
+      // while SDRAM is still initializing — round-robin arbiter must serialize all 4 cleanly!
+      icA[0].put(0x0103); icV[0].put(1);
+      dcA[0].put(0x1002); dcWe[0].put(0); dcV[0].put(1);
+      icA[1].put(0x0105); icV[1].put(1);
+      dcA[1].put(0x1004); dcWe[1].put(0); dcV[1].put(1);
+      await step();
+      icV[0].put(0); dcV[0].put(0); icV[1].put(0); dcV[1].put(0);
+
+      int? rIc0, rDc0, rIc1, rDc1;
+      for (var cyc = 0; cyc < 300 && (rIc0 == null || rDc0 == null || rIc1 == null || rDc1 == null); cyc++) {
+        if (cluster.output('ic_resp_valid_0').value.toInt() == 1) rIc0 = cluster.output('ic_resp_data_0').value.toInt();
+        if (cluster.output('dc_resp_valid_0').value.toInt() == 1) rDc0 = cluster.output('dc_resp_data_0').value.toInt();
+        if (cluster.output('ic_resp_valid_1').value.toInt() == 1) rIc1 = cluster.output('ic_resp_data_1').value.toInt();
+        if (cluster.output('dc_resp_valid_1').value.toInt() == 1) rDc1 = cluster.output('dc_resp_data_1').value.toInt();
+        await step();
+      }
+      expect(rIc0, equals(0x1003));
+      expect(rDc0, equals(0x2002));
+      expect(rIc1, equals(0x5005));
+      expect(rDc1, equals(0x6004));
+
+      // Core 0 writes 0xCAFE to 0x1002 (dirty hit), then reads 0x2001 (evicts dirty 0x1000 to real SDRAM!)
+      dcA[0].put(0x1002); dcWe[0].put(1); dcW[0].put(0xCAFE); dcV[0].put(1);
+      await step();
+      dcV[0].put(0);
+      await step();
+      expect(cluster.output('dc_resp_valid_0').value.toInt(), equals(1));
+      expect(cluster.output('dc_resp_hit_0').value.toInt(), equals(1));
+      await step();
+
+      dcA[0].put(0x2001); dcWe[0].put(0); dcV[0].put(1);
+      await step();
+      dcV[0].put(0);
+      int? rEvict;
+      for (var cyc = 0; cyc < 150 && rEvict == null; cyc++) {
+        if (cluster.output('dc_resp_valid_0').value.toInt() == 1) {
+          rEvict = cluster.output('dc_resp_data_0').value.toInt();
+        }
+        await step();
+      }
+      expect(rEvict, equals(0x3001));
+
+      // Verify dirty line landed in Core 0's SDRAM partition (0x001002) while Core 1's (0x011002) is untouched!
+      expect(sdramModel.mem[(0 << 16) | 0x1002], equals(0xCAFE));
+      expect(sdramModel.mem[(0 << 16) | 0x1007], equals(0x2007));
+      expect(sdramModel.mem[(1 << 16) | 0x1002], equals(0x6002));
+
+      // Verify self-modifying code coherency: Core 0 D-write to 0x0103 invalidates Core 0 I-Cache line!
+      dcA[0].put(0x0103); dcWe[0].put(1); dcW[0].put(0xBEEF); dcV[0].put(1);
+      await step();
+      dcV[0].put(0);
+      for (var cyc = 0; cyc < 80 && cluster.output('dc_resp_valid_0').value.toInt() == 0; cyc++) {
+        await step();
+      }
+      await step();
+      // Now Core 0 I-Cache fetch of 0x0103 must MISS (because D-write invalidated it)!
+      icA[0].put(0x0103); icV[0].put(1);
+      await step();
+      icV[0].put(0);
+      int? hitAfterInval;
+      for (var cyc = 0; cyc < 80 && hitAfterInval == null; cyc++) {
+        if (cluster.output('ic_resp_valid_0').value.toInt() == 1) {
+          hitAfterInval = cluster.output('ic_resp_hit_0').value.toInt();
+        }
+        await step();
+      }
+      expect(hitAfterInval, equals(0));
 
       Simulator.endSimulation();
       await Simulator.simulationEnded;

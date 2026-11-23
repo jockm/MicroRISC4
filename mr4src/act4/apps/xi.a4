@@ -29,11 +29,13 @@ u16 xi_yank_len = 0;
 u16 xi_cur_line = 0;
 u16 xi_cur_col = 0;
 u16 xi_top_line = 0;
+u16 xi_left_col = 0;
 u16 xi_dirty = 0;
-u16 xi_mode = 0;                 // 0 normal, 1 insert, 2 colon, 3 search
+u16 xi_mode = 0;                 // 0 normal, 1 insert, 2 colon, 3 search, 4 help
 u16 xi_z_pending = 0;
 u16 xi_undo_line = 0;
 u16 xi_undo_col = 0;
+u16 xi_undo_available = 0;
 u16 *xi_status = "NORMAL";
 
 u16 xi_line_start(u16 line) {
@@ -135,11 +137,16 @@ void xi_snapshot(void) {
     xi_undo_len = xi_buf_len;
     xi_undo_line = xi_cur_line;
     xi_undo_col = xi_cur_col;
+    xi_undo_available = 1;
 }
 
 void xi_restore(void) {
     u16 i = 0;
 
+    if (xi_undo_available == 0) {
+        xi_status = "Nothing to undo";
+        return;
+    }
     while (i < xi_undo_len) {
         setbyte(xi_buf, i, getbyte(xi_undo, i));
         i++;
@@ -153,6 +160,8 @@ void xi_restore(void) {
         xi_cur_line = xi_line_count() - 1;
     }
     xi_cur_col = xi_cursor_offset() - xi_line_start(xi_cur_line);
+    xi_undo_available = 0;
+    xi_status = "Undone";
 }
 
 void xi_delete_bytes(u16 pos, u16 count) {
@@ -314,6 +323,12 @@ void xi_ensure_cursor_visible(void) {
     if (xi_top_line >= count) {
         xi_top_line = 0;
     }
+    if (xi_cur_col < xi_left_col) {
+        xi_left_col = xi_cur_col;
+    }
+    if (xi_cur_col >= (xi_left_col + 80)) {
+        xi_left_col = xi_cur_col - 79;
+    }
 }
 
 void xi_redraw(void) {
@@ -326,6 +341,27 @@ void xi_redraw(void) {
 
     xi_ensure_cursor_visible();
     term_clear();
+    if (xi_mode == 4) {
+        term_goto(1, 1);
+        sys_puts("XI v0.1 COMMAND HELP");
+        term_goto(2, 1);
+        sys_puts("A Small VI Like Editor");
+        term_goto(4, 1);
+        sys_puts("Navigation: arrows, PgUp/PgDn, w, b, 0, $");
+        term_goto(5, 1);
+        sys_puts("Insert: i, a, o  Delete: x, dd, dw  Change: cw");
+        term_goto(6, 1);
+        sys_puts("Yank/paste: yy, p  Undo: u  Search: /text, n, N");
+        term_goto(7, 1);
+        sys_puts("Colon: :w [filename], :q, :q!, :wq, :<line number>, :help");
+        term_goto(8, 1);
+        sys_puts("Save and quit: ZZ");
+        term_goto(10, 1);
+        sys_puts("Press Esc or q to return.");
+        term_goto(17, 1);
+        term_clear_eol();
+        return;
+    }
     while (row < XI_SCREEN_LINES) {
         line = xi_top_line + row;
         term_goto(row + 1, 1);
@@ -334,7 +370,12 @@ void xi_redraw(void) {
             start = xi_line_start(line);
             end = xi_line_end(line);
             i = 0;
-            while (start < end && i < 63) {
+            if ((start + xi_left_col) < end) {
+                start = start + xi_left_col;
+            } else {
+                start = end;
+            }
+            while (start < end && i < 79) {
                 setbyte(xi_display, i, getbyte(xi_buf, start));
                 i++;
                 start++;
@@ -364,7 +405,7 @@ void xi_redraw(void) {
     if (xi_dirty != 0) {
         sys_puts(" [+]");
     }
-    term_goto(xi_cur_line - xi_top_line + 1, xi_cur_col + 1);
+    term_goto(xi_cur_line - xi_top_line + 1, xi_cur_col - xi_left_col + 1);
 }
 
 void xi_move_left(void) {
@@ -707,11 +748,51 @@ u16 xi_parse_line_number(void) {
     return value;
 }
 
+void xi_copy_colon_filename(void) {
+    u16 i = 2;
+    u16 j = 0;
+    u16 ch = 0;
+
+    while (i < 31 && j < 31) {
+        ch = getbyte(xi_command, i);
+        if (ch == 0) {
+            break;
+        }
+        setbyte(xi_filename, j, ch);
+        i++;
+        j++;
+    }
+    setbyte(xi_filename, j, 0);
+}
+
+void xi_read_help(void) {
+    u16 key = 0;
+
+    xi_mode = 4;
+    xi_redraw();
+    while (true) {
+        key = term_poll_key();
+        if (key == 27 || key == 'q') {
+            xi_mode = 0;
+            return;
+        }
+    }
+}
+
 u16 xi_execute_colon(void) {
     u16 line = 0;
     u16 count = xi_line_count();
 
-    if (xi_colon_is("w")) {
+    if (xi_colon_is("help")) {
+        xi_read_help();
+    } else if (getbyte(xi_command, 0) == 'w' && getbyte(xi_command, 1) == 32) {
+        xi_copy_colon_filename();
+        if (getbyte(xi_filename, 0) == 0) {
+            xi_status = "No file name";
+        } else {
+            xi_save();
+        }
+    } else if (xi_colon_is("w")) {
         if (xi_save() == 0) {
             return 0;
         }
@@ -862,6 +943,15 @@ void xi_normal_key(u16 key) {
         xi_z_pending = 0;
         return;
     }
+    if (xi_z_pending == 4) {
+        if (key == 'w') {
+            xi_delete_word();
+            xi_mode = 1;
+            xi_status = "NORMAL";
+        }
+        xi_z_pending = 0;
+        return;
+    }
 
     if (key == KEY_UP) {
         xi_move_up();
@@ -872,14 +962,14 @@ void xi_normal_key(u16 key) {
     } else if (key == KEY_RIGHT) {
         xi_move_right();
     } else if (key == KEY_PGUP) {
-        if (xi_cur_line >= 10) {
-            xi_cur_line = xi_cur_line - 10;
+        if (xi_cur_line >= XI_SCREEN_LINES) {
+            xi_cur_line = xi_cur_line - XI_SCREEN_LINES;
         } else {
             xi_cur_line = 0;
         }
     } else if (key == KEY_PGDN) {
-        if (xi_cur_line < (xi_line_count() - 11)) {
-            xi_cur_line = xi_cur_line + 10;
+        if (xi_cur_line < (xi_line_count() - XI_SCREEN_LINES - 1)) {
+            xi_cur_line = xi_cur_line + XI_SCREEN_LINES;
         } else if (xi_line_count() > 1) {
             xi_cur_line = xi_line_count() - 1;
         }
@@ -910,6 +1000,9 @@ void xi_normal_key(u16 key) {
     } else if (key == 'd') {
         xi_status = "d";
         xi_z_pending = 1;
+    } else if (key == 'c') {
+        xi_status = "c";
+        xi_z_pending = 4;
     } else if (key == 'y') {
         xi_status = "y";
         xi_z_pending = 2;
@@ -969,15 +1062,24 @@ void main(void) {
     xi_cur_line = 0;
     xi_cur_col = 0;
     xi_top_line = 0;
+    xi_left_col = 0;
+    xi_undo_available = 0;
     xi_dirty = 0;
     xi_mode = 0;
     term_cursor_hide();
+    if (getbyte(xi_filename, 0) == 0) {
+        xi_mode = 4;
+    }
     xi_redraw();
 
     while (true) {
         key = term_poll_key();
         if (key != KEY_NONE) {
-            if (xi_mode == 1) {
+            if (xi_mode == 4) {
+                if (key == 27 || key == 'q') {
+                    xi_mode = 0;
+                }
+            } else if (xi_mode == 1) {
                 xi_insert_key(key);
             } else if (xi_mode == 0) {
                 xi_normal_key(key);

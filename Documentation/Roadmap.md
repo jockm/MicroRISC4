@@ -138,7 +138,7 @@ make ulx3s-timing
 
 ### Priority 4: I/D Cache & SDRAM Controller Integration
 - [x] Develop I-Cache and D-Cache controllers in ROHD (`hdl/rohd/lib/cache_controllers.dart`: BRAM-backed direct-mapped `ICache` with 1-cycle `flushAll`/single-line `invalValid` + write-back/write-allocate `DCache` with zero-buffer burst writeback; private non-overlapping 64K-word SDRAM partition `{coreId[7:0], addr[15:0]}` per core; verified in ROHD Dart & Icarus Verilog: **`125.98 MHz`**, `859 LUT4`, `336 FF`, `16 DPR16X4`, `2 DP16KD` for 512-word I-Cache + 512-word D-Cache pair).
-- [ ] Interface cache controllers with external ULX3S SDRAM memory controller.
+- [x] Interface cache controllers with external ULX3S SDRAM memory controller (`hdl/rohd/lib/sdram_controller.dart` hardened with JEDEC 8× init refresh, `BL=8` LMR `0x0023`, periodic `tREFI` auto-refresh, `tWR`/`tRP`/`tRCD`/`tRFC`, and ready/valid burst writes; `SdramBurstArbiter` + `SdramCacheCluster` in `hdl/rohd/lib/cache_subsystem_top.dart` with per-core D-write → I-invalidate coherency; verified ULX3S v2.0/v3.0 SDRAM pins added to `ulx3s_v20.lpf`; pin-level JEDEC SDRAM verified in ROHD Dart & Icarus Verilog: **`127.65 MHz`**, `1835 LUT4`, `791 FF`, `32 DPR16X4`, `4 DP16KD` for 2-core cluster).
 - [ ] Reduce local core BRAM size (`memWords = 2048`) while maintaining high-capacity backing storage.
 
 ### Priority 5: Full System Verification

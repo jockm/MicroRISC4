@@ -53,7 +53,7 @@ The ultimate objective of this project is a fully functional, stable operating s
 - [x] **Kernel Bootstrap & Stacks:** Validated `_reset_slot` (`0x0100`), `RSP`/`ASP` initialization, and zero-leak stack integrity (`ASP=0xFAFF`, `0` low-memory corruptions).
 - [x] **Process Control Block (PCB) Management:** Process table allocation (`_procs`), state transitions (`FREE`, `LOAD`, `RUN`), PID tracking, per-PID CWD isolation (`_proc_cwd_hi`/`_proc_cwd_lo`, inherited on spawn and guarded in `rmdir`), per-PID command-line arguments (`_proc_args`), `ps`, `kill`, and automatic per-owner FD cleanup (`fat32_close_owner`).
 - [x] **Memory & Buffer Layout:** Established clean boundaries for kernel buffers (`_sys_buf`, sector-streaming loader via `_sec_buf` without a 4K static image buffer), `0x0400` userland `--nopreamble`/`--sparsebin` entry trampoline, and stack regions.
-- [x] **Trap & Interrupt Handling:** Direct-stride `@ trap(N)` ISR prologue/epilogue (`RPUSH`/`RPOP` `R0`–`R3`, nested trap support, early `return;` via `_iret`) aligned across `act4c.py`, `mr4sim.py`, and `cpu_core.dart`.
+- [x] **Trap & Interrupt Handling:** Direct-stride `@ trap(N)` ISR prologue/epilogue (`RPUSH`/`RPOP` `R0`–`R3`, nested trap support, early `return;` via `_iret`) aligned across `act4c.py`, `mr4sim.py`, and `cpu_core.dart`; worker stub populates Trap `2..13` and Trap `15` fault reporters (`SYS_EXIT(0xFF00 | vec)`) with Core 0 `[FAULT]` diagnostics and automatic PCB/FD reclamation.
 
 ### Phase 3: Storage, Drivers & FAT32 Filesystem
 - [x] **SD Card Block Layer:** SPI SDHC `CMD17` (`sd_read_sector`) and `CMD24` (`sd_write_sector`) block reads/writes verified in `mr4sim.py` without memory corruption.
@@ -72,7 +72,7 @@ The ultimate objective of this project is a fully functional, stable operating s
 
 ### Phase 6: System Integration, Stress Testing & Verification
 - [x] **Full-System Simulation:** Complete boot sequence verified in `mr4sim.py` (`make sim-os` with 3 worker cores) from reset through FAT32 mount, interactive shell, and multi-core userland execution.
-- [x] **Automated Test Suite:** Implemented `tools/test_os.py` (`make os-test` / `make test-os`, 11 suites) covering compiler/runtime math & structs, `@ trap(N)` ISRs, shell & FAT32 read/write/unlink/subdirectories, async Trap 1, multi-core `LS.BIN`/`PS.BIN`/`CAT.BIN`/`SYS_WRITE`/`SYS_SPAWN`, cooperative fibers (`FIBERS.BIN`), console ownership (`!`/`run`/`fg`/`bg`/`--fgoutput`/`Ctrl-Z`/`Ctrl-C`), and stress/edge cases.
+- [x] **Automated Test Suite:** Implemented `tools/test_os.py` (`make os-test` / `make test-os`, 12 suites) covering compiler/runtime math & structs, `@ trap(N)` ISRs, shell & FAT32 read/write/unlink/subdirectories/per-PID CWD, async Trap 1, multi-core `LS.BIN`/`PS.BIN`/`CAT.BIN`/`SYS_WRITE`/`SYS_SPAWN`/`SYS_GETARGS`, cooperative fibers (`FIBERS.BIN`), console ownership (`!`/`run`/`fg`/`bg`/`--fgoutput`/`Ctrl-Z`/`Ctrl-C`), worker Trap 15 & unhandled-trap fault reporting, and stress/edge cases.
 - [x] **Stress & Edge Case Testing:** Verified shell line-buffer overflow clamping & backspace editing, 8-FD exhaustion + auto-reclamation on exit/kill, invalid Class A/B/C syscall payload draining (`ERR_UNKNOWN`), 3-worker core exhaustion + Trap 14 `kill` recovery, and multi-cluster (>512B) file write/readback/unlink.
 
 ---

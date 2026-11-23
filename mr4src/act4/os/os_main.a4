@@ -34,12 +34,16 @@ const u16 SYS_READDIR   = 0x21;
 const u16 SYS_PS        = 0x22;
 const u16 SYS_GETARGS   = 0x23;
 
-// Error Codes
-const u16 ERR_OK        = 0x0000;
-const u16 ERR_EMPTY     = 0x0001;
-const u16 ERR_IO        = 0x0002;
-const u16 ERR_EOF       = 0x0003;
-const u16 ERR_UNKNOWN   = 0xFFFF;
+// Error & Fault Exit Codes
+const u16 ERR_OK          = 0x0000;
+const u16 ERR_EMPTY       = 0x0001;
+const u16 ERR_IO          = 0x0002;
+const u16 ERR_EOF         = 0x0003;
+const u16 ERR_UNKNOWN     = 0xFFFF;
+
+const u16 FAULT_CODE_MASK = 0xFFF0;
+const u16 FAULT_CODE_BASE = 0xFF00;
+const u16 FAULT_ALIGN     = 0xFF0F;
 
 const u16 SYS_BUF_WORDS = 64;
 
@@ -99,6 +103,22 @@ void handle_syscall(void) {
 
     if (id == SYS_EXIT) {
         arg1 = fifo_in;
+        if ((arg1 & FAULT_CODE_MASK) == FAULT_CODE_BASE && pid > 0 && pid < MAX_CORES) {
+            uart_puts("\r\n[FAULT] PID ");
+            uart_putc(pid + 48);
+            uart_puts(" (");
+            uart_puts(procs[pid].name);
+            uart_puts("): ");
+            if (arg1 == FAULT_ALIGN) {
+                uart_puts("align fault");
+            } else {
+                uart_puts("unhandled trap ");
+                uart_put_dec16(arg1 & 0x000F);
+            }
+            uart_puts(" (0x");
+            uart_put_hex16(arg1);
+            uart_puts(")\r\n");
+        }
         if (proc_mark_exited(pid, arg1) != 0) {
             shell_prompt();
         }

@@ -1606,6 +1606,118 @@ void main(void) {
             assert ws.mem[0x0005] == 0xFAFF, f"Worker {idx} ASP leaked: 0x{ws.mem[0x0005]:04X}"
 
 
+# ------------------------------------------------------------------------------
+# Test 12: Worker crash reporting (Trap 15 align fault + unhandled Trap 5)
+# ------------------------------------------------------------------------------
+def test_os_worker_fault_reporting(_args):
+    align_bad_src = """
+import "sys.a4";
+
+// Slot 0 = 0x00 (LD R0, R0), Slot 1 = 0xF8 (PUSH8 R0 in Slot 1 -> hardware Trap 15)
+u16 bad_insn = 0xF800;
+
+void main(void) {
+    u16 fd = 0;
+    // Open an FD before crashing so Core 0 must reclaim it on fault
+    sys_open("README.TXT", O_RDONLY, &fd);
+    asm {
+        LOAD16  R0, _bad_insn
+        JMP     R0
+    }
+    sys_exit(0);
+}
+"""
+    trap5_bad_src = """
+import "sys.a4";
+
+void main(void) {
+    u16 fd = 0;
+    sys_open("README.TXT", O_RDONLY, &fd);
+    trap(5, 0);
+    sys_exit(0);
+}
+"""
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td)
+        sd_root = p / "sd_root"
+        sd_root.mkdir()
+        shutil.copy(OS_BUILD / "cat.bin", sd_root / "CAT.BIN")
+        (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
+
+        for name, src in (("ALIGNBAD", align_bad_src), ("TRAPBAD", trap5_bad_src)):
+            a4 = p / f"{name.lower()}.a4"
+            out_bin = sd_root / f"{name}.BIN"
+            a4.write_text(src, encoding="utf-8")
+            compile_and_assemble(a4, out_bin, org=0x0400, nopreamble=True, sparsebin=True)
+
+        sd_img = p / "fault_test.img"
+        subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
+             "-o", str(sd_img), "--size-mb", "16", "--spc", "1"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
+        os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
+        os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+        os_sim.pc = 0x0100
+        uart_out, bad_writes = attach_uart_and_watch(os_sim)
+
+        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+        worker_sim.pc = 0x0100
+        worker_sim._poll_stdin = lambda: None
+        mr4sim.connect_os_worker(os_sim, worker_sim)
+
+        assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
+        procs_addr = os_sim.sym_to_addr["_procs"]
+        pid1_state = procs_addr + 10
+        fds_addr = os_sim.sym_to_addr["_fds"]
+
+        def send_cmd(cmd_str, max_steps=10000000):
+            start = len(uart_out)
+            for ch in cmd_str:
+                os_sim.rx_queue.append(ord(ch))
+            ok = run_until_prompt(os_sim, uart_out, max_steps, worker=worker_sim)
+            assert ok, f"Command {cmd_str!r} timed out; out={''.join(uart_out[start:])!r}"
+            return "".join(uart_out[start:])
+
+        # 1. Foreground Trap 15 alignment fault -> Core 0 reports fault, reclaims PID & FD, restores prompt
+        out_align = send_cmd("! ALIGNBAD.BIN\r")
+        assert "[FAULT] PID 1 (ALIGNBAD.BIN): align fault (0xFF0F)" in out_align, f"Missing Trap 15 notice:\n{out_align}"
+        assert os_sim.mem[pid1_state] == 0
+        assert os_sim.mem[pid1_state + 1] == 0xFF0F
+        assert not [i for i in range(8) if os_sim.mem[fds_addr + i * 15] != 0], "Leaked FD after Trap 15"
+
+        # 2. Background unhandled Trap 5 -> Core 0 still reports fault & reclaims PID + FD
+        bg_start = len(uart_out)
+        assert "Spawned PID 1" in send_cmd("run TRAPBAD.BIN\r")
+        done = False
+        for _ in range(8000000):
+            os_sim.step()
+            worker_sim.step()
+            if os_sim.mem[pid1_state] == 0 and "[FAULT] PID 1 (TRAPBAD.BIN): unhandled trap 5 (0xFF05)" in "".join(uart_out[bg_start:]):
+                done = True
+                break
+        assert done, f"Missing background Trap 5 fault report:\n{''.join(uart_out[bg_start:])}"
+        assert os_sim.mem[pid1_state + 1] == 0xFF05
+        assert not [i for i in range(8) if os_sim.mem[fds_addr + i * 15] != 0], "Leaked FD after Trap 5"
+
+        # 3. Worker Core 1 cleanly runs CAT.BIN after both crashes
+        out_cat = send_cmd("! CAT.BIN\r")
+        assert "Hello from MiniRISC4 FAT32 SD card!" in out_cat
+        assert os_sim.mem[pid1_state] == 0 and os_sim.mem[pid1_state + 1] == 0
+        send_cmd("ps\r")
+
+        assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
+        assert os_sim.mem[0x0005] == 0xFAFF, f"Core 0 ASP leaked: 0x{os_sim.mem[0x0005]:04X}"
+        assert worker_sim.mem[0x0004] == 0xFEFF, f"Core 1 RSP leaked: 0x{worker_sim.mem[0x0004]:04X}"
+        assert worker_sim.mem[0x0005] == 0xFAFF, f"Core 1 ASP leaked: 0x{worker_sim.mem[0x0005]:04X}"
+
+
 TESTS = [
     ("compiler_runtime", test_compiler_runtime),
     ("trap_isr", test_trap_isr),
@@ -1618,6 +1730,7 @@ TESTS = [
     ("os_cooperative_fibers", test_os_cooperative_fibers),
     ("os_fat32_subdirs", test_os_fat32_subdirs),
     ("os_console_fg_bg", test_os_console_fg_bg),
+    ("os_worker_fault_reporting", test_os_worker_fault_reporting),
 ]
 
 

@@ -52,6 +52,102 @@ _trap1_syscall:
     JMP     R0
     .align
 
+.org 0x0120
+_trap2_unhandled:
+    LD      R0, 2
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
+    JMP     R0
+    .align
+
+.org 0x0130
+_trap3_unhandled:
+    LD      R0, 3
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
+    JMP     R0
+    .align
+
+.org 0x0140
+_trap4_unhandled:
+    LD      R0, 4
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
+    JMP     R0
+    .align
+
+.org 0x0150
+_trap5_unhandled:
+    LD      R0, 5
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
+    JMP     R0
+    .align
+
+.org 0x0160
+_trap6_unhandled:
+    LD      R0, 6
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
+    JMP     R0
+    .align
+
+.org 0x0170
+_trap7_unhandled:
+    LD      R0, 7
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
+    JMP     R0
+    .align
+
+.org 0x0180
+_trap8_unhandled:
+    LD      R0, 8
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
+    JMP     R0
+    .align
+
+.org 0x0190
+_trap9_unhandled:
+    LD      R0, 9
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
+    JMP     R0
+    .align
+
+.org 0x01A0
+_trap10_unhandled:
+    LD      R0, 10
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
+    JMP     R0
+    .align
+
+.org 0x01B0
+_trap11_unhandled:
+    LD      R0, 11
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
+    JMP     R0
+    .align
+
+.org 0x01C0
+_trap12_unhandled:
+    LD      R0, 12
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
+    JMP     R0
+    .align
+
+.org 0x01D0
+_trap13_unhandled:
+    LD      R0, 13
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
+    JMP     R0
+    .align
+
 .org 0x01E0
 _trap14_kill:
     ; Remote KILL from Core 0: discard app state, reset stacks, return to idle
@@ -61,8 +157,10 @@ _trap14_kill:
 
 .org 0x01F0
 _trap15_align_fault:
-    ; Hardware Slot 1 violation: notify Core 0 and return to idle
-    LOAD16  R0, _fault_report
+    ; Hardware Slot 1 violation: notify Core 0 (0xFF0F) and return to idle
+    LD      R0, 15
+    LD      R1, R0
+    LOAD16  R0, _trap_fault_report
     JMP     R0
     .align
 
@@ -126,10 +224,12 @@ _loader_launch:
     JMP     R0
 
 ; ------------------------------------------------------------------------------
-; Trap 15 Alignment Fault Reporter
+; Trap Fault Reporter (Traps 2..13 & Trap 15)
+; Entry: R1 = trap vector number (2..13 or 15) -> sends SYS_EXIT(0xFF00 | vec)
 ; ------------------------------------------------------------------------------
-_fault_report:
-    LOAD16  R1, ERR_ALIGN_FAULT
+_trap_fault_report:
+    LOAD16  R2, 0xFF00
+    OR      R1, R2
     LOAD16  R0, STUB_ARG1
     LD      (R0), R1
     ; Fall through to _send_exit_and_idle

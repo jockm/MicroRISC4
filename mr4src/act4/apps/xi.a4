@@ -1,0 +1,988 @@
+// ==============================================================================
+// FILE: mr4src/act4/apps/xi.a4
+// Small vi-like text editor for MiniRISC4 / mr4os
+// ==============================================================================
+
+import "sys.a4";
+import "term.a4";
+
+const u16 XI_BUF_BYTES = 32768;
+const u16 XI_BUF_WORDS = XI_BUF_BYTES >> 1;
+const u16 XI_SCREEN_LINES = 16;
+const u16 XI_YANK_BYTES = 256;
+const u16 XI_YANK_WORDS = XI_YANK_BYTES >> 1;
+
+u16 xi_buf[XI_BUF_WORDS];
+u16 xi_undo[XI_BUF_WORDS];
+u16 xi_yank[XI_YANK_WORDS];
+u16 xi_read_chunk[64];
+u16 xi_write_chunk[64];
+u16 xi_display[64];
+u16 xi_command[32];
+u16 xi_search[32];
+u16 xi_filename[32];
+u16 xi_arg[32];
+
+u16 xi_buf_len = 0;
+u16 xi_undo_len = 0;
+u16 xi_yank_len = 0;
+u16 xi_cur_line = 0;
+u16 xi_cur_col = 0;
+u16 xi_top_line = 0;
+u16 xi_dirty = 0;
+u16 xi_mode = 0;                 // 0 normal, 1 insert, 2 colon, 3 search
+u16 xi_z_pending = 0;
+u16 xi_undo_line = 0;
+u16 xi_undo_col = 0;
+u16 *xi_status = "NORMAL";
+
+u16 xi_line_start(u16 line) {
+    u16 i = 0;
+    u16 l = 0;
+    u16 ch = 0;
+
+    while (i < xi_buf_len && l < line) {
+        ch = getbyte(xi_buf, i);
+        if (ch == 10) {
+            l++;
+        }
+        i++;
+    }
+    return i;
+}
+
+u16 xi_line_end(u16 line) {
+    u16 i = xi_line_start(line);
+    u16 ch = 0;
+
+    while (i < xi_buf_len) {
+        ch = getbyte(xi_buf, i);
+        if (ch == 10) {
+            break;
+        }
+        i++;
+    }
+    return i;
+}
+
+u16 xi_line_count(void) {
+    u16 i = 0;
+    u16 count = 1;
+    u16 ch = 0;
+
+    while (i < xi_buf_len) {
+        ch = getbyte(xi_buf, i);
+        if (ch == 10) {
+            count++;
+        }
+        i++;
+    }
+    return count;
+}
+
+u16 xi_line_offset(u16 line) {
+    u16 i = xi_line_start(line);
+    u16 e = xi_line_end(line);
+    u16 col = xi_cur_col;
+
+    if (col > (e - i)) {
+        col = e - i;
+    }
+    xi_cur_col = col;
+    return i + col;
+}
+
+void xi_set_cursor_from_offset(u16 off) {
+    u16 i = 0;
+    u16 line = 0;
+    u16 col = 0;
+    u16 ch = 0;
+
+    if (off > xi_buf_len) {
+        off = xi_buf_len;
+    }
+    while (i < off) {
+        ch = getbyte(xi_buf, i);
+        if (ch == 10) {
+            line++;
+            col = 0;
+        } else {
+            col++;
+        }
+        i++;
+    }
+    xi_cur_line = line;
+    xi_cur_col = col;
+}
+
+u16 xi_cursor_offset(void) {
+    u16 i = xi_line_start(xi_cur_line);
+    u16 e = xi_line_end(xi_cur_line);
+
+    if (xi_cur_col > (e - i)) {
+        xi_cur_col = e - i;
+    }
+    return i + xi_cur_col;
+}
+
+void xi_snapshot(void) {
+    u16 i = 0;
+
+    while (i < xi_buf_len) {
+        setbyte(xi_undo, i, getbyte(xi_buf, i));
+        i++;
+    }
+    xi_undo_len = xi_buf_len;
+    xi_undo_line = xi_cur_line;
+    xi_undo_col = xi_cur_col;
+}
+
+void xi_restore(void) {
+    u16 i = 0;
+
+    while (i < xi_undo_len) {
+        setbyte(xi_buf, i, getbyte(xi_undo, i));
+        i++;
+    }
+    xi_buf_len = xi_undo_len;
+    setbyte(xi_buf, xi_buf_len, 0);
+    xi_dirty = 1;
+    xi_cur_line = xi_undo_line;
+    xi_cur_col = xi_undo_col;
+    if (xi_cur_line >= xi_line_count()) {
+        xi_cur_line = xi_line_count() - 1;
+    }
+    xi_cur_col = xi_cursor_offset() - xi_line_start(xi_cur_line);
+}
+
+void xi_delete_bytes(u16 pos, u16 count) {
+    u16 i = pos;
+
+    if (pos >= xi_buf_len || count == 0) {
+        return;
+    }
+    if ((pos + count) > xi_buf_len) {
+        count = xi_buf_len - pos;
+    }
+    while ((i + count) < xi_buf_len) {
+        setbyte(xi_buf, i, getbyte(xi_buf, i + count));
+        i++;
+    }
+    xi_buf_len = xi_buf_len - count;
+    setbyte(xi_buf, xi_buf_len, 0);
+}
+
+void xi_insert_bytes(u16 pos, u16 *src, u16 count) {
+    u16 i = 0;
+    u16 ch = 0;
+
+    if (count == 0 || ((xi_buf_len + count) > XI_BUF_BYTES)) {
+        return;
+    }
+    i = xi_buf_len + count;
+    while (i > pos) {
+        i--;
+        if ((i - count) < xi_buf_len) {
+            setbyte(xi_buf, i, getbyte(xi_buf, i - count));
+        }
+    }
+    i = 0;
+    while (i < count) {
+        ch = getbyte(src, i);
+        setbyte(xi_buf, pos + i, ch);
+        i++;
+    }
+    xi_buf_len = xi_buf_len + count;
+    setbyte(xi_buf, xi_buf_len, 0);
+}
+
+void xi_copy_filename(void) {
+    u16 i = 0;
+    u16 ch = 0;
+
+    while (i < 31) {
+        ch = getbyte(xi_arg, i);
+        setbyte(xi_filename, i, ch);
+        if (ch == 0) {
+            break;
+        }
+        i++;
+    }
+    setbyte(xi_filename, i, 0);
+}
+
+u16 xi_save(void) {
+    u16 fd = 0;
+    u16 pos = 0;
+    u16 chunk = 0;
+    u16 written = 0;
+    u16 i = 0;
+
+    if (getbyte(xi_filename, 0) == 0) {
+        xi_status = "No file name";
+        return 1;
+    }
+    if (sys_open(xi_filename, O_WRONLY, &fd) != 0) {
+        xi_status = "Write failed";
+        return 1;
+    }
+    while (pos < xi_buf_len) {
+        chunk = xi_buf_len - pos;
+        if (chunk > 128) {
+            chunk = 128;
+        }
+        i = 0;
+        while (i < 64) {
+            setbyte(xi_write_chunk, i, 0);
+            i++;
+        }
+        i = 0;
+        while (i < chunk) {
+            setbyte(xi_write_chunk, i, getbyte(xi_buf, pos + i));
+            i++;
+        }
+        if (sys_write(fd, xi_write_chunk, chunk, &written) != 0) {
+            sys_close(fd);
+            xi_status = "Write failed";
+            return 1;
+        }
+        pos = pos + written;
+        if (written == 0) {
+            sys_close(fd);
+            xi_status = "Write failed";
+            return 1;
+        }
+    }
+    sys_close(fd);
+    xi_dirty = 0;
+    xi_status = "Written";
+    return 0;
+}
+
+u16 xi_load(void) {
+    u16 fd = 0;
+    u16 nwords = 0;
+    u16 nbytes = 0;
+    u16 i = 0;
+    u16 ch = 0;
+    u16 status = 0;
+
+    xi_buf_len = 0;
+    if (getbyte(xi_filename, 0) == 0) {
+        setbyte(xi_buf, 0, 0);
+        return 0;
+    }
+    if (sys_open(xi_filename, O_RDONLY, &fd) != 0) {
+        setbyte(xi_buf, 0, 0);
+        xi_status = "New file";
+        return 0;
+    }
+    while (xi_buf_len < XI_BUF_BYTES) {
+        status = sys_read(fd, xi_read_chunk, 64, &nwords);
+        if (status == 3) {
+            break;
+        }
+        if (status != 0) {
+            break;
+        }
+        nbytes = nwords << 1;
+        i = 0;
+        while (i < nbytes && xi_buf_len < XI_BUF_BYTES) {
+            ch = getbyte(xi_read_chunk, i);
+            if (ch != 13) {
+                setbyte(xi_buf, xi_buf_len, ch);
+                xi_buf_len++;
+            }
+            i++;
+        }
+    }
+    sys_close(fd);
+    setbyte(xi_buf, xi_buf_len, 0);
+    xi_status = "NORMAL";
+    return 0;
+}
+
+void xi_ensure_cursor_visible(void) {
+    u16 count = xi_line_count();
+
+    if (xi_cur_line < xi_top_line) {
+        xi_top_line = xi_cur_line;
+    }
+    if (xi_cur_line >= (xi_top_line + XI_SCREEN_LINES)) {
+        xi_top_line = xi_cur_line - XI_SCREEN_LINES + 1;
+    }
+    if (xi_top_line >= count) {
+        xi_top_line = 0;
+    }
+}
+
+void xi_redraw(void) {
+    u16 row = 0;
+    u16 line = 0;
+    u16 start = 0;
+    u16 end = 0;
+    u16 i = 0;
+    u16 count = xi_line_count();
+
+    xi_ensure_cursor_visible();
+    term_clear();
+    while (row < XI_SCREEN_LINES) {
+        line = xi_top_line + row;
+        term_goto(row + 1, 1);
+        term_clear_eol();
+        if (line < count) {
+            start = xi_line_start(line);
+            end = xi_line_end(line);
+            i = 0;
+            while (start < end && i < 63) {
+                setbyte(xi_display, i, getbyte(xi_buf, start));
+                i++;
+                start++;
+            }
+            setbyte(xi_display, i, 0);
+            sys_puts(xi_display);
+        }
+        row++;
+    }
+    term_goto(17, 1);
+    term_clear_eol();
+    if (xi_mode == 1) {
+        sys_puts("-- INSERT -- ");
+    } else if (xi_mode == 2) {
+        sys_puts(":");
+    } else if (xi_mode == 3) {
+        sys_puts("/");
+    } else {
+        sys_puts(xi_status);
+        sys_puts(" ");
+    }
+    sys_puts(xi_filename);
+    sys_puts(" ");
+    term_put_dec(xi_cur_line + 1);
+    sys_puts(":");
+    term_put_dec(xi_cur_col + 1);
+    if (xi_dirty != 0) {
+        sys_puts(" [+]");
+    }
+    term_goto(xi_cur_line - xi_top_line + 1, xi_cur_col + 1);
+}
+
+void xi_move_left(void) {
+    if (xi_cur_col > 0) {
+        xi_cur_col--;
+    }
+}
+
+void xi_move_right(void) {
+    u16 off = xi_cursor_offset();
+
+    if (off < xi_line_end(xi_cur_line)) {
+        xi_cur_col++;
+    }
+}
+
+void xi_move_up(void) {
+    if (xi_cur_line > 0) {
+        xi_cur_line--;
+    }
+}
+
+void xi_move_down(void) {
+    if (xi_cur_line < (xi_line_count() - 1)) {
+        xi_cur_line++;
+    }
+}
+
+void xi_move_word_forward(void) {
+    u16 off = xi_cursor_offset();
+    u16 ch = 0;
+
+    while (off < xi_buf_len) {
+        ch = getbyte(xi_buf, off);
+        if (ch == 10) {
+            break;
+        }
+        if ((ch >= 48 && ch <= 57) || (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch == 95) {
+            break;
+        }
+        off++;
+    }
+    while (off < xi_buf_len) {
+        ch = getbyte(xi_buf, off);
+        if (ch == 10 || ch == 32) {
+            break;
+        }
+        if (!((ch >= 48 && ch <= 57) || (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch == 95)) {
+            break;
+        }
+        off++;
+    }
+    while (off < xi_buf_len) {
+        ch = getbyte(xi_buf, off);
+        if (ch != 32 && ch != 10) {
+            break;
+        }
+        off++;
+    }
+    xi_set_cursor_from_offset(off);
+}
+
+void xi_move_word_backward(void) {
+    u16 off = xi_cursor_offset();
+    u16 ch = 0;
+
+    if (off > 0) {
+        off--;
+    }
+    while (off > 0) {
+        ch = getbyte(xi_buf, off);
+        if (ch == 32 || ch == 10) {
+            off--;
+        } else {
+            break;
+        }
+    }
+    while (off > 0) {
+        ch = getbyte(xi_buf, off - 1);
+        if (ch == 32 || ch == 10) {
+            break;
+        }
+        off--;
+    }
+    xi_set_cursor_from_offset(off);
+}
+
+void xi_insert_char(u16 ch) {
+    u16 pos = xi_cursor_offset();
+    u16 one[1];
+
+    setbyte(one, 0, ch);
+    xi_insert_bytes(pos, one, 1);
+    xi_set_cursor_from_offset(pos + 1);
+    xi_dirty = 1;
+}
+
+void xi_insert_newline(void) {
+    u16 pos = xi_cursor_offset();
+    u16 one[1];
+
+    setbyte(one, 0, 10);
+    xi_insert_bytes(pos, one, 1);
+    xi_set_cursor_from_offset(pos + 1);
+    xi_dirty = 1;
+}
+
+void xi_open_below(void) {
+    u16 end = xi_line_end(xi_cur_line);
+    u16 pos = end;
+
+    xi_snapshot();
+    if (pos < xi_buf_len) {
+        pos++;
+    }
+    xi_insert_newline_at(pos);
+    xi_set_cursor_from_offset(pos + 1);
+    xi_mode = 1;
+}
+
+void xi_insert_newline_at(u16 pos) {
+    u16 one[1];
+
+    setbyte(one, 0, 10);
+    xi_insert_bytes(pos, one, 1);
+    xi_dirty = 1;
+}
+
+void xi_delete_char(void) {
+    u16 pos = xi_cursor_offset();
+    u16 ch = getbyte(xi_buf, pos);
+
+    if (pos < xi_buf_len && ch != 10) {
+        xi_snapshot();
+        xi_delete_bytes(pos, 1);
+        xi_dirty = 1;
+        xi_set_cursor_from_offset(pos);
+    }
+}
+
+void xi_delete_line(void) {
+    u16 start = xi_line_start(xi_cur_line);
+    u16 end = xi_line_end(xi_cur_line);
+    u16 count = end - start;
+
+    xi_snapshot();
+    if (end < xi_buf_len) {
+        count++;
+    }
+    xi_delete_bytes(start, count);
+    if (xi_cur_line >= xi_line_count() && xi_cur_line > 0) {
+        xi_cur_line--;
+    }
+    xi_cur_col = 0;
+    xi_dirty = 1;
+}
+
+void xi_delete_word(void) {
+    u16 pos = xi_cursor_offset();
+    u16 end = pos;
+    u16 ch = 0;
+
+    xi_snapshot();
+    while (end < xi_buf_len) {
+        ch = getbyte(xi_buf, end);
+        if (ch == 10 || ch == 32) {
+            break;
+        }
+        end++;
+    }
+    while (end < xi_buf_len && getbyte(xi_buf, end) == 32) {
+        end++;
+    }
+    if (end > pos) {
+        xi_delete_bytes(pos, end - pos);
+        xi_dirty = 1;
+        xi_set_cursor_from_offset(pos);
+    }
+}
+
+void xi_yank_line(void) {
+    u16 start = xi_line_start(xi_cur_line);
+    u16 end = xi_line_end(xi_cur_line);
+    u16 i = 0;
+
+    xi_yank_len = 0;
+    while (start < end && xi_yank_len < XI_YANK_BYTES) {
+        setbyte(xi_yank, xi_yank_len, getbyte(xi_buf, start));
+        xi_yank_len++;
+        start++;
+    }
+}
+
+void xi_paste(void) {
+    u16 pos = xi_line_end(xi_cur_line);
+
+    if (xi_yank_len == 0) {
+        return;
+    }
+    xi_snapshot();
+    if (pos < xi_buf_len) {
+        pos++;
+    } else if (xi_buf_len > 0) {
+        pos = xi_buf_len;
+        if (getbyte(xi_buf, xi_buf_len - 1) != 10) {
+            xi_insert_newline_at(pos);
+            pos++;
+        }
+    }
+    xi_insert_bytes(pos, xi_yank, xi_yank_len);
+    if (pos + xi_yank_len < XI_BUF_BYTES) {
+        xi_insert_newline_at(pos + xi_yank_len);
+    }
+    xi_dirty = 1;
+    xi_set_cursor_from_offset(pos);
+}
+
+u16 xi_search_match(u16 start) {
+    u16 i = start;
+    u16 j = 0;
+    u16 slen = 0;
+    u16 ch = 0;
+
+    while (getbyte(xi_search, slen) != 0 && slen < 31) {
+        slen++;
+    }
+    if (slen == 0) {
+        return 0xFFFF;
+    }
+    while (i + slen <= xi_buf_len) {
+        j = 0;
+        while (j < slen) {
+            ch = getbyte(xi_search, j);
+            if (getbyte(xi_buf, i + j) != ch) {
+                break;
+            }
+            j++;
+        }
+        if (j == slen) {
+            return i;
+        }
+        i++;
+    }
+    return 0xFFFF;
+}
+
+void xi_search_next(void) {
+    u16 pos = xi_cursor_offset();
+    u16 found = xi_search_match(pos + 1);
+
+    if (found != 0xFFFF) {
+        xi_set_cursor_from_offset(found);
+        xi_status = "Found";
+    } else {
+        xi_status = "Not found";
+    }
+}
+
+void xi_search_prev(void) {
+    u16 pos = xi_cursor_offset();
+    u16 i = 0;
+    u16 found = 0xFFFF;
+    u16 candidate = 0;
+
+    if (pos == 0) {
+        xi_status = "Not found";
+        return;
+    }
+    i = 0;
+    while (i < pos) {
+        candidate = xi_search_match(i);
+        if (candidate != 0xFFFF && candidate < pos) {
+            found = candidate;
+        }
+        i++;
+    }
+    if (found != 0xFFFF) {
+        xi_set_cursor_from_offset(found);
+        xi_status = "Found";
+    } else {
+        xi_status = "Not found";
+    }
+}
+
+u16 xi_text_equal(u16 *a, u16 *b) {
+    u16 i = 0;
+    u16 ca = 0;
+    u16 cb = 0;
+
+    while (i < 31) {
+        ca = getbyte(a, i);
+        cb = getbyte(b, i);
+        if (ca != cb) {
+            return 0;
+        }
+        if (ca == 0) {
+            return 1;
+        }
+        i++;
+    }
+    return 1;
+}
+
+u16 xi_colon_is(u16 *text) {
+    u16 temp[32];
+    u16 i = 0;
+    u16 ch = 0;
+
+    while (i < 31) {
+        ch = getbyte(text, i);
+        setbyte(temp, i, ch);
+        i++;
+    }
+    setbyte(temp, 31, 0);
+    return xi_text_equal(xi_command, temp);
+}
+
+u16 xi_parse_line_number(void) {
+    u16 i = 0;
+    u16 ch = 0;
+    u16 value = 0;
+    u16 digit = 0;
+
+    ch = getbyte(xi_command, 0);
+    if (ch < 48 || ch > 57) {
+        return 0;
+    }
+    while (i < 31) {
+        ch = getbyte(xi_command, i);
+        if (ch < 48 || ch > 57) {
+            break;
+        }
+        digit = ch - 48;
+        value = (value * 10) + digit;
+        i++;
+    }
+    if (i == 0) {
+        return 0;
+    }
+    return value;
+}
+
+u16 xi_execute_colon(void) {
+    u16 line = 0;
+    u16 count = xi_line_count();
+
+    if (xi_colon_is("w")) {
+        if (xi_save() == 0) {
+            return 0;
+        }
+    } else if (xi_colon_is("q")) {
+        if (xi_dirty != 0) {
+            xi_status = "Unsaved changes";
+        } else {
+            return 1;
+        }
+    } else if (xi_colon_is("q!")) {
+        return 2;
+    } else if (xi_colon_is("wq")) {
+        if (xi_save() == 0) {
+            return 1;
+        }
+    } else {
+        line = xi_parse_line_number();
+        if (line != 0) {
+            line--;
+            if (line >= count) {
+                line = count - 1;
+            }
+            xi_cur_line = line;
+            xi_cur_col = 0;
+        } else {
+            xi_status = "Unknown command";
+        }
+    }
+    xi_mode = 0;
+    return 0;
+}
+
+void xi_read_colon(void) {
+    u16 key = 0;
+    u16 len = 0;
+    u16 result = 0;
+
+    xi_mode = 2;
+    len = 0;
+    setbyte(xi_command, 0, 0);
+    while (true) {
+        key = term_poll_key();
+        if (key == KEY_NONE) {
+        } else if (key == 27) {
+            xi_mode = 0;
+            return;
+        } else if (key == 13 || key == 10) {
+            setbyte(xi_command, len, 0);
+            result = xi_execute_colon();
+            if (result == 1) {
+                xi_status = "ZZ";
+                sys_exit(0);
+            }
+            if (result == 2) {
+                sys_exit(0);
+            }
+            return;
+        } else if (key == 8 || key == KEY_BACKSPACE) {
+            if (len > 0) {
+                len--;
+                setbyte(xi_command, len, 0);
+                term_goto(17, 1);
+                term_clear_eol();
+                sys_puts(":");
+                sys_puts(xi_command);
+            }
+        } else if (key >= 32 && key < 127 && len < 31) {
+            setbyte(xi_command, len, key);
+            len++;
+            setbyte(xi_command, len, 0);
+            term_goto(17, 1);
+            term_clear_eol();
+            sys_puts(":");
+            sys_puts(xi_command);
+        }
+    }
+}
+
+void xi_read_search(void) {
+    u16 key = 0;
+    u16 len = 0;
+
+    xi_mode = 3;
+    len = 0;
+    setbyte(xi_search, 0, 0);
+    while (true) {
+        key = term_poll_key();
+        if (key == KEY_NONE) {
+        } else if (key == 27) {
+            xi_mode = 0;
+            return;
+        } else if (key == 13 || key == 10) {
+            setbyte(xi_search, len, 0);
+            xi_mode = 0;
+            xi_search_next();
+            return;
+        } else if (key == 8 || key == KEY_BACKSPACE) {
+            if (len > 0) {
+                len--;
+                setbyte(xi_search, len, 0);
+                term_goto(17, 1);
+                term_clear_eol();
+                sys_puts("/");
+                sys_puts(xi_search);
+            }
+        } else if (key >= 32 && key < 127 && len < 31) {
+            setbyte(xi_search, len, key);
+            len++;
+            setbyte(xi_search, len, 0);
+            term_goto(17, 1);
+            term_clear_eol();
+            sys_puts("/");
+            sys_puts(xi_search);
+        }
+    }
+}
+
+void xi_normal_key(u16 key) {
+    u16 off = 0;
+    u16 start = 0;
+    u16 end = 0;
+
+    if (xi_z_pending == 1) {
+        if (key == 'd') {
+            xi_delete_line();
+            xi_status = "NORMAL";
+        } else if (key == 'w') {
+            xi_delete_word();
+            xi_status = "NORMAL";
+        }
+        xi_z_pending = 0;
+        return;
+    }
+    if (xi_z_pending == 2) {
+        if (key == 'y') {
+            xi_yank_line();
+            xi_status = "Yanked";
+        }
+        xi_z_pending = 0;
+        return;
+    }
+    if (xi_z_pending == 3) {
+        if (key == 'Z') {
+            if (xi_save() == 0) {
+                sys_exit(0);
+            }
+        }
+        xi_z_pending = 0;
+        return;
+    }
+
+    if (key == KEY_UP) {
+        xi_move_up();
+    } else if (key == KEY_DOWN) {
+        xi_move_down();
+    } else if (key == KEY_LEFT) {
+        xi_move_left();
+    } else if (key == KEY_RIGHT) {
+        xi_move_right();
+    } else if (key == KEY_PGUP) {
+        if (xi_cur_line >= 10) {
+            xi_cur_line = xi_cur_line - 10;
+        } else {
+            xi_cur_line = 0;
+        }
+    } else if (key == KEY_PGDN) {
+        if (xi_cur_line < (xi_line_count() - 11)) {
+            xi_cur_line = xi_cur_line + 10;
+        } else if (xi_line_count() > 1) {
+            xi_cur_line = xi_line_count() - 1;
+        }
+    } else if (key == 'i') {
+        xi_snapshot();
+        xi_mode = 1;
+    } else if (key == 'a') {
+        xi_snapshot();
+        off = xi_cursor_offset();
+        if (off < xi_line_end(xi_cur_line)) {
+            xi_cur_col++;
+        }
+        xi_mode = 1;
+    } else if (key == 'o') {
+        xi_open_below();
+    } else if (key == 'w') {
+        xi_move_word_forward();
+    } else if (key == 'b') {
+        xi_move_word_backward();
+    } else if (key == '0') {
+        xi_cur_col = 0;
+    } else if (key == '$') {
+        start = xi_line_start(xi_cur_line);
+        end = xi_line_end(xi_cur_line);
+        xi_cur_col = end - start;
+    } else if (key == 'x') {
+        xi_delete_char();
+    } else if (key == 'd') {
+        xi_status = "d";
+        xi_z_pending = 1;
+    } else if (key == 'y') {
+        xi_status = "y";
+        xi_z_pending = 2;
+    } else if (key == 'p') {
+        xi_paste();
+    } else if (key == 'u') {
+        xi_restore();
+    } else if (key == '/') {
+        xi_read_search();
+    } else if (key == 'n') {
+        xi_search_next();
+    } else if (key == 'N') {
+        xi_search_prev();
+    } else if (key == ':') {
+        xi_read_colon();
+    } else if (key == 'Z') {
+        xi_z_pending = 3;
+    }
+}
+
+void xi_insert_key(u16 key) {
+    u16 pos = 0;
+
+    if (key == 27) {
+        xi_mode = 0;
+        xi_status = "NORMAL";
+    } else if (key == 13 || key == 10) {
+        xi_insert_newline();
+    } else if (key == 8 || key == KEY_BACKSPACE) {
+        pos = xi_cursor_offset();
+        if (pos > 0) {
+            xi_delete_bytes(pos - 1, 1);
+            xi_dirty = 1;
+            xi_set_cursor_from_offset(pos - 1);
+        }
+    } else if (key == KEY_LEFT) {
+        xi_move_left();
+    } else if (key == KEY_RIGHT) {
+        xi_move_right();
+    } else if (key == KEY_UP) {
+        xi_move_up();
+    } else if (key == KEY_DOWN) {
+        xi_move_down();
+    } else if (key >= 32 && key < 127) {
+        xi_insert_char(key);
+    }
+}
+
+void main(void) {
+    u16 key = 0;
+
+    xi_filename[0] = 0;
+    xi_arg[0] = 0;
+    sys_getargs(xi_arg, 32);
+    xi_copy_filename();
+    xi_load();
+    xi_cur_line = 0;
+    xi_cur_col = 0;
+    xi_top_line = 0;
+    xi_dirty = 0;
+    xi_mode = 0;
+    term_cursor_hide();
+    xi_redraw();
+
+    while (true) {
+        key = term_poll_key();
+        if (key != KEY_NONE) {
+            if (xi_mode == 1) {
+                xi_insert_key(key);
+            } else if (xi_mode == 0) {
+                xi_normal_key(key);
+            }
+            xi_redraw();
+        }
+    }
+}

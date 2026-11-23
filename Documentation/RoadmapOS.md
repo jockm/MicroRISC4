@@ -47,6 +47,7 @@ The ultimate objective of this project is a fully functional, stable operating s
 - [x] **Array Addressing & Address Decay:** Arrays within structs decay cleanly to memory addresses (`LD R1, R0`) rather than dereferencing invalid memory locations (`LD R1, (R0)`).
 - [x] **LValue & Pointer Arithmetic:** Audited pointer offsets, struct pointer element sizing, re-entrant `APUSH`/`APOP` lowering, register-safe `STPUSH`/`STPOP` (`lib/common.inc`), and fixed `MULT`/`DIVMOD_CORE` (`lib/M4R_LIB.asm`).
 - [x] **Struct Alignment & Allocation:** Verified static `.word` allocation matches `word_size(self.structs)` across `_procs`, `_fds`, `_sys_ent`, `_sh_ent`, and nested structs.
+- [x] **Code-Size & Runtime Optimization (`act4c.py` / `M4R_LIB.asm`):** Added reachability dead-function elimination, string-literal deduplication, register-direct RHS evaluation & `== 0`/`!= 0` fast paths, direct multi-arg passing (avoiding `APUSH`/`APOP` when args contain no calls), power-of-2 shift scaling, compact small-constant loads (`LD0`, `LD0+INC`/`DEC`, `LD R0, imm4`), and shared `_ACT4_RET` / `_ACT4_APUSH_R1` / `_ACT4_APOP_R1/R2` / `_ACT4_GETBYTE` / `_ACT4_SETBYTE` helpers — cutting `os_main.bin` by **59%** (`0xEEE6` → `0x61C7`, **~39.2K words** free below `ASP`) and more than doubling simulation speed.
 
 ### Phase 2: OS Kernel Core & Memory Initialization
 - [x] **Kernel Bootstrap & Stacks:** Validated `_reset_slot` (`0x0100`), `RSP`/`ASP` initialization, and zero-leak stack integrity (`ASP=0xFAFF`, `0` low-memory corruptions).

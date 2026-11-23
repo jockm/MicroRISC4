@@ -63,6 +63,23 @@ void drain_fifo(u16 count) {
     }
 }
 
+// Read a Class B NUL-terminated packed string payload from fifo_in into sys_buf
+void read_fifo_str(u16 wlen) {
+    u16 i = 0;
+    u16 w = 0;
+    while (i < wlen) {
+        w = fifo_in;
+        if (i < (SYS_BUF_WORDS - 1)) {
+            sys_buf[i] = w;
+        }
+        i++;
+    }
+    if (wlen == 0) {
+        sys_buf[0] = 0;
+    }
+    sys_buf[SYS_BUF_WORDS - 1] = 0;
+}
+
 void handle_syscall(void) {
     u16 hdr   = fifo_in;
     u16 len   = fifo_in;
@@ -137,15 +154,7 @@ void handle_syscall(void) {
     if (id == SYS_WRITE_CON) {
         extra = fifo_in;
         wlen  = fifo_in;
-        i = 0;
-        while (i < wlen) {
-            arg1 = fifo_in;
-            if (i < 63) {
-                sys_buf[i] = arg1;
-            }
-            i++;
-        }
-        sys_buf[63] = 0;
+        read_fifo_str(wlen);
         if (pid < MAX_CORES && proc_con_out[pid] != 0) {
             uart_puts(sys_buf);
         }
@@ -157,19 +166,11 @@ void handle_syscall(void) {
     if (id == SYS_SPAWN) {
         extra = fifo_in;
         wlen  = fifo_in;
-        i = 0;
-        while (i < wlen) {
-            arg1 = fifo_in;
-            if (i < 63) {
-                sys_buf[i] = arg1;
-            }
-            i++;
-        }
-        sys_buf[63] = 0;
+        read_fifo_str(wlen);
         // Split optional "PATH ARGS..." at first space
         i = 0;
         arg1 = 0;
-        while (i < 126) {
+        while (i < ((SYS_BUF_WORDS << 1) - 2)) {
             ch = getbyte(sys_buf, i);
             if (ch == 0) {
                 break;
@@ -208,15 +209,7 @@ void handle_syscall(void) {
     if (id == SYS_OPEN) {
         extra = fifo_in;                // mode: 0 = read, non-zero = create/write
         wlen  = fifo_in;
-        i = 0;
-        while (i < wlen) {
-            arg1 = fifo_in;
-            if (i < 63) {
-                sys_buf[i] = arg1;
-            }
-            i++;
-        }
-        sys_buf[63] = 0;
+        read_fifo_str(wlen);
         if (extra == 0) {
             fd = fat32_open(pid, sys_buf);
         } else {
@@ -238,7 +231,7 @@ void handle_syscall(void) {
         i = 0;
         while (i < wlen) {
             arg1 = fifo_in;
-            if (i < 64) {
+            if (i < SYS_BUF_WORDS) {
                 sys_buf[i] = arg1;
             }
             i++;
@@ -248,8 +241,8 @@ void handle_syscall(void) {
         if (arg2 == 0 || arg2 > (wlen << 1)) {
             arg2 = wlen << 1;
         }
-        if (arg2 > 128) {
-            arg2 = 128;
+        if (arg2 > (SYS_BUF_WORDS << 1)) {
+            arg2 = SYS_BUF_WORDS << 1;
         }
         arg1 = fat32_write_bytes(fd, sys_buf, arg2);
         if (arg1 == 0 && arg2 > 0) {
@@ -265,18 +258,7 @@ void handle_syscall(void) {
     if (id == SYS_OPENDIR) {
         extra = fifo_in;
         wlen  = fifo_in;
-        i = 0;
-        while (i < wlen) {
-            arg1 = fifo_in;
-            if (i < 63) {
-                sys_buf[i] = arg1;
-            }
-            i++;
-        }
-        if (wlen == 0) {
-            sys_buf[0] = 0;
-        }
-        sys_buf[63] = 0;
+        read_fifo_str(wlen);
         fd = fat32_opendir(pid, sys_buf);
         if (fd == 0xFFFF) {
             fifo_out = ERR_IO;
@@ -291,15 +273,7 @@ void handle_syscall(void) {
     if (id == SYS_UNLINK) {
         extra = fifo_in;
         wlen  = fifo_in;
-        i = 0;
-        while (i < wlen) {
-            arg1 = fifo_in;
-            if (i < 63) {
-                sys_buf[i] = arg1;
-            }
-            i++;
-        }
-        sys_buf[63] = 0;
+        read_fifo_str(wlen);
         arg2 = fat32_unlink(sys_buf);
         if (arg2 == 0) {
             fifo_out = ERR_OK;
@@ -313,15 +287,7 @@ void handle_syscall(void) {
     if (id == SYS_MKDIR) {
         extra = fifo_in;
         wlen  = fifo_in;
-        i = 0;
-        while (i < wlen) {
-            arg1 = fifo_in;
-            if (i < 63) {
-                sys_buf[i] = arg1;
-            }
-            i++;
-        }
-        sys_buf[63] = 0;
+        read_fifo_str(wlen);
         arg2 = fat32_mkdir(sys_buf);
         if (arg2 == 0) {
             fifo_out = ERR_OK;
@@ -335,15 +301,7 @@ void handle_syscall(void) {
     if (id == SYS_RMDIR) {
         extra = fifo_in;
         wlen  = fifo_in;
-        i = 0;
-        while (i < wlen) {
-            arg1 = fifo_in;
-            if (i < 63) {
-                sys_buf[i] = arg1;
-            }
-            i++;
-        }
-        sys_buf[63] = 0;
+        read_fifo_str(wlen);
         arg2 = fat32_rmdir(sys_buf);
         if (arg2 == 0) {
             fifo_out = ERR_OK;
@@ -357,18 +315,7 @@ void handle_syscall(void) {
     if (id == SYS_CHDIR) {
         extra = fifo_in;
         wlen  = fifo_in;
-        i = 0;
-        while (i < wlen) {
-            arg1 = fifo_in;
-            if (i < 63) {
-                sys_buf[i] = arg1;
-            }
-            i++;
-        }
-        if (wlen == 0) {
-            sys_buf[0] = 0;
-        }
-        sys_buf[63] = 0;
+        read_fifo_str(wlen);
         arg2 = fat32_chdir(sys_buf);
         if (arg2 == 0) {
             fifo_out = ERR_OK;

@@ -306,12 +306,14 @@ class GetByteExpr(Expr):
 # ==============================================================================
 
 class Parser:
-    def __init__(self, tokens: List[Token], structs: Dict[str, StructDef], constants: Dict[str, int]):
+    def __init__(self, tokens: List[Token], structs: Dict[str, StructDef], constants: Dict[str, int],
+                 str_dedup: Optional[Dict[str, str]] = None):
         self.tokens = tokens
         self.pos = 0
         self.structs = structs
         self.constants = constants
         self.string_literals: List[Tuple[str, str]] = []
+        self.str_dedup: Dict[str, str] = str_dedup if str_dedup is not None else {}
         self.str_count = 0
 
     def cur(self) -> Token:
@@ -870,8 +872,11 @@ class Parser:
             return IntLit(ord(s.encode().decode('unicode_escape')[0]))
         if self.match("STR_LIT"):
             s = self.consume("STR_LIT").value[1:-1]
+            if s in self.str_dedup:
+                return StrLit(s, label=self.str_dedup[s])
             lbl = f"_str_lit_{self.str_count}"
             self.str_count += 1
+            self.str_dedup[s] = lbl
             self.string_literals.append((lbl, s))
             return StrLit(s, label=lbl)
 
@@ -1113,6 +1118,90 @@ class CodeGen:
             return self.constants[expr.name]
         return 0
 
+    def emit_load_const(self, reg: str, val: int):
+        val &= 0xFFFF
+        if val == 0:
+            self.emit(f"LD0     {reg}")
+        elif val == 1:
+            self.emit(f"LD0     {reg}")
+            self.emit(f"INC     {reg}")
+        elif val == 0xFFFF:
+            self.emit(f"LD0     {reg}")
+            self.emit(f"DEC     {reg}")
+        elif reg == "R0" and val <= 15:
+            self.emit(f"LD      R0, {val}")
+        else:
+            self.emit(f"LOAD16  {reg}, 0x{val:04X}")
+
+    def get_const_val(self, expr: Expr) -> Optional[int]:
+        if isinstance(expr, IntLit):
+            return expr.val & 0xFFFF
+        if isinstance(expr, VarRef) and not self.is_local_var(expr.name) and expr.name in self.constants:
+            return self.constants[expr.name] & 0xFFFF
+        return None
+
+    def is_local_var(self, name: str) -> bool:
+        if self.current_func:
+            for pname, _ in self.current_func.params:
+                if pname == name:
+                    return True
+            for decl in self.current_func.locals_decls:
+                if decl.name == name:
+                    return True
+        return False
+
+    def is_simple_expr(self, expr: Expr) -> bool:
+        return isinstance(expr, (IntLit, StrLit, VarRef))
+
+    def expr_contains_call(self, node: Any) -> bool:
+        if node is None:
+            return False
+        if isinstance(node, CallExpr):
+            return True
+        if isinstance(node, list):
+            return any(self.expr_contains_call(x) for x in node)
+        if isinstance(node, ASTNode):
+            return any(
+                self.expr_contains_call(v)
+                for v in vars(node).values()
+                if isinstance(v, (ASTNode, list))
+            )
+        return False
+
+    def gen_simple_into_reg(self, expr: Expr, reg: str):
+        """Evaluate a simple expression into `reg` (R1/R2/R3), touching only R0 and `reg`."""
+        cval = self.get_const_val(expr)
+        if cval is not None:
+            self.emit_load_const(reg, cval)
+            return
+        if isinstance(expr, StrLit):
+            self.emit(f"LOAD16  {reg}, {expr.label}")
+            return
+        if isinstance(expr, VarRef):
+            if not self.is_local_var(expr.name) and expr.name not in self.global_vars and expr.name in self.functions:
+                self.emit(f"LOAD16  {reg}, _{expr.name}")
+                return
+            lbl = self.resolve_var_label(expr.name)
+            is_array = self.is_array_expr(expr)
+            addr = self.resolve_fixed_address(expr.name)
+            if addr is not None:
+                if is_array:
+                    self.emit_load_const(reg, addr)
+                else:
+                    self.emit_load_const("R0", addr)
+                    self.emit(f"LD      {reg}, (R0)")
+            elif is_array:
+                self.emit(f"LOAD16  {reg}, {lbl}")
+            else:
+                self.emit(f"LOAD16  R0, {lbl}")
+                self.emit(f"LD      {reg}, (R0)")
+            return
+        raise CompilerError(f"gen_simple_into_reg called on non-simple expr: {expr}")
+
+    def emit_ret(self):
+        self.emit("LOAD16  R0, _ACT4_RET")
+        self.emit("JMP     R0")
+
     def gen_function(self, fn: FunctionDef):
         self.current_func = fn
         self.emit_raw(f"; --- Function: {fn.name} ---")
@@ -1143,7 +1232,7 @@ class CodeGen:
             self.emit("RPOP    R1")
             self.emit("RRET")
         else:
-            self.emit("RRET")
+            self.emit_ret()
         self.emit_raw("")
 
         for decl in fn.locals_decls:
@@ -1179,7 +1268,7 @@ class CodeGen:
                 self.emit(f"LOAD16  R0, _{self.current_func.name}_iret")
                 self.emit("JMP     R0")
             else:
-                self.emit("RRET")
+                self.emit_ret()
 
         elif isinstance(stmt, BreakStmt):
             if not self.loop_stack:
@@ -1258,21 +1347,33 @@ class CodeGen:
                 self.gen_expr(stmt.value)
                 self.gen_lvalue_addr(stmt.target)
                 self.emit("LD      (R0), R1")
+            elif self.get_const_val(stmt.value) is not None or isinstance(stmt.value, StrLit):
+                self.gen_lvalue_addr(stmt.target)
+                self.gen_simple_into_reg(stmt.value, "R1")
+                self.emit("LD      (R0), R1")
+            elif self.is_simple_expr(stmt.value):
+                self.gen_lvalue_addr(stmt.target)
+                self.emit("LD      R2, R0")
+                self.gen_simple_into_reg(stmt.value, "R1")
+                self.emit("LD      (R2), R1")
             else:
                 self.gen_expr(stmt.value)
-                self.emit("APUSH   R1")
+                self.emit("RCALL   _ACT4_APUSH_R1")
                 self.gen_lvalue_addr(stmt.target)
-                self.emit("APOP    R1")
-                self.emit("LD      (R0), R1")
+                self.emit("LD      R2, R0")
+                self.emit("RCALL   _ACT4_APOP_R1")
+                self.emit("LD      (R2), R1")
         else:
             self.gen_lvalue_addr(stmt.target)
             self.emit("APUSH   R0")
             self.emit("LD      R1, (R0)")
-            self.emit("APUSH   R1")
-
-            self.gen_expr(stmt.value)
-            self.emit("LD      R2, R1")
-            self.emit("APOP    R1")
+            if self.is_simple_expr(stmt.value):
+                self.gen_simple_into_reg(stmt.value, "R2")
+            else:
+                self.emit("RCALL   _ACT4_APUSH_R1")
+                self.gen_expr(stmt.value)
+                self.emit("LD      R2, R1")
+                self.emit("RCALL   _ACT4_APOP_R1")
 
             base_op = stmt.op[:-1]
             if base_op == "+":
@@ -1286,77 +1387,43 @@ class CodeGen:
             elif base_op == "^":
                 self.emit("XOR     R1, R2")
             elif base_op == "*":
-                self.emit("APUSH   R1")
+                self.emit("RCALL   _ACT4_APUSH_R1")
                 self.emit("APUSH   R2")
                 self.emit("RCALL   MULT")
-                self.emit("APOP    R1")
+                self.emit("RCALL   _ACT4_APOP_R1")
             elif base_op == "/":
-                self.emit("APUSH   R1")
+                self.emit("RCALL   _ACT4_APUSH_R1")
                 self.emit("APUSH   R2")
                 self.emit("RCALL   DIV")
-                self.emit("APOP    R1")
+                self.emit("RCALL   _ACT4_APOP_R1")
             elif base_op == "%":
-                self.emit("APUSH   R1")
+                self.emit("RCALL   _ACT4_APUSH_R1")
                 self.emit("APUSH   R2")
                 self.emit("RCALL   MOD")
-                self.emit("APOP    R1")
+                self.emit("RCALL   _ACT4_APOP_R1")
 
             self.emit("APOP    R0")
             self.emit("LD      (R0), R1")
 
     def gen_setbyte(self, stmt: SetByteStmt):
+        if self.is_simple_expr(stmt.index_expr) and self.is_simple_expr(stmt.val_expr):
+            self.gen_expr(stmt.base_expr)
+            self.gen_simple_into_reg(stmt.index_expr, "R2")
+            self.gen_simple_into_reg(stmt.val_expr, "R3")
+            self.emit("RCALL   _ACT4_SETBYTE")
+            return
         self.gen_expr(stmt.base_expr)
-        self.emit("APUSH   R1")
+        self.emit("RCALL   _ACT4_APUSH_R1")
 
         self.gen_expr(stmt.index_expr)
-        self.emit("APUSH   R1")
+        self.emit("RCALL   _ACT4_APUSH_R1")
 
         self.gen_expr(stmt.val_expr)
-        self.emit("LOAD16  R0, _act4_t2")
-        self.emit("LD      (R0), R1")
+        self.emit("LD      R3, R1")
 
-        self.emit("APOP    R1")
-        self.emit("LOAD16  R0, _act4_t1")
-        self.emit("LD      (R0), R1")
-
-        self.emit("APOP    R2")
-        self.emit("LOAD16  R0, _act4_t0")
-        self.emit("LD      (R0), R2")
-
-        self.emit("SHIFT.R R1")
-        self.emit("ADD     R1, R2")
-        self.emit("LOAD16  R0, _act4_t3")
-        self.emit("LD      (R0), R1")
-
-        self.emit("LD      R0, R1")
-        self.emit("LD      R1, (R0)")
-
-        self.emit("LOAD16  R0, _act4_t2")
-        self.emit("LD      R2, (R0)")
-
-        self.emit("LOAD16  R0, _act4_t1")
-        self.emit("LD      R3, (R0)")
-        self.emit("LD0     R0")
-        self.emit("INC     R0")
-        self.emit("AND     R3, R0")
-
-        lbl_hi = self.new_label("set_hi")
-        lbl_done = self.new_label("set_done")
-
-        self.emit(f"LOAD16  R0, {lbl_hi}")
-        self.emit(f"JMP.Z   R0, R3")
-
-        self.emit("BYTE_SET_HI R1, R2")
-        self.emit(f"LOAD16  R0, {lbl_done}")
-        self.emit(f"JMP     R0")
-
-        self.emit_raw(f"{lbl_hi}:")
-        self.emit("BYTE_SET_LO R1, R2")
-
-        self.emit_raw(f"{lbl_done}:")
-        self.emit("LOAD16  R0, _act4_t3")
-        self.emit("LD      R0, (R0)")
-        self.emit("LD      (R0), R1")
+        self.emit("RCALL   _ACT4_APOP_R2")
+        self.emit("RCALL   _ACT4_APOP_R1")
+        self.emit("RCALL   _ACT4_SETBYTE")
 
     def resolve_var_label(self, name: str) -> str:
         if self.current_func:
@@ -1513,17 +1580,36 @@ class CodeGen:
             return
 
         if isinstance(cond, BinaryOp) and cond.op in ("==", "!=", "<", ">", "<=", ">="):
-            self.gen_expr(cond.lhs)
-            self.emit("APUSH   R1")
-
-            self.gen_expr(cond.rhs)
-            self.emit("LD      R2, R1")
-            self.emit("APOP    R1")
-
             op = cond.op
             if invert:
                 inv_map = {"==": "!=", "!=": "==", "<": ">=", ">": "<=", "<=": ">", ">=": "<"}
                 op = inv_map[op]
+
+            rhs_const = self.get_const_val(cond.rhs)
+            if op in ("==", "!=") and rhs_const == 0:
+                self.gen_expr(cond.lhs)
+                if op == "==":
+                    self.emit(f"LOAD16  R0, {target_label}")
+                    self.emit("JMP.Z   R0, R1")
+                else:
+                    lbl_skip = self.new_label("eq_skip")
+                    self.emit(f"LOAD16  R0, {lbl_skip}")
+                    self.emit("JMP.Z   R0, R1")
+                    self.emit(f"LOAD16  R0, {target_label}")
+                    self.emit("JMP     R0")
+                    self.emit_raw(f"{lbl_skip}:")
+                return
+
+            if self.is_simple_expr(cond.rhs):
+                self.gen_expr(cond.lhs)
+                self.gen_simple_into_reg(cond.rhs, "R2")
+            else:
+                self.gen_expr(cond.lhs)
+                self.emit("RCALL   _ACT4_APUSH_R1")
+
+                self.gen_expr(cond.rhs)
+                self.emit("LD      R2, R1")
+                self.emit("RCALL   _ACT4_APOP_R1")
 
             if op == "==":
                 self.emit("SUB     R1, R2")
@@ -1574,7 +1660,7 @@ class CodeGen:
         if isinstance(expr, VarRef):
             addr = self.resolve_fixed_address(expr.name)
             if addr is not None:
-                self.emit(f"LOAD16  R0, 0x{addr:04X}")
+                self.emit_load_const("R0", addr)
             else:
                 lbl = self.resolve_var_label(expr.name)
                 self.emit(f"LOAD16  R0, {lbl}")
@@ -1585,26 +1671,50 @@ class CodeGen:
 
         elif isinstance(expr, IndexAccess):
             elem_sz = self.get_index_elem_word_size(expr.target)
-            if isinstance(expr.index, IntLit):
+            idx_const = self.get_const_val(expr.index)
+            if idx_const is not None:
                 self.gen_expr(expr.target)
-                off = (expr.index.val * elem_sz) & 0xFFFF
+                off = (idx_const * elem_sz) & 0xFFFF
                 if off != 0:
-                    self.emit(f"LOAD16  R2, {off}")
+                    self.emit_load_const("R2", off)
                     self.emit("ADD     R1, R2")
+                self.emit("LD      R0, R1")
+            elif self.is_simple_expr(expr.target):
+                self.gen_expr(expr.index)
+                if elem_sz > 1:
+                    if (elem_sz & (elem_sz - 1)) == 0 and elem_sz <= 64:
+                        s = elem_sz
+                        while s > 1:
+                            self.emit("SHIFT.L R1")
+                            s >>= 1
+                    else:
+                        self.emit("RCALL   _ACT4_APUSH_R1")
+                        self.emit_load_const("R1", elem_sz)
+                        self.emit("RCALL   _ACT4_APUSH_R1")
+                        self.emit("RCALL   MULT")
+                        self.emit("RCALL   _ACT4_APOP_R1")
+                self.gen_simple_into_reg(expr.target, "R2")
+                self.emit("ADD     R1, R2")
                 self.emit("LD      R0, R1")
             else:
                 self.gen_expr(expr.target)
-                self.emit("APUSH   R1")
+                self.emit("RCALL   _ACT4_APUSH_R1")
 
                 self.gen_expr(expr.index)
                 if elem_sz > 1:
-                    self.emit("APUSH   R1")
-                    self.emit(f"LOAD16  R1, {elem_sz}")
-                    self.emit("APUSH   R1")
-                    self.emit("RCALL   MULT")
-                    self.emit("APOP    R1")
+                    if (elem_sz & (elem_sz - 1)) == 0 and elem_sz <= 64:
+                        s = elem_sz
+                        while s > 1:
+                            self.emit("SHIFT.L R1")
+                            s >>= 1
+                    else:
+                        self.emit("RCALL   _ACT4_APUSH_R1")
+                        self.emit_load_const("R1", elem_sz)
+                        self.emit("RCALL   _ACT4_APUSH_R1")
+                        self.emit("RCALL   MULT")
+                        self.emit("RCALL   _ACT4_APOP_R1")
 
-                self.emit("APOP    R2")
+                self.emit("RCALL   _ACT4_APOP_R2")
                 self.emit("ADD     R1, R2")
                 self.emit("LD      R0, R1")
 
@@ -1616,53 +1726,21 @@ class CodeGen:
                 self.gen_lvalue_addr(expr.target)
                 self.emit("LD      R1, R0")
             if offset != 0:
-                self.emit(f"LOAD16  R2, {offset}")
-                self.emit(f"ADD     R1, R2")
+                self.emit_load_const("R2", offset)
+                self.emit("ADD     R1, R2")
             self.emit("LD      R0, R1")
         else:
             raise CompilerError(f"Cannot take address of non-lvalue expression: {expr}")
 
     def gen_expr(self, expr: Expr):
         if isinstance(expr, IntLit):
-            self.emit(f"LOAD16  R1, 0x{expr.val:04X}")
+            self.emit_load_const("R1", expr.val)
 
         elif isinstance(expr, StrLit):
             self.emit(f"LOAD16  R1, {expr.label}")
 
         elif isinstance(expr, VarRef):
-            is_local = False
-            if self.current_func:
-                for pname, _ in self.current_func.params:
-                    if pname == expr.name:
-                        is_local = True
-                        break
-                if not is_local:
-                    for decl in self.current_func.locals_decls:
-                        if decl.name == expr.name:
-                            is_local = True
-                            break
-            if not is_local and expr.name in self.constants:
-                self.emit(f"LOAD16  R1, 0x{self.constants[expr.name]:04X}")
-                return
-            if not is_local and expr.name not in self.global_vars and expr.name in self.functions:
-                self.emit(f"LOAD16  R1, _{expr.name}")
-                return
-
-            lbl = self.resolve_var_label(expr.name)
-            is_array = self.is_array_expr(expr)
-            addr = self.resolve_fixed_address(expr.name)
-
-            if addr is not None:
-                if is_array:
-                    self.emit(f"LOAD16  R1, 0x{addr:04X}")
-                else:
-                    self.emit(f"LOAD16  R0, 0x{addr:04X}")
-                    self.emit(f"LD      R1, (R0)")
-            elif is_array:
-                self.emit(f"LOAD16  R1, {lbl}")
-            else:
-                self.emit(f"LOAD16  R0, {lbl}")
-                self.emit(f"LD      R1, (R0)")
+            self.gen_simple_into_reg(expr, "R1")
 
         elif isinstance(expr, UnaryOp):
             if expr.op == "&":
@@ -1715,37 +1793,17 @@ class CodeGen:
             self.gen_call(expr)
 
         elif isinstance(expr, GetByteExpr):
-            self.gen_expr(expr.base_expr)
-            self.emit("APUSH   R1")
-
-            self.gen_expr(expr.index_expr)
-            self.emit("LOAD16  R0, _act4_t1")
-            self.emit("LD      (R0), R1")
-
-            self.emit("APOP    R2")
-            self.emit("SHIFT.R R1")
-            self.emit("ADD     R1, R2")
-            self.emit("LD      R0, R1")
-            self.emit("LD      R1, (R0)")
-
-            self.emit("LOAD16  R0, _act4_t1")
-            self.emit("LD      R2, (R0)")
-            self.emit("LD0     R0")
-            self.emit("INC     R0")
-            self.emit("AND     R2, R0")
-
-            lbl_hi = self.new_label("get_hi")
-            lbl_done = self.new_label("get_done")
-            self.emit(f"LOAD16  R0, {lbl_hi}")
-            self.emit(f"JMP.Z   R0, R2")
-
-            self.emit("BYTE_GET_HI R1, R1")
-            self.emit(f"LOAD16  R0, {lbl_done}")
-            self.emit(f"JMP     R0")
-
-            self.emit_raw(f"{lbl_hi}:")
-            self.emit("BYTE_GET_LO R1, R1")
-            self.emit_raw(f"{lbl_done}:")
+            if self.is_simple_expr(expr.index_expr):
+                self.gen_expr(expr.base_expr)
+                self.gen_simple_into_reg(expr.index_expr, "R2")
+                self.emit("RCALL   _ACT4_GETBYTE")
+            else:
+                self.gen_expr(expr.base_expr)
+                self.emit("RCALL   _ACT4_APUSH_R1")
+                self.gen_expr(expr.index_expr)
+                self.emit("LD      R2, R1")
+                self.emit("RCALL   _ACT4_APOP_R1")
+                self.emit("RCALL   _ACT4_GETBYTE")
 
     def gen_binary(self, expr: BinaryOp):
         if expr.op in ("&&", "||"):
@@ -1761,12 +1819,43 @@ class CodeGen:
             self.emit_raw(f"{lbl_done}:")
             return
 
-        self.gen_expr(expr.lhs)
-        self.emit("APUSH   R1")
+        rhs_const = self.get_const_val(expr.rhs)
+        if expr.op == ">>" and rhs_const is not None:
+            self.gen_expr(expr.lhs)
+            for _ in range(rhs_const & 0x0F):
+                self.emit("SHIFT.R R1")
+            return
+        if expr.op == "<<" and rhs_const is not None:
+            self.gen_expr(expr.lhs)
+            for _ in range(rhs_const & 0x0F):
+                self.emit("SHIFT.L R1")
+            return
+        if expr.op == "*" and rhs_const is not None and rhs_const > 0 and (rhs_const & (rhs_const - 1)) == 0 and rhs_const <= 64:
+            self.gen_expr(expr.lhs)
+            s = rhs_const
+            while s > 1:
+                self.emit("SHIFT.L R1")
+                s >>= 1
+            return
+        if expr.op == "+" and rhs_const == 1:
+            self.gen_expr(expr.lhs)
+            self.emit("INC     R1")
+            return
+        if expr.op == "-" and rhs_const == 1:
+            self.gen_expr(expr.lhs)
+            self.emit("DEC     R1")
+            return
 
-        self.gen_expr(expr.rhs)
-        self.emit("LD      R2, R1")
-        self.emit("APOP    R1")
+        if self.is_simple_expr(expr.rhs):
+            self.gen_expr(expr.lhs)
+            self.gen_simple_into_reg(expr.rhs, "R2")
+        else:
+            self.gen_expr(expr.lhs)
+            self.emit("RCALL   _ACT4_APUSH_R1")
+
+            self.gen_expr(expr.rhs)
+            self.emit("LD      R2, R1")
+            self.emit("RCALL   _ACT4_APOP_R1")
 
         if expr.op == "+":
             self.emit("ADD     R1, R2")
@@ -1813,68 +1902,68 @@ class CodeGen:
         elif expr.op == ">=":
             self.emit("RCALL   _CMP_GE")
         elif expr.op == "*":
-            self.emit("APUSH   R1")
+            self.emit("RCALL   _ACT4_APUSH_R1")
             self.emit("APUSH   R2")
             self.emit("RCALL   MULT")
-            self.emit("APOP    R1")
+            self.emit("RCALL   _ACT4_APOP_R1")
         elif expr.op == "/":
-            self.emit("APUSH   R1")
+            self.emit("RCALL   _ACT4_APUSH_R1")
             self.emit("APUSH   R2")
             self.emit("RCALL   DIV")
-            self.emit("APOP    R1")
+            self.emit("RCALL   _ACT4_APOP_R1")
         elif expr.op == "%":
-            self.emit("APUSH   R1")
+            self.emit("RCALL   _ACT4_APUSH_R1")
             self.emit("APUSH   R2")
             self.emit("RCALL   MOD")
-            self.emit("APOP    R1")
+            self.emit("RCALL   _ACT4_APOP_R1")
         elif expr.op == ">>":
-            if isinstance(expr.rhs, IntLit):
-                for _ in range(expr.rhs.val & 0x0F):
-                    self.emit("SHIFT.R R1")
-            else:
-                lbl_lp = self.new_label("shr_loop")
-                lbl_end = self.new_label("shr_done")
-                self.emit_raw(f"{lbl_lp}:")
-                self.emit(f"LOAD16  R0, {lbl_end}")
-                self.emit(f"JMP.Z   R0, R2")
-                self.emit("SHIFT.R R1")
-                self.emit("DEC     R2")
-                self.emit(f"LOAD16  R0, {lbl_lp}")
-                self.emit(f"JMP     R0")
-                self.emit_raw(f"{lbl_end}:")
+            lbl_lp = self.new_label("shr_loop")
+            lbl_end = self.new_label("shr_done")
+            self.emit_raw(f"{lbl_lp}:")
+            self.emit(f"LOAD16  R0, {lbl_end}")
+            self.emit("JMP.Z   R0, R2")
+            self.emit("SHIFT.R R1")
+            self.emit("DEC     R2")
+            self.emit(f"LOAD16  R0, {lbl_lp}")
+            self.emit("JMP     R0")
+            self.emit_raw(f"{lbl_end}:")
         elif expr.op == "<<":
-            if isinstance(expr.rhs, IntLit):
-                for _ in range(expr.rhs.val & 0x0F):
-                    self.emit("SHIFT.L R1")
-            else:
-                lbl_lp = self.new_label("shl_loop")
-                lbl_end = self.new_label("shl_done")
-                self.emit_raw(f"{lbl_lp}:")
-                self.emit(f"LOAD16  R0, {lbl_end}")
-                self.emit(f"JMP.Z   R0, R2")
-                self.emit("SHIFT.L R1")
-                self.emit("DEC     R2")
-                self.emit(f"LOAD16  R0, {lbl_lp}")
-                self.emit(f"JMP     R0")
-                self.emit_raw(f"{lbl_end}:")
+            lbl_lp = self.new_label("shl_loop")
+            lbl_end = self.new_label("shl_done")
+            self.emit_raw(f"{lbl_lp}:")
+            self.emit(f"LOAD16  R0, {lbl_end}")
+            self.emit("JMP.Z   R0, R2")
+            self.emit("SHIFT.L R1")
+            self.emit("DEC     R2")
+            self.emit(f"LOAD16  R0, {lbl_lp}")
+            self.emit("JMP     R0")
+            self.emit_raw(f"{lbl_end}:")
 
     def gen_call(self, call: CallExpr):
         if isinstance(call.callee, VarRef) and call.callee.name in self.functions:
             fn = self.functions[call.callee.name]
+            cur_name = self.current_func.name if self.current_func else ""
             if len(call.args) == 1:
                 pname = fn.params[0][0]
                 self.gen_expr(call.args[0])
                 self.emit(f"LOAD16  R0, _{fn.name}_{pname}")
                 self.emit("LD      (R0), R1")
             elif len(call.args) > 1:
-                for arg_expr in call.args:
-                    self.gen_expr(arg_expr)
-                    self.emit("APUSH   R1")
-                for idx in range(len(call.args) - 1, -1, -1):
-                    pname = fn.params[idx][0]
-                    self.emit("APOP    R1")
-                    self.emit(f"LOAD16  R0, _{fn.name}_{pname}")
-                    self.emit("LD      (R0), R1")
+                if fn.name != cur_name and not any(self.expr_contains_call(a) for a in call.args):
+                    for idx, arg_expr in enumerate(call.args):
+                        pname = fn.params[idx][0]
+                        self.gen_expr(arg_expr)
+                        self.emit(f"LOAD16  R0, _{fn.name}_{pname}")
+                        self.emit("LD      (R0), R1")
+                else:
+                    for arg_expr in call.args:
+                        self.gen_expr(arg_expr)
+                        self.emit("RCALL   _ACT4_APUSH_R1")
+                    for idx in range(len(call.args) - 1, -1, -1):
+                        pname = fn.params[idx][0]
+                        self.emit("RCALL   _ACT4_APOP_R1")
+                        self.emit(f"LOAD16  R0, _{fn.name}_{pname}")
+                        self.emit("LD      (R0), R1")
             self.emit(f"RCALL   _{fn.name}")
         else:
             if len(call.args) == 1:
@@ -1884,9 +1973,9 @@ class CodeGen:
             elif len(call.args) > 1:
                 for arg_expr in call.args:
                     self.gen_expr(arg_expr)
-                    self.emit("APUSH   R1")
+                    self.emit("RCALL   _ACT4_APUSH_R1")
                 for idx in range(len(call.args) - 1, -1, -1):
-                    self.emit("APOP    R1")
+                    self.emit("RCALL   _ACT4_APOP_R1")
                     self.emit(f"LOAD16  R0, _act4_arg{idx}")
                     self.emit("LD      (R0), R1")
             self.gen_expr(call.callee)
@@ -1939,7 +2028,7 @@ def main():
         with open(filepath, "r", encoding="utf-8") as fh:
             fsrc = fh.read()
         ftoks = tokenize(fsrc, filepath)
-        fparser = Parser(ftoks, structs, constants)
+        fparser = Parser(ftoks, structs, constants, str_dedup=parser_obj.str_dedup)
         fparser.str_count = parser_obj.str_count
         raw_nodes = fparser.parse_program()
         parser_obj.str_count = fparser.str_count

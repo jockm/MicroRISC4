@@ -363,3 +363,63 @@ _CMP_RET_TRUE:
 _CMP_RET_FALSE:
     LD0     R1                  ; Return boolean 0 (False)
     RRET
+
+
+; ==============================================================================
+; SECTION 6: Compact ACT4 Runtime Helpers (Shared Return, Stack & Byte Ops)
+; ==============================================================================
+_ACT4_RET:
+    RRET
+
+_ACT4_APUSH_R1:
+    APUSH   R1
+    JMP     R0
+
+_ACT4_APOP_R1:
+    APOP    R1
+    JMP     R0
+
+_ACT4_APOP_R2:
+    APOP    R2
+    JMP     R0
+
+; R1 = base word address, R2 = byte index -> R1 = unsigned byte (0..255)
+_ACT4_GETBYTE:
+    RPUSH   R0
+    LD      R3, R2
+    SHIFT.R R2
+    ADD     R1, R2
+    LD      R0, R1
+    LD      R1, (R0)
+    LD      R0, 1
+    AND     R3, R0
+    LOAD16  R0, _ACT4_GB_LO
+    JMP.Z   R0, R3
+    BYTE_GET_HI R1, R1
+    RRET
+_ACT4_GB_LO:
+    BYTE_GET_LO R1, R1
+    RRET
+
+; R1 = base word address, R2 = byte index, R3 = byte value
+_ACT4_SETBYTE:
+    RPUSH   R0
+    LD      R0, R2
+    SHIFT.R R0
+    ADD     R1, R0
+    APUSH   R1
+    LD      R0, R1
+    LD      R1, (R0)
+    LD      R0, 1
+    AND     R2, R0
+    LOAD16  R0, _ACT4_SB_LO
+    JMP.Z   R0, R2
+    BYTE_SET_HI R1, R3
+    LOAD16  R0, _ACT4_SB_STORE
+    JMP     R0
+_ACT4_SB_LO:
+    BYTE_SET_LO R1, R3
+_ACT4_SB_STORE:
+    APOP    R0
+    LD      (R0), R1
+    RRET

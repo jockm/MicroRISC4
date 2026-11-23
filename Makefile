@@ -73,6 +73,7 @@ help:
 	@echo "  make apps             - Assemble mr4src/asm/*.asm and compile mr4src/act4/*.a4"
 	@echo "  make test             - Run all ROHD unit and firmware boot tests"
 	@echo "  make test-rohd        - Run ROHD Dart test suite (assembles monitor hex first)"
+	@echo "  make test-os          - Run OS, compiler, FAT32, and multi-core regression tests"
 	@echo "  make sim              - Run a binary in mr4sim.py (SIM_PROGRAM=build/monitor.bin)"
 	@echo "  make debug            - Run mr4sim.py in interactive m4db debugger mode"
 	@echo "  make generate         - Alias for generate-ulx3s"
@@ -279,7 +280,7 @@ CAT_LST     := $(OS_BUILD)/cat.lst
 
 OS_APP_BINS := $(LS_BIN) $(PS_BIN) $(CAT_BIN)
 
-.PHONY: os-build sd-img sim-os clean-os
+.PHONY: os-build sd-img sim-os test-os clean-os
 
 $(OS_BUILD):
 	mkdir -p $(OS_BUILD)
@@ -310,6 +311,9 @@ sd-img: $(SD_SRC_DIR)
 
 sim-os: os-build sd-img
 	python3 $(SIM) $(OS_MAIN_BIN) --sym $(OS_MAIN_LST) --sd-image $(SD_IMG) --worker $(BUILD_DIR)/worker_stub.bin --startaddr 0x0100
+
+test-os: os-build sd-img
+	$(PYTHON) $(TOOLS_DIR)/test_os.py --sd-image $(SD_IMG)
 
 clean-os:
 	rm -rf $(OS_BUILD) $(SD_SRC_DIR)

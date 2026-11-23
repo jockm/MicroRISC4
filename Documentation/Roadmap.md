@@ -107,9 +107,9 @@ make ulx3s-timing
 - [x] ACT4 array indexing fix (`LD R1, R0` instead of `LD R1, (R0)`).
 - [x] FPGA synthesis (`Yosys`), P&R (`nextpnr-ecp5`), bitstream packing, and JTAG flashing (`openFPGALoader`).
 - [x] RX/TX path verified end-to-end on ULX3S-85F hardware at 3 Mbaud (`make ulx3s-term`: boot banner, prompt, `e`, `c` verified with debounced synchronous reset).
+- [x] Timing & Pipeline Bottlenecks (`>100 MHz` — **107.25 MHz** on full 65K words / `64 DP16KD` / `1189 LUT4`; **110.74 MHz** on 2K core / `2 DP16KD` / `977 LUT4`; **106.48 MHz** on `nocCores=4, 2K`; 1 cycle/slot sequential throughput).
 
 ### In Progress / Pending Verification
-- [ ] Pipeline staging and nextpnr tuning to raise 65K-word $F_{\max}$ past `>100 MHz` (65K banked `TdpBram` lifted $F_{\max}$ from `66.27 MHz` to `90.5–96.9 MHz` at a 48 MHz target and cut BRAMs from `128` to `64 DP16KD`).
 - [ ] Integration of I-Cache, D-Cache, and ULX3S SDRAM controller.
 - [ ] Multi-word per-channel RX FIFOs with backpressure in `NocRouterNi` (`hdl/rohd/lib/noc_router.dart`).
 - [ ] Multi-hop ring routing in `RegisteredNocHop` (`hdl/rohd/lib/noc_cache_wrapper.dart`).
@@ -127,10 +127,10 @@ make ulx3s-timing
 - [x] Confirm FTDI `ftdi_rxd` pin mapping (`L4`) in FPGA configuration.
 - [x] Validate character output on host terminal emulator at 3 Mbaud (and fix reset synchronizer/debounce + `DivideByN` + `monitor.asm` `c`/`g`/`print_hex16`).
 
-### Priority 2: Timing & Pipeline Bottlenecks (`>100 MHz`)
-- [x] Redesign `TdpBram` read staging to remove wide multi-BRAM output muxes from critical path (`4 × 16K` banked `TdpBram` with `no_rw_check` + `NORMAL` write mode + per-bank hex init: cut `128 → 64 DP16KD`, `431 → 347 FF`, lifted $F_{\max}$ from `66.27 MHz` to `90.5–96.9 MHz` at 48 MHz target).
+### Priority 2: Timing & Pipeline Bottlenecks (`>100 MHz`) — COMPLETE
+- [x] Redesign `TdpBram` read staging to remove wide multi-BRAM output muxes from critical path (`4 × 16K` banked `TdpBram` with `no_rw_check` + `NORMAL` write mode + per-bank local output registers before 4:1 mux: cut `128 → 64 DP16KD`).
 - [x] Separate instruction fetch pipeline from execution FSM states to achieve 1-cycle throughput per slot (`nextInstReg` zero-bubble prefetch: 5 → 2 cycles/word sequential, 4 → 2 cycles `PUSH8`, 189-byte banner at 31,865 cycles ≈ 95% of 3 Mbaud wire speed; fixed `rxPop` `GETC` race and made `TdpBram` Dart sim cycle-exact via ROHD `Sequential`).
-- [ ] Optimize nextpnr timing parameters to reach `>100 MHz` clock target on ECP5-85k.
+- [x] Optimize datapath & `nextpnr` timing parameters to reach `>100 MHz` clock target on ECP5-85k (unified single 16-bit add/sub ALU + late-select writeback + pre-decoded ALU/illegal-slot1 FFs + shared MMIO page decode + `nextpnr` `--placer-heap-timingweight 25 --placer-heap-critexp 3`: **107.25 MHz** on full 65K / `1189 LUT4` / `64 DP16KD`, **110.74 MHz** on 2K / `977 LUT4` / `2 DP16KD`, **106.48 MHz** on `nocCores=4`).
 
 ### Priority 3: Hardware NoC MMIO Transport (`0x0020`–`0x002A`)
 - [ ] Implement multi-word FIFO buffers in `NocRouterNi` with full/empty backpressure flags.

@@ -176,6 +176,7 @@ ulx3s-bit: generate-ulx3s
 	@echo "==> Placing and routing for ECP5-$(ULX3S_DEVICE) (log: $(ULX3S_BLD)/nextpnr.log)..."
 	@cd $(ULX3S_BLD) && $(NEXTPNR_ECP5) -q --$(ULX3S_DEVICE) --package $(ULX3S_PACKAGE) \
 		--lpf "$(CURDIR)/$(ULX3S_LPF)" --json ulx3s_top_rohd.json \
+		--placer-heap-timingweight 25 --placer-heap-critexp 3 \
 		--textcfg ulx3s_top_rohd.config --freq $(ULX3S_CLOCK_MHZ) -l nextpnr.log
 	@cd $(ULX3S_BLD) && $(ECPPACK) --compress ulx3s_top_rohd.config ulx3s_top_rohd.bit
 	@grep "Max frequency for clock" $(ULX3S_BLD)/nextpnr.log | tail -1

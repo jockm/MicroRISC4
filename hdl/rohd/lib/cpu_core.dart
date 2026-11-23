@@ -124,14 +124,16 @@ class CpuCore extends Module {
     portBWeOut <= portBWe;
     portBEnOut <= portBEn;
 
-    // Low MMIO Decodes
+    // Low MMIO Decodes (shared upper-10-bit zero check keeps decode to 2 LUT4 levels)
+    final isMmioPage = portBAddr.slice(15, 6).eq(Const(0, width: 10));
+    final mmioOff = portBAddr.slice(5, 0);
     final isMmioCpuid =
-        config.enableCpuid ? portBAddr.eq(Const(0x000D, width: 16)) : Const(0);
+        config.enableCpuid ? (isMmioPage & mmioOff.eq(Const(0x0D, width: 6))) : Const(0);
     final isMmioRx = config.enableUart
-        ? portBAddr.eq(MiniRISC4Constants.addrUartRx)
+        ? (isMmioPage & mmioOff.eq(Const(MiniRISC4Constants.addrUartRx, width: 6)))
         : Const(0);
     final isMmioTx = config.enableUart
-        ? portBAddr.eq(MiniRISC4Constants.addrUartTx)
+        ? (isMmioPage & mmioOff.eq(Const(MiniRISC4Constants.addrUartTx, width: 6)))
         : Const(0);
 
     // Math Accelerator Conditional Instantiation
@@ -174,8 +176,9 @@ class CpuCore extends Module {
     final isSpiMatch =
         (config.enableSpi && spiMatch != null) ? spiMatch : Const(0);
     final isNocMatch = config.enableNoc
-        ? (portBAddr.gte(Const(MiniRISC4Constants.addrNocTxData, width: 16)) &
-            portBAddr.lte(Const(MiniRISC4Constants.addrNocChCfg1, width: 16)))
+        ? (isMmioPage &
+            mmioOff.gte(Const(MiniRISC4Constants.addrNocTxData, width: 6)) &
+            mmioOff.lte(Const(MiniRISC4Constants.addrNocChCfg1, width: 6)))
         : Const(0);
     final isMmio = isMmioCpuid |
         isMmioRx |
@@ -184,8 +187,8 @@ class CpuCore extends Module {
         isSpiMatch |
         isNocMatch;
 
-    // Mask RAM writes when targeting MMIO addresses
-    final ramBWe = portBEn & portBWe & ~isMmio;
+    // Mask RAM writes when targeting MMIO addresses (portBWe is only asserted when portBEn is high)
+    final ramBWe = portBWe & ~isMmio;
 
     // Instantiate Synthesizable True Dual-Port BRAM
     final addrHigh = config.addrWidth - 1;
@@ -205,21 +208,6 @@ class CpuCore extends Module {
     );
     portARdata <= ram.portARdata;
     portBRdata <= ram.portBRdata;
-
-    // Instruction Decode Logic (used for Slot-1 illegal-instruction check)
-    final curInst = mux(slot.eq(MiniRISC4Constants.slotByte0),
-        instReg.slice(7, 0), instReg.slice(15, 8));
-    final op = curInst.slice(7, 4);
-    final rr = curInst.slice(3, 2);
-
-    final isLink = op.eq(MiniRISC4Constants.opJmpSpecial) &
-        rr.eq(MiniRISC4Constants.subLink);
-    final isPush8 = op.eq(MiniRISC4Constants.opJmpSpecial) &
-        rr.eq(MiniRISC4Constants.subPush8);
-    final isTrap = op.eq(MiniRISC4Constants.opJmpSpecial) &
-        rr.eq(MiniRISC4Constants.subTrap);
-    final illegalSlot1 =
-        slot.eq(MiniRISC4Constants.slotByte1) & (isLink | isPush8 | isTrap);
 
     // Direct Stride Vector Table Constants (0x0100, stride 16 words)
     final trapTableBaseConst = Const(config.trapTableBase, width: 16);
@@ -258,6 +246,10 @@ class CpuCore extends Module {
     final decRrQ = Logic(name: 'dec_rr_q', width: 2);
     final decRlQ = Logic(name: 'dec_rl_q', width: 2);
     final decImm4Q = Logic(name: 'dec_imm4_q', width: 4);
+    final decUseRegLAsAddAQ = Logic(name: 'dec_use_regl_add_a_q');
+    final decUseOneAsAddBQ = Logic(name: 'dec_use_one_add_b_q');
+    final decArithSubQ = Logic(name: 'dec_arith_sub_q');
+    final illegalSlot1 = Logic(name: 'dec_illegal_slot1_q');
 
     // Staged read-data selection: keeps wide BRAM read path out of the MMIO mux tree
     final effectivePortBData = mux(isMmioRdReg, mmioRdataReg, portBRdata);
@@ -270,15 +262,163 @@ class CpuCore extends Module {
     Logic rotr1(Logic v) => [v[0], v.slice(15, 1)].swizzle();
     Logic asr1(Logic v) => [v[15], v.slice(15, 1)].swizzle();
 
+    // Balanced 4:1 register-file read muxes (single PFUMX slice per bit)
     Logic getReg(Logic idx) => mux(
-          idx.eq(0),
-          r[0],
-          mux(idx.eq(1), r[1], mux(idx.eq(2), r[2], r[3])),
+          idx[1],
+          mux(idx[0], r[3], r[2]),
+          mux(idx[0], r[1], r[0]),
+        );
+    Logic getShadowReg(Logic idx) => mux(
+          idx[1],
+          mux(idx[0], shadowR[3], shadowR[2]),
+          mux(idx[0], shadowR[1], shadowR[0]),
         );
 
     final resetActive = ~rstN;
     final pcPlus1 = pc + 1;
     final portAAddrPlus1 = portAAddr + 1;
+
+    // Shared ST_EXEC operand decode & single unified 16-bit add/sub ALU
+    final regR = getReg(decRrQ);
+    final regL = getReg(decRlQ);
+
+    final isOpLdReg = decOpQ.eq(Const(MiniRISC4Constants.opLdReg, width: 4));
+    final isOpLdImm4 = decOpQ.eq(Const(MiniRISC4Constants.opLdImm4, width: 4));
+    final isOpLdPostinc =
+        decOpQ.eq(Const(MiniRISC4Constants.opLdPostinc, width: 4));
+    final isOpLdPredec =
+        decOpQ.eq(Const(MiniRISC4Constants.opLdPredec, width: 4));
+    final isOpAdd = decOpQ.eq(Const(MiniRISC4Constants.opAdd, width: 4));
+    final isOpSub = decOpQ.eq(Const(MiniRISC4Constants.opSub, width: 4));
+    final isOpOr = decOpQ.eq(Const(MiniRISC4Constants.opOr, width: 4));
+    final isOpXor = decOpQ.eq(Const(MiniRISC4Constants.opXor, width: 4));
+    final isOpAnd = decOpQ.eq(Const(MiniRISC4Constants.opAnd, width: 4));
+    final isOpShift = decOpQ.eq(Const(MiniRISC4Constants.opShift, width: 4));
+    final isOpRotIncDec =
+        decOpQ.eq(Const(MiniRISC4Constants.opRotIncDec, width: 4));
+    final isOpSpecial =
+        decOpQ.eq(Const(MiniRISC4Constants.opJmpSpecial, width: 4));
+
+    final isSubXchg =
+        isOpShift & decRrQ.eq(Const(MiniRISC4Constants.subShiftXchg, width: 2));
+    final isSubInc =
+        isOpRotIncDec & decRrQ.eq(Const(MiniRISC4Constants.subInc, width: 2));
+    final isSubDec =
+        isOpRotIncDec & decRrQ.eq(Const(MiniRISC4Constants.subDec, width: 2));
+    final isSubLink =
+        isOpSpecial & decRrQ.eq(Const(MiniRISC4Constants.subLink, width: 2));
+    final isSubPush8 =
+        isOpSpecial & decRrQ.eq(Const(MiniRISC4Constants.subPush8, width: 2));
+    final isSubTrap =
+        isOpSpecial & decRrQ.eq(Const(MiniRISC4Constants.subTrap, width: 2));
+
+    // Single shared 16-bit add/sub carry chain (ADD, SUB, INC, DEC, PostInc, PreDec)
+    // Control bits are pre-decoded into FFs at instruction latch time so the
+    // CCU2C carry chain has zero decode LUTs ahead of it.
+    final addA = mux(decUseRegLAsAddAQ, regL, regR);
+    final addB = mux(decUseOneAsAddBQ, Const(1, width: 16), regL);
+    final addBInv = mux(decArithSubQ, ~addB, addB);
+    final arithSum17 =
+        [addA, decArithSubQ].swizzle() + [addBInv, decArithSubQ].swizzle();
+    final arithRes = arithSum17.slice(16, 1);
+
+    // Fast (non-adder) writeback paths computed in parallel with arithRes
+    final shiftRes = mux(
+      decRrQ[1],
+      mux(
+        decRrQ[0],
+        config.enableShadowRegs ? getShadowReg(decRlQ) : regL,
+        asr1(regL),
+      ),
+      mux(
+        decRrQ[0],
+        [Const(0, width: 1), regL.slice(15, 1)].swizzle(),
+        [regL.slice(14, 0), Const(0, width: 1)].swizzle(),
+      ),
+    );
+    final rotRes = mux(decRrQ[0], rotr1(regL), rotl1(regL));
+    final bitwiseRes = mux(
+      decOpQ[1],
+      regR & regL,
+      mux(decOpQ[0], regR ^ regL, regR | regL),
+    );
+    final immOrPushOrLink = mux(
+      isOpLdImm4,
+      [Const(0, width: 12), decImm4Q].swizzle(),
+      mux(
+        isSubPush8,
+        [regL.slice(7, 0), instReg.slice(15, 8)].swizzle(),
+        mux(isOpLdReg, regL, pcPlus1),
+      ),
+    );
+    final execFastWbData = mux(
+      isOpShift,
+      shiftRes,
+      mux(
+        isOpRotIncDec,
+        rotRes,
+        mux(isOpOr | isOpXor | isOpAnd, bitwiseRes, immOrPushOrLink),
+      ),
+    );
+
+    // Unified single register-file writeback with late-select after CCU2C
+    final crossTrapTake = config.enableCrossTraps
+        ? (crossTrapReq & state.eq(Const(_stExec, width: 3)))
+        : Const(0);
+    final inExec = state.eq(Const(_stExec, width: 3)) & ~crossTrapTake;
+    final inMemRd = state.eq(Const(_stMemRd, width: 3));
+
+    final execIsArith = ~illegalSlot1 &
+        (isOpLdPostinc |
+            isOpLdPredec |
+            isOpAdd |
+            isOpSub |
+            isSubInc |
+            isSubDec);
+    final execNormalWbEn = isOpLdReg |
+        isOpLdImm4 |
+        isOpLdPostinc |
+        isOpLdPredec |
+        isOpAdd |
+        isOpSub |
+        isOpOr |
+        isOpXor |
+        isOpAnd |
+        (config.enableShadowRegs ? isOpShift : (isOpShift & ~isSubXchg)) |
+        isOpRotIncDec |
+        isSubLink |
+        isSubPush8 |
+        isSubTrap;
+    final execWbEn = illegalSlot1 | execNormalWbEn;
+
+    final execWbForceR0 = illegalSlot1 | isOpLdImm4 | isSubLink | isSubTrap;
+    final execWbUseRl =
+        isOpLdPostinc | isOpShift | isOpRotIncDec | isSubPush8;
+    final execWbIdx = mux(
+      execWbForceR0,
+      Const(0, width: 2),
+      mux(execWbUseRl, decRlQ, decRrQ),
+    );
+
+    final wbEn = crossTrapTake | inMemRd | (inExec & execWbEn);
+    final wbIdx = mux(
+      crossTrapTake,
+      Const(0, width: 2),
+      mux(inMemRd, destReg, execWbIdx),
+    );
+    final crossTrapLinkPc =
+        mux(slot.eq(MiniRISC4Constants.slotByte0), pc, pcPlus1);
+    final wbFastData = mux(
+      crossTrapTake,
+      crossTrapLinkPc,
+      mux(
+        inMemRd,
+        effectivePortBData,
+        mux(illegalSlot1, pcPlus1, execFastWbData),
+      ),
+    );
+    final wbUseArith = inExec & execIsArith;
+    final wbData = mux(wbUseArith, arithRes, wbFastData);
 
     // Execution FSM
     Sequential(clk, reset: resetActive, resetValues: {
@@ -300,18 +440,26 @@ class CpuCore extends Module {
       decRrQ: Const(0, width: 2),
       decRlQ: Const(0, width: 2),
       decImm4Q: Const(0, width: 4),
+      decUseRegLAsAddAQ: Const(0, width: 1),
+      decUseOneAsAddBQ: Const(0, width: 1),
+      decArithSubQ: Const(0, width: 1),
+      illegalSlot1: Const(0, width: 1),
       txData: Const(0, width: 8),
       txStrobe: Const(0, width: 1),
       for (final reg in r) reg: Const(0, width: 16),
       for (final sreg in shadowR) sreg: Const(0, width: 16),
     }, [
       txStrobe < 0,
+      If(wbEn, then: [
+        ..._writeReg(r, wbIdx, wbData),
+      ]),
+      if (config.enableShadowRegs)
+        If(inExec & ~illegalSlot1 & isSubXchg, then: [
+          ..._writeReg(shadowR, decRlQ, regL),
+        ]),
       If(
-          config.enableCrossTraps
-              ? (crossTrapReq & state.eq(Const(_stExec, width: 3)))
-              : Const(0),
+          crossTrapTake,
           then: [
-            r[0] < mux(slot.eq(MiniRISC4Constants.slotByte0), pc, pc + 1),
             _branchTo(
               trapTableBaseConst +
                   [Const(0, width: 8), crossTrapNum, Const(0, width: 4)]
@@ -365,6 +513,11 @@ class CpuCore extends Module {
                   decRrQ,
                   decRlQ,
                   decImm4Q,
+                  decUseRegLAsAddAQ,
+                  decUseOneAsAddBQ,
+                  decArithSubQ,
+                  illegalSlot1,
+                  isSlot1: false,
                 ),
                 portAAddr < portAAddrPlus1,
                 portAEn < 1,
@@ -378,10 +531,6 @@ class CpuCore extends Module {
               CaseItem(
                 Const(_stExec, width: 3),
                 () {
-                  final regR = getReg(decRrQ);
-                  final regL = getReg(decRlQ);
-                  final regLInc = regL + 1;
-                  final regRDec = regR - 1;
                   Conditional advance() => _advanceFromExec(
                         slot,
                         instReg,
@@ -396,6 +545,10 @@ class CpuCore extends Module {
                         decRrQ,
                         decRlQ,
                         decImm4Q,
+                        decUseRegLAsAddAQ,
+                        decUseOneAsAddBQ,
+                        decArithSubQ,
+                        illegalSlot1,
                       );
                   return [If(Const(1, width: 1), then: [
                 portBEn < 0,
@@ -405,23 +558,10 @@ class CpuCore extends Module {
                   nextInstReg < portARdata,
                 ]),
                 If(illegalSlot1, then: [
-                  r[0] < pcPlus1,
                   _branchTo(
                       trapAlignFaultConst, pc, portAAddr, portAEn, slot, state),
                 ], orElse: [
                   Case(decOpQ, [
-                    // 0x0: LD Rr, Rl
-                    CaseItem(Const(MiniRISC4Constants.opLdReg, width: 4), [
-                      ..._writeReg(r, decRrQ, regL),
-                      advance(),
-                    ]),
-
-                    // 0x1: LD R0, decImm4Q
-                    CaseItem(Const(MiniRISC4Constants.opLdImm4, width: 4), [
-                      r[0] < [Const(0, width: 12), decImm4Q].swizzle(),
-                      advance(),
-                    ]),
-
                     // 0x2: LD Rr, (Rl) - Peek
                     CaseItem(Const(MiniRISC4Constants.opLdPeek, width: 4), [
                       portAEn < 0,
@@ -452,14 +592,12 @@ class CpuCore extends Module {
                       portBWe < 0,
                       portBEn < 1,
                       destReg < decRrQ,
-                      ..._writeReg(r, decRlQ, regLInc),
                       state < Const(_stMemWait, width: 3),
                     ]),
 
                     // 0x5: LD (--Rr), Rl - Push (Full Descending)
                     CaseItem(Const(MiniRISC4Constants.opLdPredec, width: 4), [
-                      ..._writeReg(r, decRrQ, regRDec),
-                      portBAddr < regRDec,
+                      portBAddr < arithRes,
                       portBWe < 1,
                       portBEn < 1,
                       if (config.enableUart)
@@ -468,85 +606,6 @@ class CpuCore extends Module {
                               txData < regL.slice(7, 0),
                               txStrobe < 1,
                             ]),
-                      advance(),
-                    ]),
-
-                    // 0x6: ADD
-                    CaseItem(Const(MiniRISC4Constants.opAdd, width: 4), [
-                      ..._writeReg(r, decRrQ, regR + regL),
-                      advance(),
-                    ]),
-
-                    // 0x7: SUB
-                    CaseItem(Const(MiniRISC4Constants.opSub, width: 4), [
-                      ..._writeReg(r, decRrQ, regR - regL),
-                      advance(),
-                    ]),
-
-                    // 0x8: OR
-                    CaseItem(Const(MiniRISC4Constants.opOr, width: 4), [
-                      ..._writeReg(r, decRrQ, regR | regL),
-                      advance(),
-                    ]),
-
-                    // 0x9: XOR
-                    CaseItem(Const(MiniRISC4Constants.opXor, width: 4), [
-                      ..._writeReg(r, decRrQ, regR ^ regL),
-                      advance(),
-                    ]),
-
-                    // 0xA: Native AND
-                    CaseItem(Const(MiniRISC4Constants.opAnd, width: 4), [
-                      ..._writeReg(r, decRrQ, regR & regL),
-                      advance(),
-                    ]),
-
-                    // 0xB: SHIFT & XCHG
-                    CaseItem(Const(MiniRISC4Constants.opShift, width: 4), [
-                      Case(decRrQ, [
-                        CaseItem(
-                            Const(MiniRISC4Constants.subShiftL, width: 2), [
-                          ..._writeReg(r, decRlQ,
-                              [regL.slice(14, 0), Const(0, width: 1)].swizzle()),
-                        ]),
-                        CaseItem(
-                            Const(MiniRISC4Constants.subShiftR, width: 2), [
-                          ..._writeReg(r, decRlQ,
-                              [Const(0, width: 1), regL.slice(15, 1)].swizzle()),
-                        ]),
-                        CaseItem(
-                            Const(MiniRISC4Constants.subShiftAr, width: 2), [
-                          ..._writeReg(r, decRlQ, asr1(regL)),
-                        ]),
-                        CaseItem(
-                            Const(MiniRISC4Constants.subShiftXchg, width: 2), [
-                          if (config.enableShadowRegs)
-                            for (int i = 0; i < 4; i++)
-                              If(decRlQ.eq(i), then: [
-                                r[i] < shadowR[i],
-                                shadowR[i] < r[i],
-                              ]),
-                        ]),
-                      ]),
-                      advance(),
-                    ]),
-
-                    // 0xC: ROT / INC / DEC
-                    CaseItem(Const(MiniRISC4Constants.opRotIncDec, width: 4), [
-                      Case(decRrQ, [
-                        CaseItem(Const(MiniRISC4Constants.subRotL, width: 2), [
-                          ..._writeReg(r, decRlQ, rotl1(regL)),
-                        ]),
-                        CaseItem(Const(MiniRISC4Constants.subRotR, width: 2), [
-                          ..._writeReg(r, decRlQ, rotr1(regL)),
-                        ]),
-                        CaseItem(Const(MiniRISC4Constants.subInc, width: 2), [
-                          ..._writeReg(r, decRlQ, regLInc),
-                        ]),
-                        CaseItem(Const(MiniRISC4Constants.subDec, width: 2), [
-                          ..._writeReg(r, decRlQ, regL - 1),
-                        ]),
-                      ]),
                       advance(),
                     ]),
 
@@ -578,20 +637,16 @@ class CpuCore extends Module {
                               regL, pc, portAAddr, portAEn, slot, state),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subLink, width: 2), [
-                          r[0] < pcPlus1,
                           _branchTo(
                               regL, pc, portAAddr, portAEn, slot, state),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subPush8, width: 2), [
-                          ..._writeReg(r, decRlQ,
-                              [regL.slice(7, 0), instReg.slice(15, 8)].swizzle()),
                           pc < pcPlus1,
                           portAEn < 0,
                           slot < MiniRISC4Constants.slotByte0,
                           state < Const(_stFetchLatch, width: 3),
                         ]),
                         CaseItem(Const(MiniRISC4Constants.subTrap, width: 2), [
-                          r[0] < pcPlus1,
                           _branchTo(
                             trapTableBaseConst +
                                 [
@@ -608,6 +663,9 @@ class CpuCore extends Module {
                         ]),
                       ]),
                     ]),
+                  ], defaultItem: [
+                    // 0x0 LD, 0x1 LDI4, 0x6..0xC ALU/SHIFT/ROT/XCHG/INC/DEC
+                    advance(),
                   ]),
                 ]),
                     ]),
@@ -632,11 +690,10 @@ class CpuCore extends Module {
                 state < Const(_stMemRd, width: 3),
               ]),
 
-              // ST_MEM_RD: Latch settled Port B / staged MMIO read data into destReg
+              // ST_MEM_RD: Advance after unified writeback latches Port B / MMIO data
               CaseItem(Const(_stMemRd, width: 3), [
                 portBEn < 0,
                 portBWe < 0,
-                ..._writeReg(r, destReg, effectivePortBData),
                 _advanceFromExec(
                   slot,
                   instReg,
@@ -651,6 +708,10 @@ class CpuCore extends Module {
                   decRrQ,
                   decRlQ,
                   decImm4Q,
+                  decUseRegLAsAddAQ,
+                  decUseOneAsAddBQ,
+                  decArithSubQ,
+                  illegalSlot1,
                 ),
               ]),
             ], defaultItem: [
@@ -666,12 +727,33 @@ class CpuCore extends Module {
     Logic decRrQ,
     Logic decRlQ,
     Logic decImm4Q,
-  ) {
+    Logic decUseRegLAsAddAQ,
+    Logic decUseOneAsAddBQ,
+    Logic decArithSubQ,
+    Logic decIllegalSlot1Q, {
+    required bool isSlot1,
+  }) {
+    final op = byteVal.slice(7, 4);
+    final rr = byteVal.slice(3, 2);
+    final isPostinc = op.eq(Const(MiniRISC4Constants.opLdPostinc, width: 4));
+    final isPredec = op.eq(Const(MiniRISC4Constants.opLdPredec, width: 4));
+    final isSub = op.eq(Const(MiniRISC4Constants.opSub, width: 4));
+    final isRotIncDec = op.eq(Const(MiniRISC4Constants.opRotIncDec, width: 4));
+    final isDec =
+        isRotIncDec & rr.eq(Const(MiniRISC4Constants.subDec, width: 2));
+    final isIllegalSlot1 = isSlot1
+        ? (op.eq(Const(MiniRISC4Constants.opJmpSpecial, width: 4)) &
+            (rr[1] | rr[0]))
+        : Const(0, width: 1);
     return [
-      decOpQ < byteVal.slice(7, 4),
-      decRrQ < byteVal.slice(3, 2),
+      decOpQ < op,
+      decRrQ < rr,
       decRlQ < byteVal.slice(1, 0),
       decImm4Q < byteVal.slice(3, 0),
+      decUseRegLAsAddAQ < (isPostinc | isRotIncDec),
+      decUseOneAsAddBQ < (isPostinc | isPredec | isRotIncDec),
+      decArithSubQ < (isSub | isPredec | isDec),
+      decIllegalSlot1Q < isIllegalSlot1,
     ];
   }
 
@@ -710,6 +792,10 @@ class CpuCore extends Module {
     Logic decRrQ,
     Logic decRlQ,
     Logic decImm4Q,
+    Logic decUseRegLAsAddAQ,
+    Logic decUseOneAsAddBQ,
+    Logic decArithSubQ,
+    Logic decIllegalSlot1Q,
   ) {
     return If(slot.eq(MiniRISC4Constants.slotByte0), then: [
       slot < MiniRISC4Constants.slotByte1,
@@ -721,6 +807,11 @@ class CpuCore extends Module {
         decRrQ,
         decRlQ,
         decImm4Q,
+        decUseRegLAsAddAQ,
+        decUseOneAsAddBQ,
+        decArithSubQ,
+        decIllegalSlot1Q,
+        isSlot1: true,
       ),
     ], orElse: [
       pc < pcPlus1,
@@ -731,6 +822,11 @@ class CpuCore extends Module {
         decRrQ,
         decRlQ,
         decImm4Q,
+        decUseRegLAsAddAQ,
+        decUseOneAsAddBQ,
+        decArithSubQ,
+        decIllegalSlot1Q,
+        isSlot1: false,
       ),
       portAAddr < portAAddrPlus1,
       portAEn < 1,

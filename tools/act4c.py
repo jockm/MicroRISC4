@@ -1581,6 +1581,21 @@ class CodeGen:
             self.emit(f"LOAD16  R1, {expr.label}")
 
         elif isinstance(expr, VarRef):
+            is_local = False
+            if self.current_func:
+                for pname, _ in self.current_func.params:
+                    if pname == expr.name:
+                        is_local = True
+                        break
+                if not is_local:
+                    for decl in self.current_func.locals_decls:
+                        if decl.name == expr.name:
+                            is_local = True
+                            break
+            if not is_local and expr.name in self.constants:
+                self.emit(f"LOAD16  R1, 0x{self.constants[expr.name]:04X}")
+                return
+
             lbl = self.resolve_var_label(expr.name)
             is_array = self.is_array_expr(expr)
             addr = self.resolve_fixed_address(expr.name)

@@ -39,8 +39,8 @@ const u16 ERR_UNKNOWN   = 0xFFFF;
 
 u16 msg_pending = 0;
 u16 sys_buf[64];
-const u16 RUN_BUF_MAX = 2048;
-u16 run_img_buf[2048];
+const u16 RUN_BUF_MAX = 4096;
+u16 run_img_buf[4096];
 DirEntry sys_ent;
 
 // -----------------------------------------------------------------------------
@@ -137,7 +137,7 @@ void handle_syscall(void) {
     }
 
     if (id == SYS_OPEN) {
-        extra = fifo_in;                // mode (0 = read)
+        extra = fifo_in;                // mode: 0 = read, non-zero = create/write
         wlen  = fifo_in;
         i = 0;
         while (i < wlen) {
@@ -148,13 +148,47 @@ void handle_syscall(void) {
             i++;
         }
         sys_buf[63] = 0;
-        fd = fat32_open_root(pid, sys_buf);
+        if (extra == 0) {
+            fd = fat32_open_root(pid, sys_buf);
+        } else {
+            fd = fat32_open_write_root(pid, sys_buf);
+        }
         if (fd == 0xFFFF) {
             fifo_out = ERR_IO;
             fifo_out = 0;
         } else {
             fifo_out = ERR_OK;
             fifo_out = fd;
+        }
+        return;
+    }
+
+    if (id == SYS_WRITE) {
+        extra = fifo_in;                // (byte_len << 4) | (fd & 0x0F)
+        wlen  = fifo_in;
+        i = 0;
+        while (i < wlen) {
+            arg1 = fifo_in;
+            if (i < 64) {
+                sys_buf[i] = arg1;
+            }
+            i++;
+        }
+        fd   = extra & 0x000F;
+        arg2 = extra >> 4;
+        if (arg2 == 0 || arg2 > (wlen << 1)) {
+            arg2 = wlen << 1;
+        }
+        if (arg2 > 128) {
+            arg2 = 128;
+        }
+        arg1 = fat32_write_bytes(fd, sys_buf, arg2);
+        if (arg1 == 0 && arg2 > 0) {
+            fifo_out = ERR_IO;
+            fifo_out = 0;
+        } else {
+            fifo_out = ERR_OK;
+            fifo_out = arg1;
         }
         return;
     }

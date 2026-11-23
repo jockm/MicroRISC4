@@ -21,6 +21,9 @@ const u16 SYS_READ      = 0x20;
 const u16 SYS_READDIR   = 0x21;
 const u16 SYS_PS        = 0x22;
 
+const u16 O_RDONLY      = 0;
+const u16 O_WRONLY      = 1;
+
 type DirEntry {
     u16 attr;
     u16 size_lo;
@@ -183,6 +186,34 @@ u16 sys_open(u16 *path, u16 mode, u16 *out_fd) {
         LD      (R0), R2
     }
     _sys_w = out_fd;
+    _sys_w[0] = _sys_r2;
+    return _sys_r1;
+}
+
+u16 sys_write(u16 fd, u16 *src_buf, u16 byte_len, u16 *out_written) {
+    _sys_p1 = src_buf;
+    _sys_p2 = (byte_len + 1) >> 1;
+    if (_sys_p2 > 64) {
+        _sys_p2 = 64;
+        byte_len = 128;
+    }
+    _sys_p3 = (byte_len << 4) | (fd & 0x000F);
+    asm {
+        LOAD16  R0, __sys_p1
+        LD      R1, (R0)
+        LOAD16  R0, __sys_p2
+        LD      R2, (R0)
+        LOAD16  R0, __sys_p3
+        LD      R3, (R0)
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x13
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+        LOAD16  R0, __sys_r2
+        LD      (R0), R2
+    }
+    _sys_w = out_written;
     _sys_w[0] = _sys_r2;
     return _sys_r1;
 }

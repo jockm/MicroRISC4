@@ -9,6 +9,7 @@ u16 sh_len = 0;
 
 u16 sh_cmd[8];          // 16-byte command token
 u16 sh_arg[16];         // 32-byte first argument token
+u16 sh_rest_idx = 0;    // Byte offset in sh_line after first arg
 DirEntry sh_ent;
 
 void shell_prompt(void) {
@@ -58,6 +59,12 @@ void shell_tokenize(void) {
         j++;
     }
     setbyte(sh_arg, j, 0);
+
+    // Skip spaces before remaining line payload (e.g. for "write <file> <text>")
+    while (getbyte(sh_line, i) == 32) {
+        i++;
+    }
+    sh_rest_idx = i;
 }
 
 void shell_cmd_ls(void) {
@@ -150,6 +157,53 @@ void shell_cmd_rm(void) {
     }
 }
 
+void shell_cmd_write(void) {
+    u16 fd = 0;
+    u16 i  = sh_rest_idx;
+    u16 o  = 0;
+    u16 ch = 0;
+
+    if (getbyte(sh_arg, 0) == 0) {
+        uart_puts("Usage: write <file> <text>\r\n");
+        return;
+    }
+    if (fat_mounted == 0) {
+        uart_puts("SD/FAT32 not mounted\r\n");
+        return;
+    }
+
+    while (o < 62) {
+        ch = getbyte(sh_line, i);
+        if (ch == 0) {
+            break;
+        }
+        setbyte(run_img_buf, o, ch);
+        o++;
+        i++;
+    }
+    setbyte(run_img_buf, o, 10);    // append '\n'
+    o++;
+
+    fd = fat32_open_write_root(0, sh_arg);
+    if (fd == 0xFFFF) {
+        uart_puts("Failed to create: ");
+        uart_puts(sh_arg);
+        uart_nl();
+        return;
+    }
+    if (fat32_write_bytes(fd, run_img_buf, o) != o) {
+        fat32_close(fd);
+        uart_puts("Write error: ");
+        uart_puts(sh_arg);
+        uart_nl();
+        return;
+    }
+    fat32_close(fd);
+    uart_puts("Wrote ");
+    uart_puts(sh_arg);
+    uart_nl();
+}
+
 void shell_exec(void) {
     u16 pid = 0;
     u16 err = 0;
@@ -160,7 +214,7 @@ void shell_exec(void) {
     }
 
     if (str_eq(sh_cmd, "help") == 1) {
-        uart_puts("Commands: ps, run <file>, kill <pid>, ls, cat <file>, rm <file>\r\n");
+        uart_puts("Commands: ps, run <file>, kill <pid>, ls, cat <file>, write <file> <text>, rm <file>\r\n");
     } else if (str_eq(sh_cmd, "ps") == 1) {
         proc_print_ps();
     } else if (str_eq(sh_cmd, "kill") == 1) {
@@ -201,6 +255,8 @@ void shell_exec(void) {
         shell_cmd_cat();
     } else if (str_eq(sh_cmd, "rm") == 1) {
         shell_cmd_rm();
+    } else if (str_eq(sh_cmd, "write") == 1) {
+        shell_cmd_write();
     } else {
         uart_puts("Unknown command: ");
         uart_puts(sh_cmd);

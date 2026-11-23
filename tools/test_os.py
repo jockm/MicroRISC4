@@ -1099,6 +1099,60 @@ void main(void) {
         assert worker_sim.mem[0x0005] == 0xFAFF
 
 
+# ------------------------------------------------------------------------------
+# Test 9: Cooperative fibers (lib/fiber.a4 + FIBERS.BIN) on a single worker core
+# ------------------------------------------------------------------------------
+def test_os_cooperative_fibers(args):
+    os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+    os_sim.sd_card = mr4sim.SpiSdCard(Path(args.sd_image).read_bytes())
+    os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
+    os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+    os_sim.pc = 0x0100
+    uart_out, bad_writes = attach_uart_and_watch(os_sim)
+
+    worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+    worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+    worker_sim.pc = 0x0100
+    worker_sim._poll_stdin = lambda: None
+    mr4sim.connect_os_worker(os_sim, worker_sim)
+
+    assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
+    procs_addr = os_sim.sym_to_addr["_procs"]
+    pid1_state = procs_addr + 10
+
+    start = len(uart_out)
+    for ch in "run FIBERS.BIN\r":
+        os_sim.rx_queue.append(ord(ch))
+    assert run_until_prompt(os_sim, uart_out, 12000000, worker=worker_sim), (
+        f"run FIBERS.BIN prompt timeout; out={''.join(uart_out[start:])!r}"
+    )
+
+    done = False
+    for _ in range(10000000):
+        os_sim.step()
+        worker_sim.step()
+        seg_now = "".join(uart_out[start:])
+        if os_sim.mem[pid1_state] == 0 and ("FIBERS_OK" in seg_now or "FAIL" in seg_now):
+            done = True
+            break
+
+    seg = "".join(uart_out[start:])
+    assert done, f"FIBERS.BIN timed out; output:\n{seg}"
+    assert "A0 B0 C0 A1 B1 C1 A2 B2 C2 " in seg, f"Unexpected fiber interleaving:\n{seg}"
+    assert "FIBERS_OK" in seg, f"FIBERS.BIN did not report FIBERS_OK:\n{seg}"
+    assert os_sim.mem[pid1_state + 1] == 0, f"FIBERS.BIN exit={os_sim.mem[pid1_state + 1]}"
+
+    # Settle via `ps`
+    for ch in "ps\r":
+        os_sim.rx_queue.append(ord(ch))
+    assert run_until_prompt(os_sim, uart_out, 2000000, worker=worker_sim)
+
+    assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
+    assert os_sim.mem[0x0005] == 0xFAFF, f"Core 0 ASP leaked: 0x{os_sim.mem[0x0005]:04X}"
+    assert worker_sim.mem[0x0004] == 0xFEFF, f"Core 1 RSP leaked: 0x{worker_sim.mem[0x0004]:04X}"
+    assert worker_sim.mem[0x0005] == 0xFAFF, f"Core 1 ASP leaked: 0x{worker_sim.mem[0x0005]:04X}"
+
+
 TESTS = [
     ("compiler_runtime", test_compiler_runtime),
     ("trap_isr", test_trap_isr),
@@ -1108,6 +1162,7 @@ TESTS = [
     ("os_spawn_multiworker", test_os_spawn_multiworker),
     ("os_edge_shell_and_kill", test_os_edge_shell_and_kill),
     ("os_stress_fd_syscalls_multicluster", test_os_stress_fd_syscalls_multicluster),
+    ("os_cooperative_fibers", test_os_cooperative_fibers),
 ]
 
 

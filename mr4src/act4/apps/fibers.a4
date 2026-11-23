@@ -1,0 +1,69 @@
+// ==============================================================================
+// FILE: mr4src/act4/apps/fibers.a4
+// Userland Cooperative Fiber Demo (loads at 0x0400 on a Worker Core)
+// Runs 3 cooperative fibers round-robin on a single core via lib/fiber.a4
+// ==============================================================================
+
+import "sys.a4";
+import "fiber.a4";
+
+void fiber_a(void) {
+    u16 i = 0;
+    while (i < 3) {
+        sys_putc(65);           // 'A'
+        sys_putc(i + 48);
+        sys_putc(32);
+        fiber_yield();
+        i++;
+    }
+}
+
+void fiber_b(void) {
+    u16 i = 0;
+    while (i < 3) {
+        sys_putc(66);           // 'B'
+        sys_putc(i + 48);
+        sys_putc(32);
+        fiber_yield();
+        i++;
+    }
+}
+
+void fiber_c(void) {
+    u16 i = 0;
+    while (i < 3) {
+        sys_putc(67);           // 'C'
+        sys_putc(i + 48);
+        sys_putc(32);
+        fiber_yield();
+        i++;
+    }
+}
+
+void main(void) {
+    fiber_init();
+    if (fiber_spawn(fiber_a) == 0) {
+        sys_puts("fibers: spawn A failed\r\n");
+        sys_exit(1);
+    }
+    if (fiber_spawn(fiber_b) == 0) {
+        sys_puts("fibers: spawn B failed\r\n");
+        sys_exit(2);
+    }
+    if (fiber_spawn(fiber_c) == 0) {
+        sys_puts("fibers: spawn C failed\r\n");
+        sys_exit(3);
+    }
+
+    while (fiber_active_count() > 1) {
+        fiber_yield();
+    }
+
+    if (fiber_check_canaries() != 0) {
+        sys_puts("\r\nFIBERS_CANARY_FAIL\r\n");
+        sys_exit(4);
+    }
+
+    sys_puts("\r\nFIBERS_OK\r\n");
+    sys_exit(0);
+}

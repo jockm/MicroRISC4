@@ -60,18 +60,18 @@ The ultimate objective of this project is a fully functional, stable operating s
 - [x] **Directory & File Operations:** Root directory enumeration (`ls`), case-insensitive 8.3 lookup, streaming open/read (`fat32_open_root`, `fat32_read_bytes`), create/overwrite/write with cluster allocation (`fat32_open_write_root`, `fat32_write_bytes`), `stat`, and unlink with multi-cluster chain freeing across all FAT copies (`fat32_unlink_root`).
 
 ### Phase 4: Process Management, Context Switching & Syscalls
-- [ ] **Multitasking Scheduler:** Cooperative/pre-emptive time-sliced scheduling on a single core (note: multi-core worker dispatch across Cores 1–3 via `worker_stub.asm` + `fifo_sel` is working).
+- [x] **Multi-Core Process Execution & Cooperative Fibers:** Native multitasking across Core 0 (OS) + Worker Cores (1..N, scalable up to 255 cores via `worker_stub.asm` + `fifo_sel`), plus optional single-core cooperative fibers (`lib/fiber.a4`, `fibers.a4`) with per-fiber `RSP`/`ASP` stacks and `0xDEAD` canaries.
 - [x] **Syscall Dispatcher:** Implemented 3-class Trap 1 syscall table (`SYS_EXIT`, `SYS_PUTC`, `SYS_GETC`, `SYS_KILL`, `SYS_CLOSE`, `SYS_WRITE_CON`, `SYS_SPAWN`, `SYS_OPEN`, `SYS_WRITE`, `SYS_OPENDIR`, `SYS_UNLINK`, `SYS_READ`, `SYS_READDIR`, `SYS_PS`) and `lib/sys.a4` wrappers.
 - [x] **IPC & Messaging:** Validated inter-core FIFO (`0x000A`/`0x000B`), channel selector (`0x0021`), Mailbox Trap 1/14 (`0x000C`), and counting `_msg_pending` queue across Core 0 and Workers 1–3.
 
 ### Phase 5: Interactive Shell & Userland Application Suite
 - [x] **Shell Interpreter (`os_shell.a4`):** Completed line editor (`_sh_line`), tokenizer (`_sh_cmd`, `_sh_arg`, multi-word payload offsets), and built-ins (`help`, `ps`, `run`, `kill`, `ls`, `cat`, `stat`, `write`, `rm`, `echo`, `clear`).
-- [x] **Built-in & File Utilities:** Built standalone `0x0400` userland binaries (`ls.a4`, `ps.a4`, `cat.a4`) packed onto the FAT32 SD image (`LS.BIN`, `PS.BIN`, `CAT.BIN`).
+- [x] **Built-in & File Utilities:** Built standalone `0x0400` userland binaries (`ls.a4`, `ps.a4`, `cat.a4`, `fibers.a4`) packed onto the FAT32 SD image (`LS.BIN`, `PS.BIN`, `CAT.BIN`, `FIBERS.BIN`).
 - [x] **Application Executable Loading:** Loads raw `--sparsebin` executables from FAT32 into `_run_img_buf`, streams Load Packets to free worker cores (`worker_stub.asm`), executes userland syscalls, and reclaims workers cleanly on exit.
 
 ### Phase 6: System Integration, Stress Testing & Verification
 - [x] **Full-System Simulation:** Complete boot sequence verified in `mr4sim.py` (`make sim-os` with 3 worker cores) from reset through FAT32 mount, interactive shell, and multi-core userland execution.
-- [x] **Automated Test Suite:** Implemented `tools/test_os.py` (`make test-os`, 8 suites) covering compiler/runtime math & structs, `@ trap(N)` ISRs, shell & FAT32 read/write/unlink, async Trap 1, multi-core `LS.BIN`/`PS.BIN`/`CAT.BIN`/`SYS_WRITE`/`SYS_SPAWN`, and stress/edge cases.
+- [x] **Automated Test Suite:** Implemented `tools/test_os.py` (`make test-os`, 9 suites) covering compiler/runtime math & structs, `@ trap(N)` ISRs, shell & FAT32 read/write/unlink, async Trap 1, multi-core `LS.BIN`/`PS.BIN`/`CAT.BIN`/`SYS_WRITE`/`SYS_SPAWN`, cooperative fibers (`FIBERS.BIN`), and stress/edge cases.
 - [x] **Stress & Edge Case Testing:** Verified shell line-buffer overflow clamping & backspace editing, 8-FD exhaustion + auto-reclamation on exit/kill, invalid Class A/B/C syscall payload draining (`ERR_UNKNOWN`), 3-worker core exhaustion + Trap 14 `kill` recovery, and multi-cluster (>512B) file write/readback/unlink.
 
 ---

@@ -1,0 +1,195 @@
+// ==============================================================================
+// FILE: lib/fiber.a4
+// Lightweight Cooperative Fiber (Coroutine) Scheduler for MiniRISC4
+//
+// Design:
+//   - Fiber 0 is the caller's main context (uses default hardware RSP/ASP).
+//   - Fibers 1..3 get private 32-word RSP and 64-word ASP slices with 0xDEAD
+//     stack-overflow canaries at the bottom of every stack.
+//   - Voluntary round-robin switching via fiber_yield(); zero HDL changes.
+//   - Rule for ACT4 static locals: only yield from distinct top-level fiber
+//     functions; shared helper functions should run to completion without yielding.
+// ==============================================================================
+
+const u16 FIBER_MAX       = 4;
+const u16 FIBER_FREE      = 0;
+const u16 FIBER_READY     = 1;
+const u16 FIBER_RSP_WORDS = 32;
+const u16 FIBER_ASP_WORDS = 64;
+const u16 FIBER_CANARY    = 0xDEAD;
+
+u16 _fib_state[4];
+u16 _fib_rsp[4];
+u16 _fib_asp[4];
+u16 _fib_cur     = 0;
+u16 _fib_tmp_rsp = 0;
+u16 _fib_tmp_asp = 0;
+
+// Private stacks for Fibers 1..3 (index (fid - 1) * stride)
+u16 _fib_rstack[96];            // 3 * 32 words
+u16 _fib_astack[192];           // 3 * 64 words
+
+void fiber_init(void) {
+    u16 i = 0;
+    _fib_state[0] = FIBER_READY;
+    _fib_cur = 0;
+    i = 1;
+    while (i < FIBER_MAX) {
+        _fib_state[i] = FIBER_FREE;
+        _fib_rsp[i] = 0;
+        _fib_asp[i] = 0;
+        _fib_rstack[(i - 1) * FIBER_RSP_WORDS] = FIBER_CANARY;
+        _fib_astack[(i - 1) * FIBER_ASP_WORDS] = FIBER_CANARY;
+        i++;
+    }
+}
+
+void _fiber_exit_current(void) {
+    u16 next = 0;
+    u16 step = 1;
+
+    _fib_state[_fib_cur] = FIBER_FREE;
+
+    while (step < FIBER_MAX) {
+        next = (_fib_cur + step) & 0x0003;
+        if (_fib_state[next] == FIBER_READY) {
+            break;
+        }
+        step++;
+    }
+    if (step >= FIBER_MAX) {
+        // Fallback: return to Fiber 0 if all fibers exited
+        next = 0;
+        _fib_state[0] = FIBER_READY;
+    }
+
+    _fib_cur = next;
+    _fib_tmp_rsp = _fib_rsp[next];
+    _fib_tmp_asp = _fib_asp[next];
+
+    asm {
+        LOAD16  R2, __fib_tmp_rsp
+        LD      R1, (R2)
+        LD      R0, 4
+        LD      (R0), R1
+        LOAD16  R2, __fib_tmp_asp
+        LD      R1, (R2)
+        LD      R0, 5
+        LD      (R0), R1
+    }
+    // Function epilogue emits RRET -> resumes `next` fiber!
+}
+
+void _fiber_boot(void) {
+    // Entered via fiber_yield()'s RRET with RSP pointing at entry_addr.
+    // Prologue pushed dummy R0 (&_fiber_boot) onto RSP; pop dummy, then pop
+    // entry_addr into R1 and call it with LINK R1, R0 so RRET returns here.
+    asm {
+        RPOP    R1
+        RPOP    R1
+        LINK    R1, R0
+    }
+    _fiber_exit_current();
+}
+
+// Spawn a cooperative fiber running entry_addr. Returns fiber ID (1..3) or 0 if full.
+u16 fiber_spawn(u16 entry_addr) {
+    u16 fid   = 1;
+    u16 rbase = 0;
+    u16 abase = 0;
+
+    while (fid < FIBER_MAX) {
+        if (_fib_state[fid] == FIBER_FREE) {
+            rbase = (fid - 1) * FIBER_RSP_WORDS;
+            abase = (fid - 1) * FIBER_ASP_WORDS;
+
+            _fib_rstack[rbase] = FIBER_CANARY;
+            _fib_astack[abase] = FIBER_CANARY;
+
+            // Seed Return Stack: [top = &_fiber_boot, below = entry_addr]
+            _fib_rstack[rbase + FIBER_RSP_WORDS - 1] = entry_addr;
+            _fib_rstack[rbase + FIBER_RSP_WORDS - 2] = _fiber_boot;
+
+            _fib_rsp[fid] = &_fib_rstack[rbase + FIBER_RSP_WORDS - 2];
+            _fib_asp[fid] = &_fib_astack[abase] + FIBER_ASP_WORDS;
+            _fib_state[fid] = FIBER_READY;
+            return fid;
+        }
+        fid++;
+    }
+    return 0;
+}
+
+// Cooperatively yield CPU to the next READY fiber (round-robin).
+void fiber_yield(void) {
+    u16 next = 0;
+    u16 step = 1;
+
+    while (step < FIBER_MAX) {
+        next = (_fib_cur + step) & 0x0003;
+        if (_fib_state[next] == FIBER_READY) {
+            break;
+        }
+        step++;
+    }
+    if (step >= FIBER_MAX) {
+        return;
+    }
+
+    asm {
+        LD      R0, 4
+        LD      R1, (R0)
+        LOAD16  R2, __fib_tmp_rsp
+        LD      (R2), R1
+        LD      R0, 5
+        LD      R1, (R0)
+        LOAD16  R2, __fib_tmp_asp
+        LD      (R2), R1
+    }
+    _fib_rsp[_fib_cur] = _fib_tmp_rsp;
+    _fib_asp[_fib_cur] = _fib_tmp_asp;
+
+    _fib_cur = next;
+    _fib_tmp_rsp = _fib_rsp[next];
+    _fib_tmp_asp = _fib_asp[next];
+
+    asm {
+        LOAD16  R2, __fib_tmp_rsp
+        LD      R1, (R2)
+        LD      R0, 4
+        LD      (R0), R1
+        LOAD16  R2, __fib_tmp_asp
+        LD      R1, (R2)
+        LD      R0, 5
+        LD      (R0), R1
+    }
+    // Function epilogue emits RRET -> resumes `next` fiber!
+}
+
+// Return count of currently READY fibers (including Fiber 0).
+u16 fiber_active_count(void) {
+    u16 i = 0;
+    u16 n = 0;
+    while (i < FIBER_MAX) {
+        if (_fib_state[i] == FIBER_READY) {
+            n++;
+        }
+        i++;
+    }
+    return n;
+}
+
+// Return 0 if all fiber stack canaries are intact, else failing fiber ID (1..3).
+u16 fiber_check_canaries(void) {
+    u16 fid = 1;
+    while (fid < FIBER_MAX) {
+        if (_fib_rstack[(fid - 1) * FIBER_RSP_WORDS] != FIBER_CANARY) {
+            return fid;
+        }
+        if (_fib_astack[(fid - 1) * FIBER_ASP_WORDS] != FIBER_CANARY) {
+            return fid;
+        }
+        fid++;
+    }
+    return 0;
+}

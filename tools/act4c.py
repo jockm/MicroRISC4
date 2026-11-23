@@ -1007,10 +1007,15 @@ class CodeGen:
             self.emit("JMP     R1")
             self.emit_raw("")
 
+        # Dead-function elimination: when `main` exists, only emit functions
+        # reachable from `main`, bound `@ trap(N)` ISRs, or global initializers.
+        reachable = self.compute_reachable_functions()
+
         # Generate Functions
         for node in self.ast:
             if isinstance(node, FunctionDef):
-                self.gen_function(node)
+                if reachable is None or node.name in reachable:
+                    self.gen_function(node)
 
         # Global Variables & Static Memory Allocations
         self.emit_raw("; ==============================================================================")
@@ -1056,6 +1061,50 @@ class CodeGen:
         self.emit_raw("; ==============================================================================")
         self.emit_raw('.include "M4R_LIB.asm"')
         return "\n".join(self.asm) + "\n"
+
+    def compute_reachable_functions(self) -> Optional[set]:
+        if "main" not in self.functions:
+            return None
+        reachable = {"main"}
+        reachable.update(self.trap_bindings.values())
+        worklist = list(reachable)
+
+        def collect_refs(node: Any):
+            if node is None:
+                return
+            if isinstance(node, list):
+                for item in node:
+                    collect_refs(item)
+                return
+            if isinstance(node, VarRef):
+                if node.name in self.functions and node.name not in reachable:
+                    reachable.add(node.name)
+                    worklist.append(node.name)
+                return
+            if isinstance(node, AsmBlock):
+                for fname in self.functions:
+                    if fname not in reachable and f"_{fname}" in node.asm_text:
+                        reachable.add(fname)
+                        worklist.append(fname)
+                return
+            if isinstance(node, ASTNode):
+                for val in vars(node).values():
+                    if isinstance(val, (ASTNode, list)):
+                        collect_refs(val)
+
+        for decl in self.global_vars.values():
+            collect_refs(decl.init_expr)
+            collect_refs(decl.array_inits)
+
+        while worklist:
+            fn_name = worklist.pop()
+            fn = self.functions[fn_name]
+            for decl in fn.locals_decls:
+                collect_refs(decl.init_expr)
+                collect_refs(decl.array_inits)
+            collect_refs(fn.body)
+
+        return reachable
 
     def eval_const_init(self, expr: Any) -> int:
         if isinstance(expr, IntLit):
@@ -1594,6 +1643,9 @@ class CodeGen:
                             break
             if not is_local and expr.name in self.constants:
                 self.emit(f"LOAD16  R1, 0x{self.constants[expr.name]:04X}")
+                return
+            if not is_local and expr.name not in self.global_vars and expr.name in self.functions:
+                self.emit(f"LOAD16  R1, _{expr.name}")
                 return
 
             lbl = self.resolve_var_label(expr.name)

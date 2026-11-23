@@ -109,7 +109,7 @@ make ulx3s-timing
 - [x] RX/TX path verified end-to-end on ULX3S-85F hardware at 3 Mbaud (`make ulx3s-term`: boot banner, prompt, `e`, `c` verified with debounced synchronous reset).
 
 ### In Progress / Pending Verification
-- [ ] Pipeline staging to eliminate wide BRAM mux critical path and raise $F_{\max}$ from 66.27 MHz (65K BRAM) to `>100 MHz`.
+- [ ] Pipeline staging and nextpnr tuning to raise 65K-word $F_{\max}$ past `>100 MHz` (65K banked `TdpBram` lifted $F_{\max}$ from `66.27 MHz` to `90.5–96.9 MHz` at a 48 MHz target and cut BRAMs from `128` to `64 DP16KD`).
 - [ ] Integration of I-Cache, D-Cache, and ULX3S SDRAM controller.
 - [ ] Multi-word per-channel RX FIFOs with backpressure in `NocRouterNi` (`hdl/rohd/lib/noc_router.dart`).
 - [ ] Multi-hop ring routing in `RegisteredNocHop` (`hdl/rohd/lib/noc_cache_wrapper.dart`).
@@ -128,7 +128,7 @@ make ulx3s-timing
 - [x] Validate character output on host terminal emulator at 3 Mbaud (and fix reset synchronizer/debounce + `DivideByN` + `monitor.asm` `c`/`g`/`print_hex16`).
 
 ### Priority 2: Timing & Pipeline Bottlenecks (`>100 MHz`)
-- [ ] Redesign `TdpBram` read staging to remove wide multi-BRAM output muxes from critical path.
+- [x] Redesign `TdpBram` read staging to remove wide multi-BRAM output muxes from critical path (`4 × 16K` banked `TdpBram` with `no_rw_check` + `NORMAL` write mode + per-bank hex init: cut `128 → 64 DP16KD`, `431 → 347 FF`, lifted $F_{\max}$ from `66.27 MHz` to `90.5–96.9 MHz` at 48 MHz target).
 - [ ] Separate instruction fetch pipeline from execution FSM states to achieve 1-cycle throughput per slot.
 - [ ] Optimize nextpnr timing parameters to reach `>100 MHz` clock target on ECP5-85k.
 

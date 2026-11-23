@@ -188,19 +188,33 @@ class TdpBram extends Module with SystemVerilog {
       end''',
       ).join('\n');
 
-      final bankACases = List.generate(
-        bankCount,
-        (b) => b == bankCount - 1
-            ? '      default: port_a_rdata <= bank${b}_a_raw;'
-            : "      $bankSelWidth'd$b: port_a_rdata <= bank${b}_a_raw;",
-      ).join('\n');
-
-      final bankBCases = List.generate(
-        bankCount,
-        (b) => b == bankCount - 1
-            ? '      default: port_b_rdata <= bank${b}_b_raw;'
-            : "      $bankSelWidth'd$b: port_b_rdata <= bank${b}_b_raw;",
-      ).join('\n');
+      final String aMuxAssign;
+      final String bMuxAssign;
+      if (bankCount == 4) {
+        aMuxAssign = '''
+    port_a_rdata <= a_bank_q[1]
+        ? (a_bank_q[0] ? bank3_a_raw : bank2_a_raw)
+        : (a_bank_q[0] ? bank1_a_raw : bank0_a_raw);''';
+        bMuxAssign = '''
+    port_b_rdata <= b_bank_q[1]
+        ? (b_bank_q[0] ? bank3_b_raw : bank2_b_raw)
+        : (b_bank_q[0] ? bank1_b_raw : bank0_b_raw);''';
+      } else {
+        final bankACases = List.generate(
+          bankCount,
+          (b) => b == bankCount - 1
+              ? '      default: port_a_rdata <= bank${b}_a_raw;'
+              : "      $bankSelWidth'd$b: port_a_rdata <= bank${b}_a_raw;",
+        ).join('\n');
+        final bankBCases = List.generate(
+          bankCount,
+          (b) => b == bankCount - 1
+              ? '      default: port_b_rdata <= bank${b}_b_raw;'
+              : "      $bankSelWidth'd$b: port_b_rdata <= bank${b}_b_raw;",
+        ).join('\n');
+        aMuxAssign = '    case (a_bank_q)\n$bankACases\n    endcase';
+        bMuxAssign = '    case (b_bank_q)\n$bankBCases\n    endcase';
+      }
 
       return '''
 module $definitionType (
@@ -234,12 +248,8 @@ $bankBOps
   end
 
   always_ff @(posedge clk) begin
-    case (a_bank_q)
-$bankACases
-    endcase
-    case (b_bank_q)
-$bankBCases
-    endcase
+$aMuxAssign
+$bMuxAssign
   end
 endmodule
 ''';

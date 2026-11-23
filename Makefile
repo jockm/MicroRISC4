@@ -278,12 +278,17 @@ CAT_ASM     := $(OS_BUILD)/cat.asm
 CAT_PRG     := $(OS_BUILD)/cat.prg
 CAT_LST     := $(OS_BUILD)/cat.lst
 
+XI_A4      := $(OS_SRC_DIR)/apps/xi.a4
+XI_ASM     := $(OS_BUILD)/xi.asm
+XI_PRG     := $(OS_BUILD)/xi.prg
+XI_LST     := $(OS_BUILD)/xi.lst
+
 FIBERS_A4   := $(OS_SRC_DIR)/apps/fibers.a4
 FIBERS_ASM  := $(OS_BUILD)/fibers.asm
 FIBERS_PRG  := $(OS_BUILD)/fibers.prg
 FIBERS_LST  := $(OS_BUILD)/fibers.lst
 
-OS_APP_PRGS := $(LS_PRG) $(PS_PRG) $(CAT_PRG) $(FIBERS_PRG)
+OS_APP_PRGS := $(LS_PRG) $(PS_PRG) $(CAT_PRG) $(XI_PRG) $(FIBERS_PRG)
 
 .PHONY: os-build sd-img sim-os os-test test-os clean-os
 
@@ -310,6 +315,7 @@ $(SD_SRC_DIR): $(OS_APP_PRGS)
 	cp $(LS_PRG) $(SD_SRC_DIR)/LS.PRG
 	cp $(PS_PRG) $(SD_SRC_DIR)/PS.PRG
 	cp $(CAT_PRG) $(SD_SRC_DIR)/CAT.PRG
+	cp $(XI_PRG) $(SD_SRC_DIR)/XI.PRG
 	cp $(FIBERS_PRG) $(SD_SRC_DIR)/FIBERS.PRG
 	printf "Hello from MiniRISC4 FAT32 SD card!\n" > $(SD_SRC_DIR)/README.TXT
 

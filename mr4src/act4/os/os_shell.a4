@@ -361,19 +361,144 @@ void shell_cmd_clear(void) {
     uart_puts("[H");
 }
 
+void shell_cmd_run(u16 foreground) {
+    u16 pid = 0;
+    u16 err = 0;
+    u16 mode = 0;
+
+    if (getbyte(sh_arg, 0) == 0) {
+        if (foreground != 0) {
+            uart_puts("Usage: ! <file>\r\n");
+        } else {
+            uart_puts("Usage: run <file>\r\n");
+        }
+        return;
+    }
+    err = fat32_read_file(sh_arg, run_img_buf, RUN_BUF_MAX);
+    if (err == 0) {
+        uart_puts("Failed to load file: ");
+        uart_puts(sh_arg);
+        uart_nl();
+        return;
+    }
+    if (foreground != 0) {
+        mode = 2;
+    }
+    pid = proc_spawn_from_buf(sh_arg, run_img_buf, err, mode);
+    if (pid == 0) {
+        uart_puts("No free worker core\r\n");
+    } else if (foreground == 0) {
+        uart_puts("Spawned PID ");
+        uart_putc(pid + 48);
+        uart_puts(" (");
+        uart_put_hex16(err);
+        uart_puts(" words)\r\n");
+    }
+}
+
+void shell_cmd_fg(void) {
+    u16 pid = 0;
+    u16 err = 0;
+    u16 i   = 0;
+    u16 j   = 0;
+    u16 ch  = 0;
+
+    if (getbyte(sh_arg, 0) == 0) {
+        uart_puts("Usage: fg [--fgoutput] <pid>\r\n");
+        return;
+    }
+    if (str_eq(sh_arg, "--fgoutput") == 1) {
+        i = sh_rest_idx;
+        j = 0;
+        while (j < 15) {
+            ch = getbyte(sh_line, i);
+            if (ch == 0 || ch == 32) {
+                break;
+            }
+            setbyte(sh_arg, j, ch);
+            i++;
+            j++;
+        }
+        setbyte(sh_arg, j, 0);
+        if (j == 0) {
+            uart_puts("Usage: fg --fgoutput <pid>\r\n");
+            return;
+        }
+        pid = parse_u16(sh_arg);
+        err = proc_set_fg_output(pid);
+        if (err == 0) {
+            uart_puts("Console output enabled for PID ");
+            uart_putc(pid + 48);
+            uart_nl();
+        } else {
+            uart_puts("fg failed\r\n");
+        }
+        return;
+    }
+
+    pid = parse_u16(sh_arg);
+    err = proc_set_fg(pid);
+    if (err != 0) {
+        uart_puts("fg failed\r\n");
+    }
+}
+
+void shell_cmd_bg(void) {
+    u16 pid = 0;
+    u16 err = 0;
+
+    if (getbyte(sh_arg, 0) == 0) {
+        uart_puts("Usage: bg <pid>\r\n");
+        return;
+    }
+    pid = parse_u16(sh_arg);
+    err = proc_set_bg(pid);
+    if (err == 0) {
+        uart_puts("Backgrounded PID ");
+        uart_putc(pid + 48);
+        uart_nl();
+    } else {
+        uart_puts("bg failed\r\n");
+    }
+}
+
 void shell_exec(void) {
     u16 pid = 0;
     u16 err = 0;
+    u16 i   = 0;
+    u16 ch  = 0;
 
     shell_tokenize();
     if (getbyte(sh_cmd, 0) == 0) {
         return;
     }
 
+    if (getbyte(sh_cmd, 0) == 33) {
+        // Support both "! APP.BIN" and "!APP.BIN"
+        if (getbyte(sh_cmd, 1) != 0) {
+            i = 1;
+            while (i < 16) {
+                ch = getbyte(sh_cmd, i);
+                setbyte(sh_arg, i - 1, ch);
+                if (ch == 0) {
+                    break;
+                }
+                i++;
+            }
+            setbyte(sh_arg, 15, 0);
+        }
+        shell_cmd_run(1);
+        return;
+    }
+
     if (str_eq(sh_cmd, "help") == 1) {
-        uart_puts("Commands: ps, run <file>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write <file> <text>, rm <file>, echo <text>, clear\r\n");
+        uart_puts("Commands: ps, ! <file>, run <file>, fg [--fgoutput] <pid>, bg <pid>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write <file> <text>, rm <file>, echo <text>, clear\r\n");
     } else if (str_eq(sh_cmd, "ps") == 1) {
         proc_print_ps();
+    } else if (str_eq(sh_cmd, "fg") == 1) {
+        shell_cmd_fg();
+    } else if (str_eq(sh_cmd, "bg") == 1) {
+        shell_cmd_bg();
     } else if (str_eq(sh_cmd, "kill") == 1) {
         pid = parse_u16(sh_arg);
         err = proc_kill(pid);
@@ -395,27 +520,7 @@ void shell_exec(void) {
     } else if (str_eq(sh_cmd, "rmdir") == 1) {
         shell_cmd_rmdir();
     } else if (str_eq(sh_cmd, "run") == 1) {
-        if (getbyte(sh_arg, 0) == 0) {
-            uart_puts("Usage: run <file>\r\n");
-        } else {
-            err = fat32_read_file(sh_arg, run_img_buf, RUN_BUF_MAX);
-            if (err == 0) {
-                uart_puts("Failed to load file: ");
-                uart_puts(sh_arg);
-                uart_nl();
-            } else {
-                pid = proc_spawn_from_buf(sh_arg, run_img_buf, err);
-                if (pid == 0) {
-                    uart_puts("No free worker core\r\n");
-                } else {
-                    uart_puts("Spawned PID ");
-                    uart_putc(pid + 48);
-                    uart_puts(" (");
-                    uart_put_hex16(err);
-                    uart_puts(" words)\r\n");
-                }
-            }
-        }
+        shell_cmd_run(0);
     } else if (str_eq(sh_cmd, "cat") == 1) {
         shell_cmd_cat();
     } else if (str_eq(sh_cmd, "rm") == 1) {
@@ -436,8 +541,30 @@ void shell_exec(void) {
 }
 
 void shell_poll(void) {
-    u16 ch = uart_poll_getc();
+    u16 ch  = uart_poll_getc();
+    u16 pid = 0;
     if (ch == 0xFFFF) {
+        return;
+    }
+
+    if (fg_pid != 0) {
+        if (ch == 26) {                 // Ctrl-Z: detach foreground to background
+            pid = fg_pid;
+            proc_set_bg(pid);
+            uart_puts("\r\n[Backgrounded PID ");
+            uart_putc(pid + 48);
+            uart_puts("]\r\n");
+            shell_prompt();
+        } else if (ch == 3) {           // Ctrl-C: kill foreground worker
+            pid = fg_pid;
+            proc_kill(pid);
+            uart_puts("\r\n^C Killed PID ");
+            uart_putc(pid + 48);
+            uart_nl();
+            shell_prompt();
+        } else {
+            fg_rx_push(ch);
+        }
         return;
     }
 
@@ -446,7 +573,9 @@ void shell_poll(void) {
         uart_nl();
         shell_exec();
         sh_len = 0;
-        shell_prompt();
+        if (fg_pid == 0) {
+            shell_prompt();
+        }
     } else if (ch == 8 || ch == 127) {
         if (sh_len > 0) {
             sh_len--;

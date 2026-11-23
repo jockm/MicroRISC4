@@ -1,6 +1,6 @@
 // ==============================================================================
 // FILE: mr4src/act4/os/os_proc.a4
-// Core 0 Process Table & Worker Core Control
+// Core 0 Process Table, Console Ownership & Worker Core Control
 // ==============================================================================
 
 u16 fifo_in  @ 0x000A;
@@ -17,26 +17,116 @@ const u16 CMD_LOAD_MAGIC = 0x4C44;  // "LD" header expected by worker_stub.asm
 const u16 APP_LOAD_ADDR  = 0x0400;
 const u16 TRAP_KILL      = 14;      // TRAP_CORE_FAULT -> worker_stub reset
 
+const u16 FG_RX_CAP      = 16;      // Power-of-2 ring buffer for fg SYS_GETC
+const u16 FG_RX_MASK     = FG_RX_CAP - 1;
+
 type ProcEntry {
     u16 state;
     u16 exit_code;
     u16 name[8];                    // 16-byte packed .asciz name
 };
 
-ProcEntry procs[4];
+ProcEntry procs[MAX_CORES];
+u16 proc_con_out[MAX_CORES];        // 1 = allowed to write to UART console
+u16 fg_pid = 0;                     // 0 = Core 0 shell owns UART RX, else worker PID
+
+u16 fg_rx_buf[FG_RX_CAP];
+u16 fg_rx_head = 0;
+u16 fg_rx_tail = 0;
+
+void fg_rx_clear(void) {
+    fg_rx_head = 0;
+    fg_rx_tail = 0;
+}
+
+void fg_rx_push(u16 ch) {
+    u16 next = (fg_rx_head + 1) & FG_RX_MASK;
+    if (next != fg_rx_tail) {
+        fg_rx_buf[fg_rx_head] = ch;
+        fg_rx_head = next;
+    }
+}
+
+// Returns next queued key for fg_pid, or 0xFFFF if empty
+u16 fg_rx_pop(void) {
+    u16 ch = 0;
+    if (fg_rx_head == fg_rx_tail) {
+        return 0xFFFF;
+    }
+    ch = fg_rx_buf[fg_rx_tail];
+    fg_rx_tail = (fg_rx_tail + 1) & FG_RX_MASK;
+    return ch;
+}
 
 void proc_init(void) {
     u16 i = 0;
     procs[0].state = PROC_RUN;
+    proc_con_out[0] = 1;
     str_copy(procs[0].name, "os_kernel", 16);
+    fg_pid = 0;
+    fg_rx_clear();
 
     i = 1;
     while (i < MAX_CORES) {
         procs[i].state = PROC_FREE;
         procs[i].exit_code = 0;
+        proc_con_out[i] = 0;
         setbyte(procs[i].name, 0, 0);
         i++;
     }
+}
+
+void proc_clear_worker_con_out(void) {
+    u16 i = 1;
+    while (i < MAX_CORES) {
+        proc_con_out[i] = 0;
+        i++;
+    }
+}
+
+// Attach running worker PID to foreground (exclusive output + keyboard input)
+// Returns 0 = OK, 1 = invalid PID, 2 = not running
+u16 proc_set_fg(u16 pid) {
+    if (pid == 0 || pid >= MAX_CORES) {
+        return 1;
+    }
+    if (procs[pid].state != PROC_RUN) {
+        return 2;
+    }
+    proc_clear_worker_con_out();
+    proc_con_out[pid] = 1;
+    fg_pid = pid;
+    fg_rx_clear();
+    return 0;
+}
+
+// Enable console output for running worker PID without disturbing other cores
+// or taking keyboard input away from the Core 0 shell (--fgoutput).
+u16 proc_set_fg_output(u16 pid) {
+    if (pid == 0 || pid >= MAX_CORES) {
+        return 1;
+    }
+    if (procs[pid].state != PROC_RUN) {
+        return 2;
+    }
+    proc_con_out[pid] = 1;
+    return 0;
+}
+
+// Move running worker PID to background (mute output; release input if fg)
+u16 proc_set_bg(u16 pid) {
+    if (pid == 0 || pid >= MAX_CORES) {
+        return 1;
+    }
+    if (procs[pid].state != PROC_RUN) {
+        return 2;
+    }
+    proc_con_out[pid] = 0;
+    if (fg_pid == pid) {
+        fg_pid = 0;
+        fg_rx_clear();
+    }
+    return 0;
 }
 
 // Find first FREE worker core (returns 0 if none available)
@@ -51,14 +141,23 @@ u16 proc_alloc_core(void) {
     return 0;
 }
 
-// Reclaim a worker core after SYS_EXIT or crash
-void proc_mark_exited(u16 pid, u16 code) {
+// Reclaim a worker core after SYS_EXIT or crash.
+// Returns 1 if the exited worker was the active fg_pid (caller should reprint prompt).
+u16 proc_mark_exited(u16 pid, u16 code) {
+    u16 was_fg = 0;
     if (pid == 0 || pid >= MAX_CORES) {
-        return;
+        return 0;
+    }
+    proc_con_out[pid] = 0;
+    if (fg_pid == pid) {
+        fg_pid = 0;
+        fg_rx_clear();
+        was_fg = 1;
     }
     procs[pid].exit_code = code;
     fat32_close_owner(pid);
     procs[pid].state = PROC_FREE;
+    return was_fg;
 }
 
 // Force-kill a running worker core via Mailbox Trap 14
@@ -70,14 +169,20 @@ u16 proc_kill(u16 pid) {
         return 2;                   // ERR_NOT_RUNNING
     }
     mailbox = (pid << 8) | TRAP_KILL;
+    proc_con_out[pid] = 0;
+    if (fg_pid == pid) {
+        fg_pid = 0;
+        fg_rx_clear();
+    }
     procs[pid].exit_code = 0xFFFF;
     fat32_close_owner(pid);
     procs[pid].state = PROC_FREE;
     return 0;
 }
 
-// Stream a binary image into a free worker core and launch it
-u16 proc_spawn_from_buf(u16 *name, u16 *img, u16 word_count) {
+// Stream a binary image into a free worker core and launch it.
+// con_mode: 0 = background (muted), 1 = inherit output only, 2 = exclusive foreground.
+u16 proc_spawn_from_buf(u16 *name, u16 *img, u16 word_count, u16 con_mode) {
     u16 pid = proc_alloc_core();
     u16 i = 0;
     if (pid == 0) {
@@ -86,6 +191,17 @@ u16 proc_spawn_from_buf(u16 *name, u16 *img, u16 word_count) {
 
     procs[pid].state = PROC_LOAD;
     str_copy(procs[pid].name, name, 16);
+
+    if (con_mode == 2) {
+        proc_clear_worker_con_out();
+        proc_con_out[pid] = 1;
+        fg_pid = pid;
+        fg_rx_clear();
+    } else if (con_mode == 1) {
+        proc_con_out[pid] = 1;
+    } else {
+        proc_con_out[pid] = 0;
+    }
 
     // Select target worker core channel and stream Load Packet matching worker_stub.asm
     fifo_sel = pid;
@@ -118,6 +234,13 @@ void proc_print_ps(void) {
         } else {
             uart_puts("RUN    ");
             uart_puts(procs[i].name);
+            if (i > 0) {
+                if (i == fg_pid) {
+                    uart_puts("  [FG]");
+                } else if (proc_con_out[i] != 0) {
+                    uart_puts("  [OUT]");
+                }
+            }
             uart_nl();
         }
         i++;

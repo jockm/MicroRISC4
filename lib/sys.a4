@@ -89,6 +89,23 @@ u16 sys_putc(u16 ch) {
     return _sys_r1;
 }
 
+u16 sys_getc(u16 *out_ch) {
+    asm {
+        LD0     R1
+        LD0     R2
+        LD0     R0
+        INC     R0
+        TRAP    R0, 0x03
+        LOAD16  R0, __sys_r1
+        LD      (R0), R1
+        LOAD16  R0, __sys_r2
+        LD      (R0), R2
+    }
+    _sys_w = out_ch;
+    _sys_w[0] = _sys_r2;
+    return _sys_r1;
+}
+
 u16 sys_puts(u16 *s) {
     _sys_p1 = s;
     _sys_p2 = str_word_len(s);

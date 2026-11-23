@@ -465,7 +465,8 @@ def test_os_async_trap1(args):
 
     assert run_until_prompt(sim, uart_out, 1500000), "OS boot timed out"
 
-    # Enqueue Class A SYS_PUTC('!') from PID 1 and deliver async Trap 1
+    # Enable console output for PID 1 and enqueue Class A SYS_PUTC('!') + async Trap 1
+    sim.mem[sim.sym_to_addr["_proc_con_out"] + 1] = 1
     fifo_in_q.extend([(1 << 8) | 0x02, 2, ord("!"), 0])
     sim.pending_traps.append(1)
 
@@ -571,23 +572,18 @@ void main(void) {
             start = len(uart_out)
             for ch in cmd + "\r":
                 os_sim.rx_queue.append(ord(ch))
-            assert run_until_prompt(os_sim, uart_out, 6000000, worker=worker_sim), f"{cmd} prompt timeout"
-            done = False
-            for _ in range(8000000):
-                os_sim.step()
-                worker_sim.step()
-                if os_sim.mem[pid1_state_addr] == 0 and marker in "".join(uart_out[start:]):
-                    done = True
-                    break
+            assert run_until_prompt(os_sim, uart_out, 14000000, worker=worker_sim), f"{cmd} prompt timeout"
             seg = "".join(uart_out[start:])
-            assert done, f"{cmd} failed or missed {marker!r}; output:\n{seg}"
+            assert os_sim.mem[pid1_state_addr] == 0 and marker in seg, (
+                f"{cmd} failed or missed {marker!r}; output:\n{seg}"
+            )
             assert os_sim.mem[pid1_state_addr + 1] == 0, f"{cmd} exit_code={os_sim.mem[pid1_state_addr + 1]}"
             return seg
 
-        seg_ls = run_app("run LS.BIN", "README.TXT")
-        seg_ps = run_app("run PS.BIN", "1    RUN    PS.BIN")
-        seg_cat = run_app("run CAT.BIN", "Hello from MiniRISC4 FAT32 SD card!")
-        seg_wr = run_app("run WRTEST.BIN", "READBACK:Userland write OK!")
+        seg_ls = run_app("! LS.BIN", "README.TXT")
+        seg_ps = run_app("!PS.BIN", "1    RUN    PS.BIN")
+        seg_cat = run_app("! CAT.BIN", "Hello from MiniRISC4 FAT32 SD card!")
+        seg_wr = run_app("! WRTEST.BIN", "READBACK:Userland write OK!")
 
         # Confirm Core 0 shell reads back APP.TXT written by Worker Core 1
         for ch in "cat APP.TXT\r":
@@ -696,12 +692,12 @@ void main(void) {
         pid2_state = procs_addr + 20
 
         start = len(uart_out)
-        for ch in "run SPAWN.BIN\r":
+        for ch in "! SPAWN.BIN\r":
             os_sim.rx_queue.append(ord(ch))
         assert step_all(
-            8000000,
+            14000000,
             lambda: len(uart_out) > start and "".join(uart_out[start:]).endswith("mr4> "),
-        ), f"run SPAWN.BIN prompt timeout; output:\n{''.join(uart_out[start:])}"
+        ), f"! SPAWN.BIN prompt timeout; output:\n{''.join(uart_out[start:])}"
 
         # Wait until BOTH parent (PID 1 on Core 1) and child (PID 2 on Core 2) finish
         def both_finished():
@@ -849,17 +845,14 @@ void main(void) {
         open_fds = [i for i in range(8) if os_sim.mem[fds_addr + i * 15] != 0]
         assert not open_fds, f"Leaked FDs after kill: {open_fds}"
 
-        # 4. Verify killed worker Core 1 cleanly resets and executes CAT.BIN
+        # 4. Verify killed worker Core 1 cleanly resets and executes CAT.BIN in foreground
         procs_addr = os_sim.sym_to_addr["_procs"]
         pid1_state = procs_addr + 10
-        cat_start = len(uart_out)
-        assert "Spawned PID 1" in send_cmd("run CAT.BIN\r")
-        assert step_all(
-            6000000,
-            lambda: os_sim.mem[pid1_state] == 0
-            and "Hello from MiniRISC4 FAT32 SD card!" in "".join(uart_out[cat_start:]),
-        ), f"Worker 1 failed to run CAT.BIN after Trap 14 kill: {''.join(uart_out[cat_start:])!r}"
-        assert os_sim.mem[pid1_state + 1] == 0
+        out_cat = send_cmd("! CAT.BIN\r", max_steps=12000000)
+        assert "Hello from MiniRISC4 FAT32 SD card!" in out_cat, (
+            f"Worker 1 failed to run CAT.BIN after Trap 14 kill: {out_cat!r}"
+        )
+        assert os_sim.mem[pid1_state] == 0 and os_sim.mem[pid1_state + 1] == 0
         send_cmd("ps\r")
 
         assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
@@ -1058,22 +1051,13 @@ void main(void) {
         pid1_state = procs_addr + 10
 
         start = len(uart_out)
-        for ch in "run STRESS.BIN\r":
+        for ch in "! STRESS.BIN\r":
             os_sim.rx_queue.append(ord(ch))
-        assert run_until_prompt(os_sim, uart_out, 15000000, worker=worker_sim), (
-            f"run STRESS.BIN prompt timeout; out={''.join(uart_out[start:])!r}"
+        assert run_until_prompt(os_sim, uart_out, 30000000, worker=worker_sim), (
+            f"! STRESS.BIN prompt timeout; out={''.join(uart_out[start:])!r}"
         )
-
-        done = False
-        for _ in range(15000000):
-            os_sim.step()
-            worker_sim.step()
-            if os_sim.mem[pid1_state] == 0 and ("STRESS_OK" in "".join(uart_out[start:]) or "STRESS_FAIL" in "".join(uart_out[start:])):
-                done = True
-                break
         seg = "".join(uart_out[start:])
-        assert done, f"STRESS.BIN timed out; output:\n{seg}"
-        assert "STRESS_OK" in seg, f"STRESS.BIN failed; output:\n{seg}"
+        assert os_sim.mem[pid1_state] == 0 and "STRESS_OK" in seg, f"STRESS.BIN failed; output:\n{seg}"
         assert os_sim.mem[pid1_state + 1] == 0, f"STRESS.BIN exit={os_sim.mem[pid1_state + 1]}"
 
         # Settle to prompt via `ps`
@@ -1121,23 +1105,14 @@ def test_os_cooperative_fibers(args):
     pid1_state = procs_addr + 10
 
     start = len(uart_out)
-    for ch in "run FIBERS.BIN\r":
+    for ch in "! FIBERS.BIN\r":
         os_sim.rx_queue.append(ord(ch))
-    assert run_until_prompt(os_sim, uart_out, 12000000, worker=worker_sim), (
-        f"run FIBERS.BIN prompt timeout; out={''.join(uart_out[start:])!r}"
+    assert run_until_prompt(os_sim, uart_out, 25000000, worker=worker_sim), (
+        f"! FIBERS.BIN prompt timeout; out={''.join(uart_out[start:])!r}"
     )
 
-    done = False
-    for _ in range(10000000):
-        os_sim.step()
-        worker_sim.step()
-        seg_now = "".join(uart_out[start:])
-        if os_sim.mem[pid1_state] == 0 and ("FIBERS_OK" in seg_now or "FAIL" in seg_now):
-            done = True
-            break
-
     seg = "".join(uart_out[start:])
-    assert done, f"FIBERS.BIN timed out; output:\n{seg}"
+    assert os_sim.mem[pid1_state] == 0, f"FIBERS.BIN still running; output:\n{seg}"
     assert "A0 B0 C0 A1 B1 C1 A2 B2 C2 " in seg, f"Unexpected fiber interleaving:\n{seg}"
     assert "FIBERS_OK" in seg, f"FIBERS.BIN did not report FIBERS_OK:\n{seg}"
     assert os_sim.mem[pid1_state + 1] == 0, f"FIBERS.BIN exit={os_sim.mem[pid1_state + 1]}"
@@ -1311,18 +1286,8 @@ void main(void) {
         # 5. Userland worker app using sys_mkdir / sys_open / sys_opendir / sys_chdir / sys_rmdir
         procs_addr = os_sim.sym_to_addr["_procs"]
         pid1_state = procs_addr + 10
-        start = len(uart_out)
-        assert "Spawned PID 1" in send_cmd("run DIRAPP.BIN\r", max_steps=10000000)
-        done = False
-        for _ in range(12000000):
-            os_sim.step()
-            worker_sim.step()
-            seg_now = "".join(uart_out[start:])
-            if os_sim.mem[pid1_state] == 0 and ("SUBDIR_APP_OK" in seg_now or "FAIL" in seg_now):
-                done = True
-                break
-        seg = "".join(uart_out[start:])
-        assert done, f"DIRAPP.BIN timed out; out={seg!r}"
+        seg = send_cmd("! DIRAPP.BIN\r", max_steps=25000000)
+        assert os_sim.mem[pid1_state] == 0, f"DIRAPP.BIN still running; out={seg!r}"
         assert "APPREAD:Subdir syscall OK!" in seg, f"DIRAPP.BIN readback mismatch:\n{seg}"
         assert "SUBDIR_APP_OK" in seg, f"DIRAPP.BIN failed:\n{seg}"
         assert os_sim.mem[pid1_state + 1] == 0, f"DIRAPP.BIN exit={os_sim.mem[pid1_state + 1]}"
@@ -1338,6 +1303,214 @@ void main(void) {
         assert worker_sim.mem[0x0005] == 0xFAFF, f"Core 1 ASP leaked: 0x{worker_sim.mem[0x0005]:04X}"
 
 
+# ------------------------------------------------------------------------------
+# Test 11: Console ownership (run vs !, fg, bg, fg --fgoutput, Ctrl-Z, Ctrl-C)
+# ------------------------------------------------------------------------------
+def test_os_console_fg_bg(_args):
+    bgwork_src = """
+import "sys.a4";
+
+void main(void) {
+    u16 fd = 0;
+    u16 wr = 0;
+    // Output must be silently dropped while running in background (Option A)
+    sys_puts("BG_MUTE_SHOULD_NOT_APPEAR\\r\\n");
+    if (sys_open("BGDONE.TXT", O_WRONLY, &fd) == 0) {
+        sys_write(fd, "bg_ran\\n", 7, &wr);
+        sys_close(fd);
+    }
+    sys_exit(0);
+}
+"""
+    echoapp_src = """
+import "sys.a4";
+
+void main(void) {
+    u16 ch = 0;
+    while (true) {
+        if (sys_getc(&ch) == 0) {
+            sys_puts("GOT:");
+            sys_putc(ch);
+            sys_puts("\\r\\n");
+        }
+    }
+}
+"""
+    chat1_src = """
+import "sys.a4";
+
+void main(void) {
+    u16 d = 0;
+    while (true) {
+        sys_puts("C1!\\r\\n");
+        d = 0;
+        while (d < 800) {
+            d++;
+        }
+    }
+}
+"""
+    chat2_src = """
+import "sys.a4";
+
+void main(void) {
+    u16 d = 0;
+    while (true) {
+        sys_puts("C2!\\r\\n");
+        d = 0;
+        while (d < 800) {
+            d++;
+        }
+    }
+}
+"""
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td)
+        sd_root = p / "sd_root"
+        sd_root.mkdir()
+        for name, src in (
+            ("BGWORK", bgwork_src),
+            ("ECHOAPP", echoapp_src),
+            ("CHAT1", chat1_src),
+            ("CHAT2", chat2_src),
+        ):
+            a4 = p / f"{name.lower()}.a4"
+            out_bin = sd_root / f"{name}.BIN"
+            a4.write_text(src, encoding="utf-8")
+            compile_and_assemble(a4, out_bin, org=0x0400, nopreamble=True, sparsebin=True)
+
+        sd_img = p / "con_test.img"
+        subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
+             "-o", str(sd_img), "--size-mb", "16", "--spc", "1"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
+        os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
+        os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+        os_sim.pc = 0x0100
+        uart_out, bad_writes = attach_uart_and_watch(os_sim)
+
+        workers = []
+        for cid in (1, 2, 3):
+            ws = mr4sim.MiniRISC4Sim(core_id=cid)
+            ws.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+            ws.pc = 0x0100
+            ws._poll_stdin = lambda: None
+            workers.append(ws)
+        mr4sim.connect_os_workers(os_sim, workers)
+
+        def step_all(max_steps, stop_fn):
+            for _ in range(max_steps):
+                os_sim.step()
+                for ws in workers:
+                    ws.step()
+                if stop_fn():
+                    return True
+            return False
+
+        def send_cmd(cmd_str, max_steps=8000000, wait_contains_prompt=False):
+            start = len(uart_out)
+            for ch in cmd_str:
+                os_sim.rx_queue.append(ord(ch))
+            if wait_contains_prompt:
+                ok = step_all(max_steps, lambda: "mr4> " in "".join(uart_out[start:]))
+            else:
+                ok = step_all(max_steps, lambda: len(uart_out) > start and "".join(uart_out[start:]).endswith("mr4> "))
+            assert ok, f"Command {cmd_str!r} timed out; out={''.join(uart_out[start:])!r}"
+            return "".join(uart_out[start:])
+
+        assert step_all(1500000, lambda: "".join(uart_out).endswith("mr4> ")), "OS boot failed"
+
+        procs_addr = os_sim.sym_to_addr["_procs"]
+        pid1_state = procs_addr + 10
+        fg_pid_addr = os_sim.sym_to_addr["_fg_pid"]
+
+        # 1. Background `run` mutes console output (Option A) while still completing work
+        bg_start = len(uart_out)
+        assert "Spawned PID 1" in send_cmd("run BGWORK.BIN\r")
+        assert step_all(10000000, lambda: os_sim.mem[pid1_state] == 0), "BGWORK.BIN did not exit"
+        assert "BG_MUTE_SHOULD_NOT_APPEAR" not in "".join(uart_out[bg_start:])
+        assert "bg_ran" in send_cmd("cat BGDONE.TXT\r")
+
+        # 2. `run` + `fg <pid>` hands keyboard input (SYS_GETC) & output; Ctrl-Z detaches; Ctrl-C kills
+        assert "Spawned PID 1" in send_cmd("run ECHOAPP.BIN\r")
+        fg_start = len(uart_out)
+        for ch in "fg 1\r":
+            os_sim.rx_queue.append(ord(ch))
+        assert step_all(2000000, lambda: os_sim.mem[fg_pid_addr] == 1), "fg 1 did not attach foreground"
+        for ch in "xy":
+            os_sim.rx_queue.append(ord(ch))
+        assert step_all(
+            4000000,
+            lambda: "GOT:x" in "".join(uart_out[fg_start:]) and "GOT:y" in "".join(uart_out[fg_start:]),
+        ), f"Foreground SYS_GETC echo failed: {''.join(uart_out[fg_start:])!r}"
+
+        # Ctrl-Z detaches back to shell prompt while PID 1 keeps running in background
+        cz_start = len(uart_out)
+        os_sim.rx_queue.append(0x1A)
+        assert step_all(
+            2000000,
+            lambda: os_sim.mem[fg_pid_addr] == 0 and "".join(uart_out[cz_start:]).endswith("mr4> "),
+        ), f"Ctrl-Z failed: {''.join(uart_out[cz_start:])!r}"
+        assert "[Backgrounded PID 1]" in "".join(uart_out[cz_start:])
+        out_ps = send_cmd("ps\r")
+        assert "1    RUN    ECHOAPP.BIN" in out_ps and "[FG]" not in out_ps
+
+        # Re-attach with `fg 1` and kill with Ctrl-C
+        for ch in "fg 1\r":
+            os_sim.rx_queue.append(ord(ch))
+        assert step_all(2000000, lambda: os_sim.mem[fg_pid_addr] == 1), "Second fg 1 failed"
+        cc_start = len(uart_out)
+        os_sim.rx_queue.append(0x03)
+        assert step_all(
+            2000000,
+            lambda: os_sim.mem[fg_pid_addr] == 0
+            and os_sim.mem[pid1_state] == 0
+            and "".join(uart_out[cc_start:]).endswith("mr4> "),
+        ), f"Ctrl-C failed: {''.join(uart_out[cc_start:])!r}"
+        assert "^C Killed PID 1" in "".join(uart_out[cc_start:])
+
+        # 3. Simultaneous multi-core output via `fg --fgoutput <pid>` while shell keeps keyboard input
+        quiet_start = len(uart_out)
+        assert "Spawned PID 1" in send_cmd("run CHAT1.BIN\r")
+        assert "Spawned PID 2" in send_cmd("run CHAT2.BIN\r")
+        assert "quiet_ok" in send_cmd("echo quiet_ok\r")
+        quiet_seg = "".join(uart_out[quiet_start:])
+        assert "C1!" not in quiet_seg and "C2!" not in quiet_seg, f"Background chatters leaked output: {quiet_seg!r}"
+
+        assert "Console output enabled for PID 1" in send_cmd("fg --fgoutput 1\r", wait_contains_prompt=True)
+        assert "Console output enabled for PID 2" in send_cmd("fg --fgoutput 2\r", wait_contains_prompt=True)
+        assert os_sim.mem[fg_pid_addr] == 0, "fg --fgoutput should keep keyboard input on Core 0 shell"
+
+        multi_start = len(uart_out)
+        assert step_all(
+            4000000,
+            lambda: "C1!" in "".join(uart_out[multi_start:]) and "C2!" in "".join(uart_out[multi_start:]),
+        ), f"Expected simultaneous output from Core 1 and Core 2: {''.join(uart_out[multi_start:])!r}"
+
+        # Shell still accepts commands while both cores output; `ps` shows [OUT] on both
+        out_ps2 = send_cmd("ps\r", wait_contains_prompt=True)
+        assert "1    RUN    CHAT1.BIN  [OUT]" in out_ps2, f"Missing [OUT] on PID 1:\n{out_ps2}"
+        assert "2    RUN    CHAT2.BIN  [OUT]" in out_ps2, f"Missing [OUT] on PID 2:\n{out_ps2}"
+
+        assert "Backgrounded PID 1" in send_cmd("bg 1\r", wait_contains_prompt=True)
+        assert "Backgrounded PID 2" in send_cmd("bg 2\r", wait_contains_prompt=True)
+        assert "Killed PID 1" in send_cmd("kill 1\r")
+        assert "Killed PID 2" in send_cmd("kill 2\r")
+        send_cmd("ps\r")
+
+        assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
+        assert os_sim.mem[0x0005] == 0xFAFF, f"Core 0 ASP leaked: 0x{os_sim.mem[0x0005]:04X}"
+        for idx, ws in enumerate(workers, start=1):
+            assert ws.mem[0x0004] == 0xFEFF, f"Worker {idx} RSP leaked: 0x{ws.mem[0x0004]:04X}"
+            assert ws.mem[0x0005] == 0xFAFF, f"Worker {idx} ASP leaked: 0x{ws.mem[0x0005]:04X}"
+
+
 TESTS = [
     ("compiler_runtime", test_compiler_runtime),
     ("trap_isr", test_trap_isr),
@@ -1349,6 +1522,7 @@ TESTS = [
     ("os_stress_fd_syscalls_multicluster", test_os_stress_fd_syscalls_multicluster),
     ("os_cooperative_fibers", test_os_cooperative_fibers),
     ("os_fat32_subdirs", test_os_fat32_subdirs),
+    ("os_console_fg_bg", test_os_console_fg_bg),
 ]
 
 

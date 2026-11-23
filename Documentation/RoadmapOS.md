@@ -65,13 +65,13 @@ The ultimate objective of this project is a fully functional, stable operating s
 - [x] **IPC & Messaging:** Validated inter-core FIFO (`0x000A`/`0x000B`), channel selector (`0x0021`), Mailbox Trap 1/14 (`0x000C`), and counting `_msg_pending` queue across Core 0 and Workers 1–3.
 
 ### Phase 5: Interactive Shell & Userland Application Suite
-- [x] **Shell Interpreter (`os_shell.a4`):** Completed line editor (`_sh_line`), tokenizer (`_sh_cmd`, `_sh_arg`, multi-word payload offsets), and built-ins (`help`, `ps`, `run`, `kill`, `pwd`, `cd`, `ls`, `mkdir`, `rmdir`, `cat`, `stat`, `write`, `rm`, `echo`, `clear`).
+- [x] **Shell Interpreter (`os_shell.a4`):** Completed line editor (`_sh_line`), tokenizer (`_sh_cmd`, `_sh_arg`, multi-word payload offsets), console ownership (`! <file>` foreground, `run <file>` background with muted output, `fg [--fgoutput] <pid>`, `bg <pid>`, `Ctrl-Z` detach, `Ctrl-C` Trap 14 kill, foreground `SYS_GETC` routing), and built-ins (`help`, `ps`, `kill`, `pwd`, `cd`, `ls`, `mkdir`, `rmdir`, `cat`, `stat`, `write`, `rm`, `echo`, `clear`).
 - [x] **Built-in & File Utilities:** Built standalone `0x0400` userland binaries (`ls.a4`, `ps.a4`, `cat.a4`, `fibers.a4`) packed onto the FAT32 SD image (`LS.BIN`, `PS.BIN`, `CAT.BIN`, `FIBERS.BIN`).
 - [x] **Application Executable Loading:** Loads raw `--sparsebin` executables from FAT32 into `_run_img_buf`, streams Load Packets to free worker cores (`worker_stub.asm`), executes userland syscalls, and reclaims workers cleanly on exit.
 
 ### Phase 6: System Integration, Stress Testing & Verification
 - [x] **Full-System Simulation:** Complete boot sequence verified in `mr4sim.py` (`make sim-os` with 3 worker cores) from reset through FAT32 mount, interactive shell, and multi-core userland execution.
-- [x] **Automated Test Suite:** Implemented `tools/test_os.py` (`make test-os`, 10 suites) covering compiler/runtime math & structs, `@ trap(N)` ISRs, shell & FAT32 read/write/unlink/subdirectories, async Trap 1, multi-core `LS.BIN`/`PS.BIN`/`CAT.BIN`/`SYS_WRITE`/`SYS_SPAWN`, cooperative fibers (`FIBERS.BIN`), and stress/edge cases.
+- [x] **Automated Test Suite:** Implemented `tools/test_os.py` (`make os-test` / `make test-os`, 11 suites) covering compiler/runtime math & structs, `@ trap(N)` ISRs, shell & FAT32 read/write/unlink/subdirectories, async Trap 1, multi-core `LS.BIN`/`PS.BIN`/`CAT.BIN`/`SYS_WRITE`/`SYS_SPAWN`, cooperative fibers (`FIBERS.BIN`), console ownership (`!`/`run`/`fg`/`bg`/`--fgoutput`/`Ctrl-Z`/`Ctrl-C`), and stress/edge cases.
 - [x] **Stress & Edge Case Testing:** Verified shell line-buffer overflow clamping & backspace editing, 8-FD exhaustion + auto-reclamation on exit/kill, invalid Class A/B/C syscall payload draining (`ERR_UNKNOWN`), 3-worker core exhaustion + Trap 14 `kill` recovery, and multi-cluster (>512B) file write/readback/unlink.
 
 ---

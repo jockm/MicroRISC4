@@ -82,14 +82,18 @@ void handle_syscall(void) {
 
     if (id == SYS_EXIT) {
         arg1 = fifo_in;
-        proc_mark_exited(pid, arg1);
+        if (proc_mark_exited(pid, arg1) != 0) {
+            shell_prompt();
+        }
         return;                         // No reply expected
     }
 
     if (id == SYS_PUTC) {
         arg1 = fifo_in;
         arg2 = fifo_in;
-        uart_putc(arg1);
+        if (pid < MAX_CORES && proc_con_out[pid] != 0) {
+            uart_putc(arg1);
+        }
         fifo_out = ERR_OK;
         fifo_out = 0;
         return;
@@ -98,13 +102,18 @@ void handle_syscall(void) {
     if (id == SYS_GETC) {
         arg1 = fifo_in;
         arg2 = fifo_in;
-        ch = uart_poll_getc();
-        if (ch == 0xFFFF) {
+        if (pid != fg_pid) {
             fifo_out = ERR_EMPTY;
             fifo_out = 0;
         } else {
-            fifo_out = ERR_OK;
-            fifo_out = ch;
+            ch = fg_rx_pop();
+            if (ch == 0xFFFF) {
+                fifo_out = ERR_EMPTY;
+                fifo_out = 0;
+            } else {
+                fifo_out = ERR_OK;
+                fifo_out = ch;
+            }
         }
         return;
     }
@@ -138,7 +147,9 @@ void handle_syscall(void) {
             i++;
         }
         sys_buf[63] = 0;
-        uart_puts(sys_buf);
+        if (pid < MAX_CORES && proc_con_out[pid] != 0) {
+            uart_puts(sys_buf);
+        }
         fifo_out = ERR_OK;
         fifo_out = wlen;
         return;
@@ -163,7 +174,11 @@ void handle_syscall(void) {
             fifo_out = 0;
             return;
         }
-        arg2 = proc_spawn_from_buf(sys_buf, run_img_buf, arg1);
+        ch = 0;
+        if (pid < MAX_CORES && proc_con_out[pid] != 0) {
+            ch = 1;                     // Child inherits console output from parent
+        }
+        arg2 = proc_spawn_from_buf(sys_buf, run_img_buf, arg1, ch);
         fifo_sel = pid;
         if (arg2 == 0) {
             fifo_out = ERR_IO;
@@ -394,9 +409,9 @@ void handle_syscall(void) {
     }
 
     if (id == SYS_PS) {
-        extra = fifo_in;                // pid index (0..3)
+        extra = fifo_in;                // pid index (0..MAX_CORES-1)
         wlen  = fifo_in;                // max_words (10)
-        if (extra >= 4) {
+        if (extra >= MAX_CORES) {
             fifo_out = ERR_EOF;
             fifo_out = 0;
         } else {

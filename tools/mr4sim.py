@@ -44,8 +44,8 @@ BYTE_MASK       = 0xFF
 
 ADDR_UART_RX    = 0x000E
 ADDR_UART_TX    = 0x000F
-ADDR_RESET_VEC  = 0x0010
-TRAP_BASE       = 0x0010
+ADDR_RESET_VEC  = 0x0100
+TRAP_BASE       = 0x0100
 
 # MiniRISC4 Primary Opcodes (Bits [7:4] / [15:12])
 OP_LD_REG       = 0x0
@@ -393,9 +393,7 @@ class NocCluster:
         for cid, (sim, ni) in enumerate(zip(self.cores, self.nis)):
             if ni.pending_mbox_trap and not sim.halted:
                 ni.pending_mbox_trap = False
-                trap_vec = sim.trap_base + ni.mbox_trap_vec_offset
-                sim.r[0] = sim.pc & WORD_MASK
-                sim._branch_to(sim.read_mem(trap_vec))
+                sim.trigger_trap(ni.mbox_trap_vec_offset)
 
     def step_cycle(self):
         """Step each active core, advance background SDRAM write-behind, and tick the NoC."""
@@ -588,6 +586,12 @@ class MiniRISC4Sim:
         self.pc = target_word_addr & ADDR_MASK
         self.slot = 0
 
+    def trigger_trap(self, vec: int):
+        """Enter direct-stride hardware trap slot (matches cpu_core.dart ext_trap_req)."""
+        target_slot = (self.trap_base + ((vec & 0x0F) << 4)) & ADDR_MASK
+        self.r[0] = (self.pc if self.slot == 0 else (self.pc + 1)) & ADDR_MASK
+        self._branch_to(target_slot)
+
     def step(self):
         """Executes a single instruction slot."""
         if self.halted:
@@ -711,10 +715,10 @@ class MiniRISC4Sim:
 
         elif opcode == OP_JMP_SPECIAL:
             if current_slot != 0 and rr != SUB_JMP:
-                # Word-alignment fault for PUSH8, LINK, TRAP
+                # Word-alignment fault for PUSH8, LINK, TRAP -> direct-stride Trap 15
                 print(f"\n[FAULT] Slot 1 alignment violation at PC:0x{current_pc:04X}")
-                self.pc = self.read_mem(0xFFFF)
-                self.slot = 0
+                self.r[0] = (current_pc + 1) & ADDR_MASK
+                self._branch_to((self.trap_base + (15 << 4)) & ADDR_MASK)
                 return
 
             if rr == SUB_JMP:
@@ -732,9 +736,10 @@ class MiniRISC4Sim:
                 self.slot = 0
 
             elif rr == SUB_TRAP:
-                trap_vector = TRAP_BASE + (self.r[rl] & 0x0F)
+                vec = self.r[rl] & 0x0F
+                target_slot = (self.trap_base + (vec << 4)) & ADDR_MASK
                 self.r[0] = (current_pc + 1) & ADDR_MASK
-                self._branch_to(self.read_mem(trap_vector))
+                self._branch_to(target_slot)
 
     def interactive_cli(self):
         """Interactive debugger command loop ((m4db))."""
@@ -981,6 +986,7 @@ def main():
         sys.exit(1)
 
     sim = MiniRISC4Sim(trace=args.trace)
+    sim.trap_base = args.trapbase & ADDR_MASK
     if args.sd_image:
         sim.sd_card = SpiSdCard(Path(args.sd_image).read_bytes())
     sim.load_binary(args.binary, offset=args.loadaddr)

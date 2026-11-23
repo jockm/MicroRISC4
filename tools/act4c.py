@@ -984,6 +984,7 @@ class CodeGen:
                 self.emit_raw(f"_trap_{vec}_slot:")
                 if vec in self.trap_bindings:
                     fn_name = self.trap_bindings[vec]
+                    self.emit("RPUSH   R0")
                     self.emit(f"LOAD16  R0, _{fn_name}")
                     self.emit("JMP     R0")
                 else:
@@ -1060,7 +1061,13 @@ class CodeGen:
         if fn.trap_vector is not None:
             self.emit_raw(f"; Bound to hardware Trap Vector {fn.trap_vector} (0x{0x0100 + fn.trap_vector * 16:04X})")
         self.emit_raw(f"_{fn.name}:")
-        self.emit("RPUSH   R0")
+        if fn.trap_vector is not None:
+            # Return PC was already pushed onto RSP by _trap_N_slot
+            self.emit("RPUSH   R1")
+            self.emit("RPUSH   R2")
+            self.emit("RPUSH   R3")
+        else:
+            self.emit("RPUSH   R0")
 
         for decl in fn.locals_decls:
             if decl.init_expr is not None and not decl.typ.array_size:
@@ -1071,7 +1078,14 @@ class CodeGen:
         for stmt in fn.body:
             self.gen_stmt(stmt)
 
-        self.emit("RRET")
+        if fn.trap_vector is not None:
+            self.emit_raw(f"_{fn.name}_iret:")
+            self.emit("RPOP    R3")
+            self.emit("RPOP    R2")
+            self.emit("RPOP    R1")
+            self.emit("RRET")
+        else:
+            self.emit("RRET")
         self.emit_raw("")
 
         for decl in fn.locals_decls:
@@ -1103,7 +1117,11 @@ class CodeGen:
         elif isinstance(stmt, ReturnStmt):
             if stmt.expr is not None:
                 self.gen_expr(stmt.expr)
-            self.emit("RRET")
+            if self.current_func and self.current_func.trap_vector is not None:
+                self.emit(f"LOAD16  R0, _{self.current_func.name}_iret")
+                self.emit("JMP     R0")
+            else:
+                self.emit("RRET")
 
         elif isinstance(stmt, BreakStmt):
             if not self.loop_stack:
@@ -1178,13 +1196,16 @@ class CodeGen:
 
     def gen_assign(self, stmt: AssignStmt):
         if stmt.op == "=":
-            self.gen_expr(stmt.value)
-            self.emit("APUSH   R1")
-            self.gen_lvalue_addr(stmt.target)
-            self.emit("APUSH   R0")
-            self.emit("APOP    R0")
-            self.emit("APOP    R1")
-            self.emit("LD      (R0), R1")
+            if isinstance(stmt.target, VarRef):
+                self.gen_expr(stmt.value)
+                self.gen_lvalue_addr(stmt.target)
+                self.emit("LD      (R0), R1")
+            else:
+                self.gen_expr(stmt.value)
+                self.emit("APUSH   R1")
+                self.gen_lvalue_addr(stmt.target)
+                self.emit("APOP    R1")
+                self.emit("LD      (R0), R1")
         else:
             self.gen_lvalue_addr(stmt.target)
             self.emit("APUSH   R0")

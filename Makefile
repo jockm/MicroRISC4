@@ -58,7 +58,7 @@ ULX3S_TOP              := Ulx3sTop
 ULX3S_SV               := ulx3s_top_rohd.sv
 ULX3S_BIT              := $(ULX3S_BLD)/ulx3s_top_rohd.bit
 
-# ASIC RTL-to-GDS generation & preflight settings (completely separate from ULX3S FPGA)
+# ASIC RTL-to-GDS generation, preflight & ORFS Docker settings (separate from ULX3S FPGA)
 ASIC_BLD               := $(BUILD_DIR)/asic
 ASIC_TOP               := mr4_asic_top
 ASIC_SV                := $(ASIC_BLD)/mr4_asic_top.sv
@@ -72,6 +72,11 @@ ASIC_CLOCK_MHZ         ?= 100
 ASIC_UART_DIVISOR      ?= 868
 ASIC_ENABLE_SPI        ?= 0
 ASIC_ENABLE_MATH       ?= 0
+ASIC_PLATFORM          ?= nangate45
+ORFS_USE_DOCKER        ?= 1
+ORFS_DOCKER_IMAGE      ?= openroad/orfs:latest
+ORFS_ROOT              ?= $(HOME)/OpenROAD-flow-scripts
+ORFS_TARGET            ?= finish
 
 YOSYS          ?= yosys
 NEXTPNR_ECP5   ?= nextpnr-ecp5
@@ -88,7 +93,7 @@ SIM_PROGRAM    ?= $(BUILD_DIR)/monitor.bin
 .PHONY: all help setup analyze build apps \
         test test-rohd sim debug \
         generate generate-ulx3s ulx3s-bit ulx3s-mr4os ulx3s-timing ulx3s-prog ulx3s-flash ulx3s-term \
-        generate-asic asic-check \
+        generate-asic asic-check asic-flow \
         dot-clean clean
 
 # ------------------------------------------------------------------------------
@@ -117,10 +122,14 @@ help:
 	@echo "                                   ULX3S_MEM_WORDS=65536|2048 ULX3S_WORKER_MEM_WORDS=2048"
 	@echo "                                   ULX3S_WORKER_PROGRAM=... ULX3S_NOC_FIFO_DEPTH=16"
 	@echo "  make ulx3s-bit        - Synthesize, place & route, and pack $(ULX3S_BIT)"
+	@echo "  make ulx3s-mr4os      - Build live 4-core MR4OS + SDRAM + SPI + Math ULX3S bitstream"
 	@echo "  make ulx3s-timing     - Show Fmax and critical path from $(ULX3S_BLD)/nextpnr.log"
 	@echo "  make ulx3s-prog       - Load $(ULX3S_BIT) into ULX3S SRAM ($(OPENFPGALOADER))"
 	@echo "  make ulx3s-flash      - Write $(ULX3S_BIT) to ULX3S SPI flash"
 	@echo "  make ulx3s-term       - Open 3 Mbaud FTDI serial terminal (ULX3S_PORT=..., ULX3S_BAUD=3000000)"
+	@echo "  make generate-asic    - Generate clean ASIC SystemVerilog ($(ASIC_SV))"
+	@echo "  make asic-check       - Run Yosys structural preflight on $(ASIC_SV)"
+	@echo "  make asic-flow        - Run OpenROAD-flow-scripts RTL-to-GDS via Docker (ASIC_PLATFORM=nangate45|asap7|sky130hd)"
 	@echo "  make dot-clean        - Remove macOS ._ metadata files (where dot_clean exists)"
 	@echo "  make clean            - Remove $(BUILD_DIR)/ and generated SV/bitstream artifacts"
 	@echo "  make install-hooks    - Install the project's git hooks (tools/git-hooks) into this clone"
@@ -323,6 +332,41 @@ asic-check: generate-asic
 	@$(YOSYS) -l "$(ASIC_BLD)/asic_check.log" \
 		-p "read_verilog -sv -DSYNTHESIS $(ASIC_SV); hierarchy -check -top $(ASIC_TOP); proc; opt; check -assert; stat" | tail -n 35
 	@echo "==> [PASS] ASIC structural preflight clean: $(ASIC_SV)"
+	@$(DOT_CLEAN_CMD)
+
+# End-to-end OpenROAD-flow-scripts RTL-to-GDS flow.
+# Defaults to standalone flop-RAM mode (1024w) when running public-PDK dry runs
+# without foundry SRAM macros; override ASIC_MEM_TARGET=sram when supplying LEF/LIB.
+asic-flow:
+	@$(MAKE) generate-asic \
+		ASIC_MEM_TARGET="$(if $(filter command line,$(origin ASIC_MEM_TARGET)),$(ASIC_MEM_TARGET),flop)" \
+		ASIC_MEM_WORDS="$(if $(filter command line,$(origin ASIC_MEM_WORDS)),$(ASIC_MEM_WORDS),1024)"
+	@mkdir -p "$(ASIC_BLD)/orfs"
+	@if [ "$(ORFS_USE_DOCKER)" = "1" ]; then \
+		command -v docker >/dev/null 2>&1 || { \
+			echo "[FAIL] docker not found in PATH. See GettingStarted.md for Docker + ORFS setup."; exit 1; \
+		}; \
+		HOST_ROOT="$(CURDIR)"; \
+		if command -v cygpath >/dev/null 2>&1; then \
+			HOST_ROOT="$$(cygpath -w "$(CURDIR)")"; \
+		fi; \
+		DOCKER_USER_FLAG=""; \
+		if [ "$$(uname -s)" = "Linux" ]; then \
+			DOCKER_USER_FLAG="-u $$(id -u):$$(id -g)"; \
+		fi; \
+		echo "==> Running ORFS ($(ASIC_PLATFORM), target=$(ORFS_TARGET)) in Docker ($(ORFS_DOCKER_IMAGE))..."; \
+		MSYS_NO_PATHCONV=1 docker run --rm $$DOCKER_USER_FLAG \
+			-v "$$HOST_ROOT:/work/mr4" \
+			"$(ORFS_DOCKER_IMAGE)" \
+			bash -c 'cd /OpenROAD-flow-scripts && [ -f ./env.sh ] && source ./env.sh; exec make -C /OpenROAD-flow-scripts/flow DESIGN_CONFIG=/work/mr4/asic/mr4/config.mk WORK_HOME=/work/mr4/build/asic/orfs PLATFORM="$(ASIC_PLATFORM)" $(ORFS_TARGET)'; \
+	else \
+		if [ ! -f "$(ORFS_ROOT)/flow/Makefile" ]; then \
+			echo "[FAIL] ORFS Makefile not found at $(ORFS_ROOT)/flow/Makefile (set ORFS_ROOT or ORFS_USE_DOCKER=1)."; exit 1; \
+		fi; \
+		echo "==> Running native ORFS ($(ASIC_PLATFORM), target=$(ORFS_TARGET)) from $(ORFS_ROOT)..."; \
+		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec $(MAKE) -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" $(ORFS_TARGET)'; \
+	fi
+	@echo "==> ORFS outputs under: $(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/$(ASIC_TOP)/base/"
 	@$(DOT_CLEAN_CMD)
 
 # ------------------------------------------------------------------------------

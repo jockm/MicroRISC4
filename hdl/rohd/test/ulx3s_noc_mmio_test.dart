@@ -567,5 +567,160 @@ void main() {
       });
       await Simulator.run();
     });
+
+    test("Track A.3: Ulx3sTop SPI loopback + 1-DSP MathAccelerator MMIO + CPU_CAPS", () async {
+      int pack2(int b0, [int b1 = 0x00]) => ((b1 & 0xFF) << 8) | (b0 & 0xFF);
+      int push8(int rl, int imm8) => ((imm8 & 0xFF) << 8) | (0xF8 | (rl & 3));
+      int peek(int rr, int rl) => (0x2 << 4) | ((rr & 3) << 2) | (rl & 3);
+      int poke(int rr, int rl) => (0x3 << 4) | ((rr & 3) << 2) | (rl & 3);
+      int andOp(int rr, int rl) => (0xA << 4) | ((rr & 3) << 2) | (rl & 3);
+      int jmpZ(int rr, int rl) => (0xD << 4) | ((rr & 3) << 2) | (rl & 3);
+      int jmp(int rl) => 0xF0 | (rl & 3);
+      int ldi4(int imm4) => 0x10 | (imm4 & 0xF);
+      List<int> load16(int rl, int val) => [
+            push8(rl, (val >> 8) & 0xFF),
+            push8(rl, val & 0xFF),
+          ];
+
+      final mem = <int, int>{};
+      void emit(int addr, List<int> words) {
+        for (var i = 0; i < words.length; i++) {
+          mem[addr + i] = words[i];
+        }
+      }
+
+      // 0x0100:
+      // 1. Read CPU_CAPS (0x001C) -> [0x0340]
+      // 2. MathAccelerator: A = 0x0001E240 (123456), B = 0x00013435 (78901), CMD=0 (MUL)
+      //    Poll 0x0014[0], store RES_LO -> [0x0341] (0xF740), RES_HI -> [0x0342] (0x449B)
+      // 3. SPI loopback (sd_cmd -> sd_d0): SPI_CTRL = 0x0002 (CS_N=0, FAST=1),
+      //    SPI_DATA = 0x00A5, poll SPI_STAT[0], store SPI_DATA -> [0x0343] (0x00A5)
+      emit(0x0100, [
+        ...load16(0, MiniRISC4Constants.addrCpuCaps),
+        pack2(peek(1, 0)),
+        ...load16(2, 0x0340),
+        pack2(poke(2, 1)),
+
+        // MATH_A_LO = 0xE240, MATH_A_HI = 0x0001
+        ...load16(0, 0x0010),
+        ...load16(1, 0xE240),
+        pack2(poke(0, 1)),
+        ...load16(0, 0x0011),
+        ...load16(1, 0x0001),
+        pack2(poke(0, 1)),
+        // MATH_B_LO = 0x3435, MATH_B_HI = 0x0001
+        ...load16(0, 0x0012),
+        ...load16(1, 0x3435),
+        pack2(poke(0, 1)),
+        ...load16(0, 0x0013),
+        ...load16(1, 0x0001),
+        pack2(poke(0, 1)),
+        // MATH_CMD = 0 (MUL)
+        ...load16(0, 0x0014),
+        ...load16(1, 0x0000),
+        pack2(poke(0, 1)),
+        // Jump to poll loop at 0x0130
+        ...load16(3, 0x0130),
+        pack2(jmp(3)),
+      ]);
+      // 0x0130: Poll MATH_CMD_STAT (0x0014) bit 0
+      emit(0x0130, [
+        ...load16(2, 0x0138),
+        pack2(peek(1, 0), ldi4(1)),
+        pack2(andOp(1, 0), jmpZ(2, 1)),
+        ...load16(0, 0x0014),
+        pack2(jmp(3)),
+      ]);
+      // 0x0138: Read RES_LO & RES_HI -> [0x0341], [0x0342]
+      emit(0x0138, [
+        ...load16(0, 0x0015),
+        pack2(peek(1, 0)),
+        ...load16(2, 0x0341),
+        pack2(poke(2, 1)),
+        ...load16(0, 0x0016),
+        pack2(peek(1, 0)),
+        ...load16(2, 0x0342),
+        pack2(poke(2, 1)),
+
+        // SPI_CTRL (0x0018) = 0x0002 (CS_N=0, FAST_CLK=1)
+        ...load16(0, 0x0018),
+        ...load16(1, 0x0002),
+        pack2(poke(0, 1)),
+        // SPI_DATA (0x001A) = 0x00A5
+        ...load16(0, 0x001A),
+        ...load16(1, 0x00A5),
+        pack2(poke(0, 1)),
+        ...load16(3, 0x0160),
+        pack2(jmp(3)),
+      ]);
+      // 0x0160: Poll SPI_STAT (0x0019) bit 0
+      emit(0x0160, [
+        ...load16(0, 0x0019),
+        ...load16(2, 0x0168),
+        pack2(peek(1, 0), ldi4(1)),
+        pack2(andOp(1, 0), jmpZ(2, 1)),
+        pack2(jmp(3)),
+      ]);
+      // 0x0168: Read SPI_DATA (0x001A) -> [0x0343], halt at 0x0174
+      emit(0x0168, [
+        ...load16(0, 0x001A),
+        pack2(peek(1, 0)),
+        ...load16(2, 0x0343),
+        pack2(poke(2, 1)),
+        ...load16(3, 0x0174),
+        pack2(jmp(3)),
+      ]);
+      emit(0x0174, [pack2(jmp(3))]);
+
+      final clk25 = SimpleClockGenerator(10).clk;
+      final btnPwrN = Logic(name: "btn_pwr_n");
+      final ftdiTxd = Logic(name: "ftdi_txd");
+      final sdD0 = Logic(name: "sd_d0");
+
+      final top = Ulx3sTop(
+        clk25mhz: clk25,
+        btnPwrN: btnPwrN,
+        ftdiTxd: ftdiTxd,
+        sdD0: sdD0,
+        clkFreqMhz: 48,
+        config: const CpuConfig(
+          coreId: 0,
+          enableCpuid: true,
+          enableUart: false,
+          enableCrossTraps: false,
+          enableMathAccel: true,
+          enableSpi: true,
+          trapTableBase: 0x0100,
+          memWords: 2048,
+        ),
+        initHexFile: null,
+        initialMemory: mem,
+      );
+      // Physical SPI loopback on ULX3S microSD pins: sd_cmd (MOSI) -> sd_d0 (MISO)
+      sdD0 <= top.sdCmd;
+      await top.build();
+
+      btnPwrN.put(0);
+      ftdiTxd.put(1);
+      Simulator.registerAction(25, () => btnPwrN.put(1));
+      Simulator.registerAction(3000, () {
+        expect(
+          top.cpu.ram.mem[0x0340],
+          equals(
+            MiniRISC4Constants.capShadowRegs |
+                MiniRISC4Constants.capCpuid |
+                MiniRISC4Constants.capMathAccel |
+                MiniRISC4Constants.capSpi |
+                MiniRISC4Constants.capPipelined,
+          ),
+        );
+        expect(top.cpu.ram.mem[0x0341], equals(0xD740), reason: '123456*78901 low word');
+        expect(top.cpu.ram.mem[0x0342], equals(0x4498), reason: '123456*78901 high word');
+        expect(top.cpu.ram.mem[0x0343], equals(0x00A5), reason: 'SPI loopback RX byte');
+        expect(top.sdD3.value.toInt(), equals(0), reason: 'SPI CS_N asserted');
+        Simulator.endSimulation();
+      });
+      await Simulator.run();
+    });
   });
 }

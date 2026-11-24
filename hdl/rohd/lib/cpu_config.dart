@@ -20,6 +20,7 @@ class CpuConfig {
   final bool enableSdramCache;
   final bool isPipelined;
   final int memReadLatency;
+  final int clkFreqMhz;
   final int cpuVersionMajor;
   final int cpuVersionMinor;
   final int cpuCaps2;
@@ -45,6 +46,7 @@ class CpuConfig {
     this.enableSdramCache = false,
     this.isPipelined = true,
     this.memReadLatency = 2,
+    this.clkFreqMhz = 48,
     this.cpuVersionMajor = MiniRISC4Constants.cpuVersionMajor,
     this.cpuVersionMinor = MiniRISC4Constants.cpuVersionMinor,
     this.cpuCaps2 = 0,

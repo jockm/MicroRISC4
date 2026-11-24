@@ -23,6 +23,8 @@ void main(List<String> args) async {
   int? sdramInitWait;
   var clkFreqMhz = 48;
   int? resetHoldBits;
+  var enableSpi = false;
+  var mathMode = 'none'; // none | core0 | all
 
   for (var i = 0; i < args.length; i++) {
     if (args[i] == '--hex' && i + 1 < args.length) {
@@ -52,8 +54,15 @@ void main(List<String> args) async {
       clkFreqMhz = int.tryParse(args[++i]) ?? clkFreqMhz;
     } else if (args[i] == '--reset-hold-bits' && i + 1 < args.length) {
       resetHoldBits = int.tryParse(args[++i]) ?? resetHoldBits;
+    } else if (args[i] == '--enable-spi') {
+      enableSpi = true;
+    } else if (args[i] == '--enable-math' && i + 1 < args.length) {
+      mathMode = args[++i].toLowerCase();
     }
   }
+  final enableCore0Math =
+      mathMode == '1' || mathMode == 'core0' || mathMode == 'all';
+  final enableWorkerMath = mathMode == 'all';
   // Keep POR & btn_pwr_n debounce ~10-15 ms across 48-96 MHz
   final effResetHoldBits = resetHoldBits ?? (clkFreqMhz >= 72 ? 20 : 19);
 
@@ -61,21 +70,26 @@ void main(List<String> args) async {
     'Building MiniRISC4 ULX3S-85F hardware representation in ROHD '
     '(clk=${clkFreqMhz}MHz, memWords=$memWords, nocCores=$nocCores'
     '${nocCores >= 2 ? ', workerMemWords=$workerMemWords, nocChannels=$nocChannels, nocFifoDepth=$nocFifoDepth' : ''}'
-    '${sdramCache ? ', sdramCache=on, cacheLines=$cacheLines' : ''})...',
+    '${sdramCache ? ', sdramCache=on, cacheLines=$cacheLines' : ''}'
+    '${enableSpi ? ', spi=on' : ''}'
+    '${enableCore0Math ? ', math=$mathMode' : ''})...',
   );
 
   final clk25 = Logic(name: 'clk_25mhz');
   final btnPwrN = Logic(name: 'btn_pwr_n');
   final ftdiTxd = Logic(name: 'ftdi_txd');
+  final sdD0 = enableSpi ? Logic(name: 'sd_d0') : null;
 
   final cfg = CpuConfig(
     coreId: 0,
     enableCpuid: nocCores >= 2,
     enableUart: true,
     enableCrossTraps: nocCores >= 2,
-    enableMathAccel: false,
+    enableMathAccel: enableCore0Math,
+    enableSpi: enableSpi,
     enableNoc: nocCores >= 2,
     enableSdramCache: sdramCache,
+    clkFreqMhz: clkFreqMhz,
     cacheLines: cacheLines,
     nocChannels: nocChannels,
     nocFifoDepth: nocFifoDepth,
@@ -87,9 +101,11 @@ void main(List<String> args) async {
     clk25mhz: clk25,
     btnPwrN: btnPwrN,
     ftdiTxd: ftdiTxd,
+    sdD0: sdD0,
     config: cfg,
     nocCores: nocCores,
     workerMemWords: workerMemWords,
+    enableWorkerMathAccel: enableWorkerMath,
     clkFreqMhz: clkFreqMhz,
     resetHoldBits: effResetHoldBits,
     sdramInitWaitCycles: sdramInitWait,

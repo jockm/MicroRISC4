@@ -17,6 +17,7 @@ class Ulx3sTop extends Module {
   late final CpuCore cpu;
   late final List<CpuCore> cores;
   late final bool hasSdram;
+  late final bool hasSpi;
   LogicNet? sdramDNet;
   Logic? sdramDqOutDebug;
   Logic? sdramDqOeDebug;
@@ -25,6 +26,7 @@ class Ulx3sTop extends Module {
     required Logic clk25mhz,
     required Logic btnPwrN,
     required Logic ftdiTxd,
+    Logic? sdD0,
     LogicNet? sdramD,
     CpuConfig config = const CpuConfig(
       coreId: 0,
@@ -37,6 +39,7 @@ class Ulx3sTop extends Module {
     ),
     int nocCores = 0,
     int workerMemWords = 2048,
+    bool enableWorkerMathAccel = false,
     int mboxTrapVec = 0x0E,
     int clkFreqMhz = 48,
     int resetHoldBits = 2,
@@ -103,34 +106,40 @@ class Ulx3sTop extends Module {
     final useSdramCache = config.enableSdramCache &&
         (config.memWords < 65536 || (useNoc && workerMemWords < 65536));
     hasSdram = useSdramCache;
+    hasSpi = config.enableSpi;
 
-    final effectiveConfig = useNoc
-        ? CpuConfig(
-            coreId: config.coreId,
-            enableCpuid: true,
-            enableCpuInfo: config.enableCpuInfo,
-            enableUart: config.enableUart,
-            enableCrossTraps: config.enableCrossTraps,
-            enableEpc: config.enableEpc,
-            enableShadowRegs: config.enableShadowRegs,
-            enableMathAccel: config.enableMathAccel,
-            enableFpu: config.enableFpu,
-            enableSpi: config.enableSpi,
-            enableNoc: true,
-            enableSdramCache: useSdramCache && config.memWords < 65536,
-            isPipelined: config.isPipelined,
-            memReadLatency: config.memReadLatency,
-            cpuVersionMajor: config.cpuVersionMajor,
-            cpuVersionMinor: config.cpuVersionMinor,
-            cpuCaps2: config.cpuCaps2,
-            cacheLines: config.cacheLines,
-            cacheLineWords: config.cacheLineWords,
-            nocChannels: config.nocChannels,
-            nocFifoDepth: config.nocFifoDepth,
-            trapTableBase: config.trapTableBase,
-            memWords: config.memWords,
-          )
-        : config;
+    final Logic? sdMisoIn =
+        hasSpi ? addInput('sd_d0', sdD0 ?? Const(1)) : null;
+    final Logic? sdClkOut = hasSpi ? addOutput('sd_clk') : null;
+    final Logic? sdCmdOut = hasSpi ? addOutput('sd_cmd') : null;
+    final Logic? sdCsNOut = hasSpi ? addOutput('sd_d3') : null;
+
+    final effectiveConfig = CpuConfig(
+      coreId: config.coreId,
+      enableCpuid: useNoc ? true : config.enableCpuid,
+      enableCpuInfo: config.enableCpuInfo,
+      enableUart: config.enableUart,
+      enableCrossTraps: config.enableCrossTraps,
+      enableEpc: config.enableEpc,
+      enableShadowRegs: config.enableShadowRegs,
+      enableMathAccel: config.enableMathAccel,
+      enableFpu: config.enableFpu,
+      enableSpi: config.enableSpi,
+      enableNoc: useNoc ? true : config.enableNoc,
+      enableSdramCache: useSdramCache && config.memWords < 65536,
+      isPipelined: config.isPipelined,
+      memReadLatency: config.memReadLatency,
+      clkFreqMhz: clkFreqMhz,
+      cpuVersionMajor: config.cpuVersionMajor,
+      cpuVersionMinor: config.cpuVersionMinor,
+      cpuCaps2: config.cpuCaps2,
+      cacheLines: config.cacheLines,
+      cacheLineWords: config.cacheLineWords,
+      nocChannels: config.nocChannels,
+      nocFifoDepth: config.nocFifoDepth,
+      trapTableBase: config.trapTableBase,
+      memWords: config.memWords,
+    );
 
     final cpuRxData = Logic(name: 'cpu_rx_data', width: 16);
     final cpuTxStatus = Logic(name: 'cpu_tx_status', width: 16);
@@ -185,6 +194,7 @@ class Ulx3sTop extends Module {
       extTrapNum: (useNoc && effectiveConfig.enableCrossTraps)
           ? mboxTrapVecConst
           : null,
+      spiMiso: hasSpi ? sdMisoIn : null,
       nocRdata: useNoc ? nocRdataPerCore[0] : null,
       icReqReady: core0ExtCache ? icReqReadyPerCore[0] : null,
       icRespValid: core0ExtCache ? icRespValidPerCore[0] : null,
@@ -197,6 +207,12 @@ class Ulx3sTop extends Module {
       initialMemory: initialMemory,
       name: 'cpu_core',
     );
+
+    if (hasSpi) {
+      sdClkOut! <= cpu.output('spi_sck');
+      sdCmdOut! <= cpu.output('spi_mosi');
+      sdCsNOut! <= cpu.output('spi_cs_n');
+    }
 
     final instantiatedCores = <CpuCore>[cpu];
 
@@ -212,13 +228,14 @@ class Ulx3sTop extends Module {
           enableCrossTraps: effectiveConfig.enableCrossTraps,
           enableEpc: effectiveConfig.enableEpc,
           enableShadowRegs: effectiveConfig.enableShadowRegs,
-          enableMathAccel: effectiveConfig.enableMathAccel,
+          enableMathAccel: enableWorkerMathAccel,
           enableFpu: effectiveConfig.enableFpu,
           enableSpi: false,
           enableNoc: true,
           enableSdramCache: workerExtCache,
           isPipelined: effectiveConfig.isPipelined,
           memReadLatency: effectiveConfig.memReadLatency,
+          clkFreqMhz: clkFreqMhz,
           cpuVersionMajor: effectiveConfig.cpuVersionMajor,
           cpuVersionMinor: effectiveConfig.cpuVersionMinor,
           cpuCaps2: effectiveConfig.cpuCaps2,
@@ -503,4 +520,7 @@ class Ulx3sTop extends Module {
   Logic get sdramBa => output('sdram_ba');
   Logic get sdramA => output('sdram_a');
   Logic get sdramDqm => output('sdram_dqm');
+  Logic get sdClk => output('sd_clk');
+  Logic get sdCmd => output('sd_cmd');
+  Logic get sdD3 => output('sd_d3');
 }

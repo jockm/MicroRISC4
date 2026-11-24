@@ -11,11 +11,23 @@ class SpiMaster extends Module {
   static const int addrStat = 0x0019;
   static const int addrData = 0x001A;
 
-  /// Half-period divider for slow clock (24 MHz / (2 * (29 + 1)) = 400 kHz).
+  /// Half-period divider for slow clock (<= 400 kHz for SD init).
   final int slowHalfDiv;
 
-  /// Half-period divider for fast clock (24 MHz / (2 * (0 + 1)) = 12 MHz).
+  /// Half-period divider for fast clock (<= 12 MHz for SDHC data transfers).
   final int fastHalfDiv;
+
+  /// Compute 8-bit half-period divider targeting <= 400 kHz SD init clock.
+  static int slowHalfDivForMhz(int clkFreqMhz) {
+    final div = ((clkFreqMhz * 1000) / (2 * 400)).ceil() - 1;
+    return div.clamp(1, 255);
+  }
+
+  /// Compute 8-bit half-period divider targeting <= 12 MHz SD fast clock.
+  static int fastHalfDivForMhz(int clkFreqMhz) {
+    final div = (clkFreqMhz / (2 * 12)).ceil() - 1;
+    return div.clamp(0, 255);
+  }
 
   SpiMaster({
     required Logic clk,
@@ -48,10 +60,12 @@ class SpiMaster extends Module {
 
     final reset = ~rstN;
 
-    // Address decode
-    final isCtrl = portBAddr.eq(Const(addrCtrl, width: 16));
-    final isStat = portBAddr.eq(Const(addrStat, width: 16));
-    final isData = portBAddr.eq(Const(addrData, width: 16));
+    // Fast 2-LUT4 page address decode (0x0018..0x001A)
+    final isPage = portBAddr.slice(15, 6).eq(Const(0, width: 10));
+    final off = portBAddr.slice(5, 0);
+    final isCtrl = isPage & off.eq(Const(addrCtrl, width: 6));
+    final isStat = isPage & off.eq(Const(addrStat, width: 6));
+    final isData = isPage & off.eq(Const(addrData, width: 6));
     match <= isCtrl | isStat | isData;
 
     final wrCtrl = portBEn & portBWe & isCtrl;

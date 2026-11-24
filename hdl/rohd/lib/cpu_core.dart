@@ -243,6 +243,8 @@ class CpuCore extends Module {
         portBWe: portBWe,
         portBEn: portBEn,
         spiMiso: spiMisoIn,
+        slowHalfDiv: SpiMaster.slowHalfDivForMhz(config.clkFreqMhz),
+        fastHalfDiv: SpiMaster.fastHalfDivForMhz(config.clkFreqMhz),
       );
       spiRdata = spiUnit.rdata;
       spiMatch = spiUnit.match;

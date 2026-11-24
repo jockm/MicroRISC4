@@ -154,17 +154,29 @@ When `ENABLE_MATH_ACCEL` is enabled on a core, addresses `0x0010`–`0x0016` dec
 
 | Opcode | Mnemonic | Operation | Description | Latency |
 | :---: | :---: | :--- | :--- | :---: |
-| `0x0` | `MUL` | $A \times B \pmod{2^{32}}$ | Lower 32 bits of product (Unsigned/Signed identical) | 1 cycle |
-| `0x1` | `MULH` | $\lfloor (A_{\text{signed}} \times B_{\text{signed}}) / 2^{32} \rfloor$ | Upper 32 bits of signed product | 1 cycle |
-| `0x2` | `MULHU` | $\lfloor (A_{\text{unsigned}} \times B_{\text{unsigned}}) / 2^{32} \rfloor$ | Upper 32 bits of unsigned product | 1 cycle |
-| `0x3` | `MULHSU` | $\lfloor (A_{\text{signed}} \times B_{\text{unsigned}}) / 2^{32} \rfloor$ | Upper 32 bits of signed $\times$ unsigned | 1 cycle |
-| `0x4` | `DIVU` | $\lfloor A_{\text{unsigned}} / B_{\text{unsigned}} \rfloor$ | 32-bit unsigned quotient | 32 cycles |
-| `0x5` | `REMU` | $A_{\text{unsigned}} \pmod{B_{\text{unsigned}}}$ | 32-bit unsigned remainder | 32 cycles |
-| `0x6` | `DIV` | $\lfloor A_{\text{signed}} / B_{\text{signed}} \rfloor$ | 32-bit signed quotient (handles two's-complement signs) | 34 cycles |
+| `0x0` | `MUL` | $A \times B \pmod{2^{32}}$ | Lower 32 bits of product (Unsigned/Signed identical, 1× `MULT18X18D`) | 6 cycles |
+| `0x1` | `MULH` | $\lfloor (A_{\text{signed}} \times B_{\text{signed}}) / 2^{32} \rfloor$ | Upper 32 bits of signed product (1× `MULT18X18D`) | 6 cycles |
+| `0x2` | `MULHU` | $\lfloor (A_{\text{unsigned}} \times B_{\text{unsigned}}) / 2^{32} \rfloor$ | Upper 32 bits of unsigned product (1× `MULT18X18D`) | 6 cycles |
+| `0x3` | `MULHSU` | $\lfloor (A_{\text{signed}} \times B_{\text{unsigned}}) / 2^{32} \rfloor$ | Upper 32 bits of signed $\times$ unsigned (1× `MULT18X18D`) | 6 cycles |
+| `0x4` | `DIVU` | $\lfloor A_{\text{unsigned}} / B_{\text{unsigned}} \rfloor$ | 32-bit unsigned quotient (`B==0` → `0xFFFFFFFF`, `STAT[1]=1`) | 34 cycles |
+| `0x5` | `REMU` | $A_{\text{unsigned}} \pmod{B_{\text{unsigned}}}$ | 32-bit unsigned remainder (`B==0` → `A`, `STAT[1]=1`) | 34 cycles |
+| `0x6` | `DIV` | $\lfloor A_{\text{signed}} / B_{\text{signed}} \rfloor$ | 32-bit signed quotient (trunc toward 0; `-2^31/-1` → `-2^31`) | 34 cycles |
 | `0x7` | `REM` | $A_{\text{signed}} \pmod{B_{\text{signed}}}$ | 32-bit signed remainder (sign matches dividend $A$) | 34 cycles |
 | `0x8` | `SLL` | $A \ll (B \ \& \ \text{0x1F})$ | 32-bit Logical Shift Left by $0\dots31$ bits | 1 cycle |
 | `0x9` | `SRL` | $A \gg (B \ \& \ \text{0x1F})$ | 32-bit Logical Shift Right by $0\dots31$ bits | 1 cycle |
 | `0xA` | `SRA` | $A \ggg (B \ \& \ \text{0x1F})$ | 32-bit Arithmetic Shift Right by $0\dots31$ bits | 1 cycle |
+
+---
+
+### SPI Mode 0 Master Interface — microSD Slot (`0x0018`–`0x001A`)
+
+When `enableSpi` is enabled on Core 0 (`ULX3S_ENABLE_SPI=1`, advertised via `CAP_SPI = 0x0020` in `CPU_CAPS`), addresses `0x0018`–`0x001A` drive the ULX3S-85F onboard microSD slot (`sd_clk`=`H2`, `sd_cmd`=`J1`, `sd_d0`=`J3`, `sd_d3`=`K2`) with clock dividers auto-scaled from `clkFreqMhz` (`<= 400 kHz` slow init clock, `<= 12 MHz` fast transfer clock):
+
+| Address | Register | Access | Description |
+| :---: | :--- | :---: | :--- |
+| `0x0018` | `SPI_CTRL` | R/W | `[0]` `cs_n` (reset `1` = deselected), `[1]` `fast_clk` (`0` = 400 kHz, `1` = 12 MHz) |
+| `0x0019` | `SPI_STAT` | R | `[0]` `busy` (`1` while 8-bit shift is in progress, `0` when idle) |
+| `0x001A` | `SPI_DATA` | R/W | **Write**: starts full-duplex 8-bit SPI Mode 0 transfer (`wdata[7:0]`).<br>**Read**: last received byte (`rx[7:0]`). |
 
 ---
 

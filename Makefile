@@ -51,6 +51,8 @@ ULX3S_NOC_FIFO_DEPTH   ?= 16
 ULX3S_DEVICE           ?= 85k
 ULX3S_PACKAGE          ?= CABGA381
 ULX3S_CLOCK_MHZ        ?= 48
+ULX3S_ENABLE_SPI       ?= 0
+ULX3S_ENABLE_MATH      ?= 0
 ULX3S_LPF              := $(ROHD_DIR)/boards/ulx3s/ulx3s_v20.lpf
 ULX3S_TOP              := Ulx3sTop
 ULX3S_SV               := ulx3s_top_rohd.sv
@@ -205,6 +207,8 @@ generate-ulx3s: setup | $(ULX3S_BLD)
 		--noc-channels "$(ULX3S_NOC_CHANNELS)" \
 		--noc-fifo-depth "$(ULX3S_NOC_FIFO_DEPTH)" \
 		$(if $(filter 1,$(ULX3S_SDRAM_CACHE)),--sdram-cache --cache-lines "$(ULX3S_CACHE_LINES)",) \
+		$(if $(filter 1,$(ULX3S_ENABLE_SPI)),--enable-spi,) \
+		$(if $(filter-out 0 none,$(ULX3S_ENABLE_MATH)),--enable-math "$(ULX3S_ENABLE_MATH)",) \
 		$(if $(ULX3S_WORKER_PROGRAM),--worker-hex worker_image.hex,)
 	@$(DOT_CLEAN_CMD)
 

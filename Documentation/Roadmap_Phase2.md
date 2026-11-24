@@ -59,9 +59,13 @@ Before writing RTL or compiler code, Phase 2 targets the **four measured bottlen
     - **1-Core SDRAM:** `2026 LUT4`, `986 TRELLIS_FF`, `16 DPR16X4`, `4 DP16KD`, `17 IOLOGIC` — **`105.39 MHz`** (`cpu_core` internal path)
     - **4-Core SDRAM:** `8590 LUT4`, `3484 TRELLIS_FF`, `80 DPR16X4`, `16 DP16KD`, `17 IOLOGIC` — **`102.52 MHz`** (**+11.10 MHz** vs `91.42 MHz` baseline; `cpu_worker_1` internal path)
     - **8-Core SDRAM:** `16664 LUT4`, `6680 TRELLIS_FF`, `160 DPR16X4`, `32 DP16KD`, `17 IOLOGIC` — **`88.46 MHz`** at relaxed `48 MHz` PLL constraint (0% arbiter nets on critical path; tightens under Track A.2 higher PLL constraint)
-- [ ] **A.2 Higher ULX3S Operating Frequency (`48 MHz` → `72–96 MHz`)**
-  - Parameterize `Ecp5Pll` + UART baud divisor (`ULX3S_CLOCK_MHZ=48|72|96`) and verify `SdramController` timing parameters (`tRCD`, `tRP`, `tRFC`, `tWR`, `CL=2`/`CL=3`, `tREFI`) at the higher frequency.
-  - Hardware-verify the 4-core continuous soak test on ULX3S-85F at the higher clock with `0` errors.
+- [x] **A.2 Higher ULX3S Operating Frequency (`48 MHz` → `72–96 MHz`)**
+  - Parameterized `Ecp5Pll` (`48 / 60 / 72 / 84 / 96 MHz` exact 3.000 Mbaud clocks via `EHXPLLL` `CLKOS` + phase-shifted `CLKOS2` `sdram_clk` at `270°–306°` via `Ecp5OddrClkFwd`), auto-scaled `Uart` divisor (`16/20/24/28/32`), `SdramController` timing (`tRCD`/`tRP`/`tRFC`/`tWR`/`tREFI`/`extraReadPipeCycles`), POR debounce, `--clk-mhz`, and `ULX3S_CLOCK_MHZ`.
+  - Verified **30/30 `make test-rohd` PASS**, physically-timed Icarus Verilog 4-core stress **PASS** across `72`, `84`, and `96 MHz` (both slow `tODDR=2.6ns/tAC=5.4ns` and fast `tODDR=1.6ns/tAC=2.7ns` corners, `0` SDRAM/UART errors), and **ULX3S-85F hardware-verified at `96 MHz` (`0` errors)**:
+    - **4-Core SDRAM @ `72 MHz`:** `8656 LUT4`, `3489 TRELLIS_FF`, `80 DPR16X4`, `16 DP16KD`, `17 IOLOGIC` — **`99.15 MHz`** (PASS)
+    - **4-Core SDRAM @ `84 MHz`:** `8484 LUT4`, `3489 TRELLIS_FF`, `80 DPR16X4`, `16 DP16KD`, `17 IOLOGIC` — **`94.78 MHz`** (PASS)
+    - **8-Core SDRAM @ `84 MHz`:** `16710 LUT4`, `6685 TRELLIS_FF`, `160 DPR16X4`, `32 DP16KD`, `17 IOLOGIC` — **`92.97 MHz`** (PASS)
+    - **4-Core SDRAM @ `96 MHz`:** `8442 LUT4`, `3489 TRELLIS_FF`, `80 DPR16X4`, `16 DP16KD`, `17 IOLOGIC` — **`100.79 MHz`** (PASS, **ULX3S-85F hardware soak PASS @ `96 MHz`, `0` errors**)
 - [ ] **A.3 ULX3S microSD SPI Wiring + Hardware Math Accelerator Bring-Up**
   - Wire `SpiMaster` (`0x0018`–`0x001A`) to the ULX3S-85F onboard microSD slot in `ulx3s_v20.lpf` and `ulx3s_top.dart` (`ULX3S_ENABLE_SPI=1`) and hardware-verify SDHC `CMD0`/`CMD8`/`CMD55`/`ACMD41`/`CMD17` sector read.
   - Enable & hardware-verify `MathAccelerator` (`0x0010`–`0x0016`, ECP5 `MULT18X18D` DSP slices) on ULX3S-85F (`ULX3S_ENABLE_MATH=1`).

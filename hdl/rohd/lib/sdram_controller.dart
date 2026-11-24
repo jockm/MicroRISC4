@@ -59,6 +59,7 @@ class SdramController extends Module {
   final int initWaitCycles;
   final int refreshCycles;
   final bool useIobInputReg;
+  final int extraReadPipeCycles;
 
   static const int _stWait = 0;
   static const int _stInitPre = 1;
@@ -102,6 +103,7 @@ class SdramController extends Module {
     this.casLatency = 2,
     this.burstLen = 8,
     this.useIobInputReg = true,
+    this.extraReadPipeCycles = 0,
     int? initWaitCycles,
     int? refreshCycles,
     super.name = 'sdram_controller',
@@ -133,12 +135,15 @@ class SdramController extends Module {
     final sampledDqIn = useIobInputReg
         ? PosedgeIobReg16(clk: clk, d: sdramDqIn, name: '${name}_dq_iob').q
         : sdramDqIn;
-    // JEDEC CL timing with 180-deg phase-shifted sdram_clk (S_k = P_k + 0.5T):
-    //   P0: READ issued; S0 (T0): SDRAM latches READ
-    //   CL=2 -> S1 (T1) drives D0 after tAC (~5.4ns), valid through P2..S2+tOH
-    //   Direct capture samples D0 at P2 (casTimer = CL-1 = 1);
-    //   1-stage IOB input register captures D0 at P2 and latches rdata at P3 (casTimer = CL = 2).
-    final effCasWait = useIobInputReg ? casLatency : (casLatency - 1);
+    // JEDEC CL timing with phase-shifted sdram_clk:
+    // - At 48 MHz (180° inverted sdram_clk, extraReadPipeCycles=0):
+    //     P0: READ; S0: SDRAM latches READ; S1+tAC drives D0 valid before P2;
+    //     IOB reg captures D0 at P2 and SdramController latches rdata at P3 (effCasWait = CL = 2).
+    // - At 60–96 MHz (270°–306° PLL CLKOS2 sdram_clk, extraReadPipeCycles=1):
+    //     t_ODDR + t_AC (~7–8 ns) pushes D0 arrival past P2, cleanly centered
+    //     for P3 IOB capture and P4 rdata latch (effCasWait = CL + 1 = 3).
+    final effCasWait =
+        (useIobInputReg ? casLatency : (casLatency - 1)) + extraReadPipeCycles;
 
     final cmdReady = addOutput('cmd_ready');
     final busy = addOutput('busy');

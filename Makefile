@@ -94,10 +94,10 @@ help:
 	@echo "  make debug            - Run mr4sim.py in interactive m4db debugger mode"
 	@echo "  make generate         - Alias for generate-ulx3s"
 	@echo "  make generate-ulx3s   - Assemble ULX3S_PROGRAM and generate SV in $(ULX3S_BLD)"
-	@echo "                          Options: ULX3S_SDRAM_CACHE=0|1 ULX3S_CACHE_LINES=64"
-	@echo "                                   ULX3S_NOC_CORES=0|2|3|4... ULX3S_MEM_WORDS=65536|2048"
-	@echo "                                   ULX3S_WORKER_MEM_WORDS=2048 ULX3S_WORKER_PROGRAM=..."
-	@echo "                                   ULX3S_NOC_FIFO_DEPTH=16"
+	@echo "                          Options: ULX3S_CLOCK_MHZ=48|60|72|84|96 ULX3S_SDRAM_CACHE=0|1"
+	@echo "                                   ULX3S_CACHE_LINES=64 ULX3S_NOC_CORES=0|2|3|4..."
+	@echo "                                   ULX3S_MEM_WORDS=65536|2048 ULX3S_WORKER_MEM_WORDS=2048"
+	@echo "                                   ULX3S_WORKER_PROGRAM=... ULX3S_NOC_FIFO_DEPTH=16"
 	@echo "  make ulx3s-bit        - Synthesize, place & route, and pack $(ULX3S_BIT)"
 	@echo "  make ulx3s-timing     - Show Fmax and critical path from $(ULX3S_BLD)/nextpnr.log"
 	@echo "  make ulx3s-prog       - Load $(ULX3S_BIT) into ULX3S SRAM ($(OPENFPGALOADER))"
@@ -198,6 +198,7 @@ generate-ulx3s: setup | $(ULX3S_BLD)
 	@cd $(ROHD_DIR) && $(DART) run bin/generate.dart \
 		--hex system_image.hex \
 		--out "$(CURDIR)/$(ULX3S_BLD)" \
+		--clk-mhz "$(ULX3S_CLOCK_MHZ)" \
 		--mem-words "$(ULX3S_MEM_WORDS)" \
 		--worker-mem-words "$(ULX3S_WORKER_MEM_WORDS)" \
 		--noc-cores "$(ULX3S_NOC_CORES)" \

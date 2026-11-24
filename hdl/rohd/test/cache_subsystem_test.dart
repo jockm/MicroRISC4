@@ -829,5 +829,40 @@ void main() {
       Simulator.endSimulation();
       await Simulator.simulationEnded;
     });
+
+    test('Ulx3sTop parameterized PLL/UART/SDRAM synthesis across 48/60/72/84/96 MHz', () async {
+      for (final mhz in [48, 60, 72, 84, 96]) {
+        await Simulator.reset();
+        final clk = Logic(name: 'clk25_$mhz');
+        final btnPwrN = Logic(name: 'btn_$mhz');
+        final ftdiTxd = Logic(name: 'rx_$mhz');
+        final top = Ulx3sTop(
+          clk25mhz: clk,
+          btnPwrN: btnPwrN,
+          ftdiTxd: ftdiTxd,
+          clkFreqMhz: mhz,
+          config: const CpuConfig(
+            coreId: 0,
+            enableUart: true,
+            enableSdramCache: true,
+            cacheLines: 32,
+            memWords: 2048,
+          ),
+          initHexFile: null,
+          initialMemory: const {0x0100: 0x0000},
+        );
+        await top.build();
+        final sv = top.generateSynth();
+        expect(sv, contains('FREQUENCY_PIN_CLKOS="$mhz"'));
+        if (mhz > 48) {
+          expect(sv, contains('FREQUENCY_PIN_CLKOS2="$mhz"'));
+          expect(sv, contains('.CLKOS2_ENABLE("ENABLED")'));
+          expect(sv, contains('.D0(1\'b1)')); // Ecp5OddrClkFwd
+        } else {
+          expect(sv, contains('.CLKOS2_ENABLE("DISABLED")'));
+          expect(sv, contains('.D0(1\'b0)')); // Ecp5OddrClkInv
+        }
+      }
+    });
   });
 }

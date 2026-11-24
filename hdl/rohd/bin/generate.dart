@@ -21,7 +21,8 @@ void main(List<String> args) async {
   var sdramCache = false;
   var cacheLines = 64;
   int? sdramInitWait;
-  var resetHoldBits = 19; // ~10.9 ms POR & btn_pwr_n debounce at 48 MHz
+  var clkFreqMhz = 48;
+  int? resetHoldBits;
 
   for (var i = 0; i < args.length; i++) {
     if (args[i] == '--hex' && i + 1 < args.length) {
@@ -47,14 +48,18 @@ void main(List<String> args) async {
       cacheLines = int.tryParse(args[++i]) ?? cacheLines;
     } else if (args[i] == '--sdram-init-wait' && i + 1 < args.length) {
       sdramInitWait = int.tryParse(args[++i]);
+    } else if (args[i] == '--clk-mhz' && i + 1 < args.length) {
+      clkFreqMhz = int.tryParse(args[++i]) ?? clkFreqMhz;
     } else if (args[i] == '--reset-hold-bits' && i + 1 < args.length) {
       resetHoldBits = int.tryParse(args[++i]) ?? resetHoldBits;
     }
   }
+  // Keep POR & btn_pwr_n debounce ~10-15 ms across 48-96 MHz
+  final effResetHoldBits = resetHoldBits ?? (clkFreqMhz >= 72 ? 20 : 19);
 
   print(
     'Building MiniRISC4 ULX3S-85F hardware representation in ROHD '
-    '(memWords=$memWords, nocCores=$nocCores'
+    '(clk=${clkFreqMhz}MHz, memWords=$memWords, nocCores=$nocCores'
     '${nocCores >= 2 ? ', workerMemWords=$workerMemWords, nocChannels=$nocChannels, nocFifoDepth=$nocFifoDepth' : ''}'
     '${sdramCache ? ', sdramCache=on, cacheLines=$cacheLines' : ''})...',
   );
@@ -85,7 +90,8 @@ void main(List<String> args) async {
     config: cfg,
     nocCores: nocCores,
     workerMemWords: workerMemWords,
-    resetHoldBits: resetHoldBits,
+    clkFreqMhz: clkFreqMhz,
+    resetHoldBits: effResetHoldBits,
     sdramInitWaitCycles: sdramInitWait,
     initHexFile: hexPath,
     workerInitHexFile: workerHexPath,

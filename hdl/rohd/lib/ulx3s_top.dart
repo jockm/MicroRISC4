@@ -38,6 +38,7 @@ class Ulx3sTop extends Module {
     int nocCores = 0,
     int workerMemWords = 2048,
     int mboxTrapVec = 0x0E,
+    int clkFreqMhz = 48,
     int resetHoldBits = 2,
     int? sdramInitWaitCycles,
     int? sdramRefreshCycles,
@@ -58,9 +59,12 @@ class Ulx3sTop extends Module {
     // Keep onboard ESP32 out of bootloader/reset interference
     wifiGpio0 <= Const(1);
 
-    // 25 MHz -> 48 MHz PLL for exact 3 Mbaud UART (divisor = 16)
-    final pll = Ecp5Pll25To24(clkIn: clk25mhz);
-    final clk48mhz = pll.clkOut;
+    // 25 MHz -> clkFreqMhz PLL (48/60/72/84/96 MHz) for exact 3 Mbaud UART
+    // (uartDivisor = clkFreqMhz / 3, 4x RX oversampling = uartDivisor / 4)
+    final pll = Ecp5Pll(clkIn: clk25mhz, clkFreqMhz: clkFreqMhz);
+    final clkSys = pll.clkOut;
+    final uartDivisor = clkFreqMhz ~/ 3;
+    final sdramExtraReadPipeCycles = clkFreqMhz > 48 ? 1 : 0;
 
     // 2-FF synchronizer + power-on / button-debounce reset hold counter.
     // Raw async input (btnPwrN & pll.locked) only feeds rstSync0 so the
@@ -72,7 +76,7 @@ class Ulx3sTop extends Module {
     final sysRstN = Logic(name: 'sys_rst_n');
     final rstHoldMax = Const((1 << resetHoldBits) - 1, width: resetHoldBits);
 
-    Sequential(clk48mhz, [
+    Sequential(clkSys, [
       rstSync0 < rawRstN,
       rstSync1 < rstSync0,
       If(~rstSync1, then: [
@@ -163,7 +167,7 @@ class Ulx3sTop extends Module {
     final core0ExtCache =
         effectiveConfig.enableSdramCache && effectiveConfig.memWords < 65536;
     cpu = CpuCore(
-      clk: clk48mhz,
+      clk: clkSys,
       rstN: sysRstN,
       mmioRxData: cpuRxData,
       mmioTxStatus: cpuTxStatus,
@@ -215,7 +219,7 @@ class Ulx3sTop extends Module {
                 : null;
         instantiatedCores.add(
           CpuCore(
-            clk: clk48mhz,
+            clk: clkSys,
             rstN: sysRstN,
             extTrapReq: effectiveConfig.enableCrossTraps
                 ? coreExtTrapReq[c]
@@ -286,7 +290,7 @@ class Ulx3sTop extends Module {
       }
 
       final cacheCluster = SdramCacheCluster(
-        clk: clk48mhz,
+        clk: clkSys,
         rstN: sysRstN,
         icReqValid: icReqValidList,
         icReqAddr: icReqAddrList,
@@ -298,8 +302,9 @@ class Ulx3sTop extends Module {
         numCores: coreCount,
         numLines: effectiveConfig.cacheLines,
         lineWords: effectiveConfig.cacheLineWords,
-        clkFreqMhz: 48,
+        clkFreqMhz: clkFreqMhz,
         casLatency: 2,
+        extraReadPipeCycles: sdramExtraReadPipeCycles,
         initWaitCycles: sdramInitWaitCycles,
         refreshCycles: sdramRefreshCycles,
         name: 'ulx3s_sdram_cluster',
@@ -314,9 +319,18 @@ class Ulx3sTop extends Module {
         dcRespDataPerCore[c] <= cacheCluster.output('dc_resp_data_$c');
       }
 
-      // Hardware ODDRX1F 180-degree phase-shifted SDRAM clock (zero fabric LUT4 skew)
-      final sdramOddr = Ecp5OddrClkInv(clkIn: clk48mhz, name: 'sdram_clk_oddr');
-      sdramClkOut <= sdramOddr.clkOut;
+      // Hardware ODDRX1F SDRAM clock forwarding (zero fabric LUT4 skew):
+      // - 48 MHz: proven 180° inverted ODDRX1F from clkSys
+      // - 60–96 MHz: non-inverting ODDRX1F from PLL CLKOS2 (270°–306° phase shift)
+      if (clkFreqMhz > 48) {
+        final sdramOddr =
+            Ecp5OddrClkFwd(clkIn: pll.clkSdram, name: 'sdram_clk_oddr');
+        sdramClkOut <= sdramOddr.clkOut;
+      } else {
+        final sdramOddr =
+            Ecp5OddrClkInv(clkIn: clkSys, name: 'sdram_clk_oddr');
+        sdramClkOut <= sdramOddr.clkOut;
+      }
       sdramCkeOut <= cacheCluster.output('sdram_cke');
       sdramCsnOut <= cacheCluster.output('sdram_cs_n');
       sdramRasnOut <= cacheCluster.output('sdram_ras_n');
@@ -346,12 +360,12 @@ class Ulx3sTop extends Module {
     }
 
     final uart = Uart(
-      clk: clk48mhz,
+      clk: clkSys,
       reset: uartReset,
       serialRxd: ftdiTxd,
       txd: cpu.txData,
       txdStrobe: cpu.txStrobe,
-      divisor: 16,
+      divisor: uartDivisor,
     );
 
     ftdiRxd <= uart.serialTxd;
@@ -380,7 +394,7 @@ class Ulx3sTop extends Module {
 
       final srvIdWidth = NocRouterNi.idWidthForCores(nocCores);
       final nocFabric = NocMultiCoreCacheWrapper(
-        clk: clk48mhz,
+        clk: clkSys,
         reset: uartReset,
         mmioAddr: mmioAddr,
         mmioWdata: mmioWdata,
@@ -407,7 +421,7 @@ class Ulx3sTop extends Module {
           final mboxReq = nocFabric.output('mboxTrapReq_$c');
           final inFlightQ = Logic(name: 'mbox_trap_inflight_$c');
           coreExtTrapReq[c] <= mboxReq & (~inFlightQ);
-          Sequential(clk48mhz, reset: uartReset, resetValues: {
+          Sequential(clkSys, reset: uartReset, resetValues: {
             inFlightQ: 0,
           }, [
             If(~mboxReq, then: [
@@ -434,7 +448,7 @@ class Ulx3sTop extends Module {
       led <= [pll.locked, cpu.debugPc.slice(6, 0)].swizzle();
     }
 
-    Sequential(clk48mhz, reset: uartReset, resetValues: {
+    Sequential(clkSys, reset: uartReset, resetValues: {
       uartRxValid: 0,
       uartRxdLatch: 0,
     }, [
@@ -448,7 +462,7 @@ class Ulx3sTop extends Module {
       ]),
     ]);
 
-    Sequential(clk48mhz, reset: uartReset, resetValues: {
+    Sequential(clkSys, reset: uartReset, resetValues: {
       txBusyLatch: 0,
     }, [
       If(cpu.txStrobe, then: [

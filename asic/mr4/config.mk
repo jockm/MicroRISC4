@@ -27,6 +27,12 @@ export SDC_FILE        = $(MR4_ASIC_DIR)/constraint.sdc
 # (verified by `make asic-check`). Uncomment to use Yosys-Slang instead:
 # export SYNTH_HDL_FRONTEND ?= slang
 
+# Allow the standalone 1024x16 (16,384-bit) flop-RAM dry run to synthesize into
+# real standard-cell flip-flops (ORFS defaults SYNTH_MEMORY_MAX_BITS to 4096).
+# For foundry tapeout, switch to ASIC_MEM_TARGET=sram with compiled SRAM macros
+# (or pass SYNTH_MOCK_LARGE_MEMORIES=1 for a quick CPU+ROM+UART timing check).
+export SYNTH_MEMORY_MAX_BITS ?= 16384
+
 # Floorplan & placement density defaults (conservative for clean first-pass routing)
 export CORE_UTILIZATION ?= 40
 export CORE_ASPECT_RATIO ?= 1

@@ -32,16 +32,23 @@ export CORE_MARGIN            ?= 2
 export PLACE_DENSITY_LB_ADDON ?= 0.15
 
 ifeq ($(PLATFORM),asap7)
-  export CLOCK_PERIOD     ?= 2000
-  export CORE_UTILIZATION  = 35
+  export CLOCK_PERIOD      ?= 2000
+  export CORE_UTILIZATION   = 35
+  # Keep upper metals clear above macro power pins for parent-chip PDN vias
+  export MAX_ROUTING_LAYER ?= M6
 else ifeq ($(PLATFORM),sky130hd)
-  export CLOCK_PERIOD     ?= 20.0
-  export CORE_UTILIZATION  = 35
+  export CLOCK_PERIOD      ?= 20.0
+  export CORE_UTILIZATION   = 35
+  export MAX_ROUTING_LAYER ?= met4
 else ifeq ($(PLATFORM),ihp-sg13g2)
-  export CLOCK_PERIOD     ?= 20.0
-  export CORE_UTILIZATION  = 35
+  export CLOCK_PERIOD      ?= 20.0
+  export CORE_UTILIZATION   = 35
+  export MAX_ROUTING_LAYER ?= Metal4
 else
-  export CLOCK_PERIOD     ?= 10.0
+  export CLOCK_PERIOD      ?= 10.0
+  # Nangate45 macro PDN exposes VDD/VSS pins on metal7; cap internal signal
+  # routing at metal6 so metal8/metal9 stay obstruction-free for top-level PDN!
+  export MAX_ROUTING_LAYER ?= metal6
 endif
 
 # Optional foundry SRAM macro hooks when ASIC_MEM_TARGET=sram

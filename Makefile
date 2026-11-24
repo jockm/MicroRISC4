@@ -253,7 +253,7 @@ ulx3s-bit: generate-ulx3s
 	@$(DOT_CLEAN_CMD)
 
 ulx3s-mr4os:
-	@$(MAKE) ulx3s-bit \
+	@"$(MAKE)" ulx3s-bit \
 		ULX3S_PROGRAM=mr4src/act4/os/os_main.a4 \
 		ULX3S_WORKER_PROGRAM=mr4src/asm/worker_stub.asm \
 		ULX3S_NOC_CORES=4 \
@@ -338,7 +338,7 @@ asic-check: generate-asic
 # Defaults to standalone flop-RAM mode (1024w) when running public-PDK dry runs
 # without foundry SRAM macros; override ASIC_MEM_TARGET=sram when supplying LEF/LIB.
 asic-flow:
-	@$(MAKE) generate-asic \
+	@"$(MAKE)" generate-asic \
 		ASIC_MEM_TARGET="$(if $(filter command line,$(origin ASIC_MEM_TARGET)),$(ASIC_MEM_TARGET),flop)" \
 		ASIC_MEM_WORDS="$(if $(filter command line,$(origin ASIC_MEM_WORDS)),$(ASIC_MEM_WORDS),1024)"
 	@mkdir -p "$(ASIC_BLD)/orfs"
@@ -364,7 +364,7 @@ asic-flow:
 			echo "[FAIL] ORFS Makefile not found at $(ORFS_ROOT)/flow/Makefile (set ORFS_ROOT or ORFS_USE_DOCKER=1)."; exit 1; \
 		fi; \
 		echo "==> Running native ORFS ($(ASIC_PLATFORM), target=$(ORFS_TARGET)) from $(ORFS_ROOT)..."; \
-		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec $(MAKE) -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" $(ORFS_TARGET)'; \
+		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" $(ORFS_TARGET)'; \
 	fi
 	@echo "==> ORFS outputs under: $(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/$(ASIC_TOP)/base/"
 	@$(DOT_CLEAN_CMD)

@@ -22,14 +22,14 @@ All addresses are **16-bit word addresses**. Each memory word packs two 8-bit in
 | **`0x000D`** | 1 word | **MMIO / RAM** | **Hardware `CPUID` Register**: Read-only register returning `CORE_ID`. Reverts to standard read/write scratchpad RAM if CPUID is disabled. |
 | **`0x000E`** | 1 word | **MMIO / RAM** | **UART RX Register**: Read: bit 15 = valid; bits `[7:0]` = data byte. Reading pops FIFO. Reverts to RAM if UART is disabled. |
 | **`0x000F`** | 1 word | **MMIO / RAM** | **UART TX Register**: Read: 0 = idle, 1 = busy. Write: bits `[7:0]` transmitted via serial port. Reverts to RAM if UART is disabled. |
-| **`0x0010` – `0x00FF`** | 240 words | RAM / optional MMIO | RAM except for optional Math MMIO at `0x0010`–`0x0016`, SPI MMIO at `0x0018`–`0x001A`, and NoC MMIO at `0x0020`–`0x0029`. |
-| **`0x0020` – `0x0029`** | 10 words | Optional NoC MMIO | NoC registers when enabled; otherwise ordinary RAM. These are separate from the unimplemented `0x000A`/`0x000B` stream FIFOs. |
+| **`0x0010` – `0x00FF`** | 240 words | RAM / optional MMIO | RAM except for optional Math MMIO at `0x0010`–`0x0016`, SPI MMIO at `0x0018`–`0x001A`, and Lean Ring NoC MMIO at `0x0020`–`0x002A`. |
+| **`0x0020` – `0x002A`** | 11 words | Optional NoC MMIO | Direct-addressed Lean Ring NoC registers when `enableNoc` is enabled; otherwise ordinary RAM. Separate from the simulator-only `0x000A`/`0x000B` stream FIFOs. |
 | **`0x0100` – `0x01FF`** | 256 words | **Direct Vectors** | **Hardware Direct Stride Vector Table**: 16 vectors spaced 16 words (32 bytes) apart. Reset / Trap 0 entry point is `0x0100`. |
 | **`0x0200` – `TOP - 1280`** | Variable | RAM | **Application Code, Heap, & Static Data Space**: High-level application code, compiled functions, and heap data. |
 | **`TOP - 1280` – `TOP - 256`** | 1,024 words | Stack Space | **Argument Stack (ASP)**: Full Descending stack (default initial base: `MEM_WORDS - 0x0501`). |
 | **`TOP - 255` – `TOP`** | 256 words | Stack Space | **Return Stack (RSP)**: Full Descending stack (default initial base: `MEM_WORDS - 0x0101`). |
 
-*Note: For a full 64K core (`MEM_WORDS = 65536`), `TOP = 0xFFFF`. Default initial `RSP = 0xFEFF` and `ASP = 0xFAFF`.*
+*Note: For a full 64K core (`MEM_WORDS = 65536`), `TOP = 0xFFFF`. Default initial `RSP = 0xFEFF` and `ASP = 0xFAFF`. When `enableSdramCache` is enabled with reduced local BRAM (e.g., `MEM_WORDS = 2048`), addresses `0x0000`–`0x07FF` hit local 2K BRAM directly while `0x0800`–`0xFFFF` transparently access the core's private 64K-word ULX3S SDRAM partition via hardware BRAM I-Cache and write-back D-Cache — keeping the full 64K-word software memory map unchanged.*
 
 ---
 
@@ -45,7 +45,7 @@ The address can be loaded and used with two instruction slots packed into one 16
     LD      R1, (R0)        ; Slot 1: R1 = PEEK16(0x000D)
 ```
 
-The NoC peripheral, when enabled, uses its separate MMIO range at `0x0020`–`0x0029`; it is not the `0x000A`/`0x000B` FIFO described in older software conventions.
+The Lean Ring NoC peripheral, when enabled, uses its MMIO range at `0x0020`–`0x002A` (direct-addressed via `NOC_DST_CORE` at `0x0021`, with a shared multi-word RX FIFO and priority Doorbell/MBOX); it is separate from the simulator-only `0x000A`/`0x000B` stream FIFOs.
 
 ---
 
@@ -55,24 +55,24 @@ The processor uses **Direct Stride Vectoring** with a fixed stride of **16 words
 
 When a trap occurs, hardware does not read an address pointer from memory. It computes the direct-stride target combinationally; the subsequent instruction fetch still follows the normal synchronous memory path:
 
-$$	ext{PC} \leftarrow 	ext{TRAP\_BASE} + (	ext{trap\_num} \ll 4)$$
+$$\text{PC} \leftarrow \text{TRAP\_BASE} + (\text{trap\_num} \ll 4)$$
 
 ```text
 Address Range      Vector        Architectural Role
 0x0100 - 0x010F    Trap 0        Reset / Cold Boot Entry Point
-0x0110 - 0x011F    Trap 1        Suggested software convention (not a built-in event)
-0x0120 - 0x012F    Trap 2        Suggested software convention (not a built-in event)
-0x0130 - 0x013F    Trap 3        Suggested software convention (not a built-in event)
-0x0140 - 0x014F    Trap 4        Suggested software convention (not a built-in event)
+0x0110 - 0x011F    Trap 1        Suggested software convention (syscalls / messages)
+0x0120 - 0x012F    Trap 2        Suggested software convention
+0x0130 - 0x013F    Trap 3        Suggested software convention
+0x0140 - 0x014F    Trap 4        Suggested software convention
 ...
-0x01E0 - 0x01EF    Trap 14       Suggested software convention (not a built-in event)
+0x01E0 - 0x01EF    Trap 14       NoC Doorbell/MBOX hardware trap (when enableNoc & enableCrossTraps)
 0x01F0 - 0x01FF    Trap 15       TRAP_ALIGN_FAULT (Slot 1 Word-Alignment Fault)
 ```
 
-Trap 0 is the reset entry and Trap 15 is used for the slot-1 alignment fault. Other vector meanings are software conventions; the core does not generate timer, cache-miss, FIFO, or fault events for them automatically.
+Trap 0 is the reset entry, Trap 14 is triggered by an incoming NoC Doorbell/MBOX flit (`NOC_MBOX_SEND`) when `enableNoc` and `enableCrossTraps` are enabled, and Trap 15 is the hardware slot-1 alignment fault. Other vector meanings are software conventions.
 
 ### Reset & Startup Constraint (`START_PROGRAM`)
-On power-on or hardware reset, the core loads $	ext{PC} \leftarrow 	ext{0x0100}$ and begins execution in Trap 0's slot.
+On power-on or hardware reset, the core loads $\text{PC} \leftarrow \text{0x0100}$ and begins execution in Trap 0's slot.
 
 > **CRITICAL ARCHITECTURAL CONSTRAINT**:  
 > Because Trap 0 occupies `0x0100`–`0x010F` (exactly 16 words / 32 bytes), **the `START_PROGRAM` initialization sequence MUST NOT exceed 16 words**. Any extended application initialization must be performed inside `_main` or after `0x0200`.
@@ -161,3 +161,22 @@ When `ENABLE_MATH_ACCEL` is enabled on a core, addresses `0x0010`–`0x0016` dec
 | `0x8` | `SLL` | $A \ll (B \ \& \ \text{0x1F})$ | 32-bit Logical Shift Left by $0\dots31$ bits | 1 cycle |
 | `0x9` | `SRL` | $A \gg (B \ \& \ \text{0x1F})$ | 32-bit Logical Shift Right by $0\dots31$ bits | 1 cycle |
 | `0xA` | `SRA` | $A \ggg (B \ \& \ \text{0x1F})$ | 32-bit Arithmetic Shift Right by $0\dots31$ bits | 1 cycle |
+
+---
+
+### Lean Ring NoC MMIO Interface (`0x0020`–`0x002A`)
+
+When `enableNoc` is enabled (`ULX3S_NOC_CORES=N`), each core connects to a lossless elastic ring via a direct-addressed Network Interface (`NocRouterNi`) with one shared multi-word RX FIFO (`nocFifoDepth`, default 16 words), a 1-entry 1.0 word/cycle TX flit buffer, and a 1-entry priority Doorbell/MBOX register (firing hardware Trap 14):
+
+| Address | Register | Access | Description |
+| :---: | :--- | :---: | :--- |
+| `0x0020` | `NOC_TX_DATA` | W | Send 16-bit data word to `NOC_DST_CORE` (requires `tx_ready=1` and valid `NOC_DST_CORE < numCores`). |
+| `0x0021` | `NOC_DST_CORE` | R/W | Target core ID for subsequent `NOC_TX_DATA` / `NOC_MBOX_SEND` writes (defaults to own `coreId` on reset). |
+| `0x0022` | `NOC_RX_DATA` | R | Pop oldest 16-bit word from shared RX FIFO (returns `0x0000` if empty). |
+| `0x0023` | `NOC_STAT` | R | `[0]` `rx_not_empty`, `[1]` `rx_full`, `[2]` `tx_ready`, `[3]` `tx_empty`, `[4]` `mbox_valid`, `[7:5]` `0`, `[15:8]` `rx_count`. |
+| `0x0024` | `NOC_RX_TRYR` | R | Non-blocking pop from shared RX FIFO (identical to `0x0022`; returns `0x0000` if empty). |
+| `0x0025` | `NOC_MBOX_SEND` | W | Send 16-bit priority Doorbell/MBOX word to `NOC_DST_CORE`, asserting hardware **Trap 14** on the receiver. |
+| `0x0026` | `NOC_MBOX_DATA` | R | Read and clear the pending incoming Doorbell/MBOX payload word (returns `0x0000` if empty). |
+| `0x0027` | `NOC_MBOX_SRC` | R | Source core ID of the most recent incoming Doorbell/MBOX flit. |
+| `0x0028`–`0x0029` | *(Reserved)* | R | Unused in the direct-addressed Lean Ring (former channel-table slots; reads `0x0000`). |
+| `0x002A` | `NOC_INFO` | R | Hardware topology discovery: `{fifoDepth[7:0], numCores[7:0]}`. |

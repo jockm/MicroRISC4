@@ -105,7 +105,7 @@ Compiled ACT4 binaries follow the unified MiniRISC4 memory architecture:
 | `0x000F` | 1 word | **UART_TX**: Read 0 = idle; write transmits byte. |
 | `0x0010` – `0x0016` | 7 words | Optional Math Accelerator MMIO; otherwise RAM. |
 | `0x0018` – `0x001A` | 3 words | Optional SPI MMIO; otherwise RAM. |
-| `0x0020` – `0x0029` | 10 words | Optional NoC MMIO; otherwise RAM. |
+| `0x0020` – `0x002A` | 11 words | Optional Lean Ring NoC MMIO (`NOC_TX_DATA`, `NOC_DST_CORE`, `NOC_RX_*`, `NOC_MBOX_*`, `NOC_INFO`); otherwise RAM. |
 | `0x0100` – `0x01FF` | 256 words | **Direct Stride Vector Table** (16 slots $\times$ 16 words). |
 | `0x0200` – `TOP` | Variable | **Program Space**: Compiled functions, static variables, heap, and stacks. |
 

@@ -479,8 +479,10 @@ class CpuCore extends Module {
     // exStall is identically 0 -> bypasses exStall off _memIdle and exTakeBranch!
     final exFireIdle = exValidQ & (~crossTrapTake);
 
-    // Pulse UART RX Pop on the exact cycle _memWait2 latches a valid rxData
-    rxPop <= (memIsWait2 & (~isExtPortB) & isMmioRx & rxData[15]);
+    // Pulse UART RX Pop on the exact cycle Port B latches a valid rxData
+    final memRxLatchState =
+        (config.memReadLatency == 1) ? memIsWait1 : memIsWait2;
+    rxPop <= (memRxLatchState & (~isExtPortB) & isMmioRx & rxData[15]);
 
     // External Cache Interfaces (strictly registered sources!)
     if (useExtCache) {

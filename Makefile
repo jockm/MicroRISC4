@@ -58,6 +58,21 @@ ULX3S_TOP              := Ulx3sTop
 ULX3S_SV               := ulx3s_top_rohd.sv
 ULX3S_BIT              := $(ULX3S_BLD)/ulx3s_top_rohd.bit
 
+# ASIC RTL-to-GDS generation & preflight settings (completely separate from ULX3S FPGA)
+ASIC_BLD               := $(BUILD_DIR)/asic
+ASIC_TOP               := mr4_asic_top
+ASIC_SV                := $(ASIC_BLD)/mr4_asic_top.sv
+ASIC_BOOT_PROGRAM      ?= mr4src/asm/asic_boot.asm
+ASIC_MEM_TARGET        ?= sram
+ASIC_MEM_WORDS         ?= 2048
+ASIC_MEM_LATENCY       ?= 1
+ASIC_BOOT_ROM_BASE     ?= 256
+ASIC_BOOT_ROM_WORDS    ?= 512
+ASIC_CLOCK_MHZ         ?= 100
+ASIC_UART_DIVISOR      ?= 868
+ASIC_ENABLE_SPI        ?= 0
+ASIC_ENABLE_MATH       ?= 0
+
 YOSYS          ?= yosys
 NEXTPNR_ECP5   ?= nextpnr-ecp5
 ECPPACK        ?= ecppack
@@ -73,6 +88,7 @@ SIM_PROGRAM    ?= $(BUILD_DIR)/monitor.bin
 .PHONY: all help setup analyze build apps \
         test test-rohd sim debug \
         generate generate-ulx3s ulx3s-bit ulx3s-mr4os ulx3s-timing ulx3s-prog ulx3s-flash ulx3s-term \
+        generate-asic asic-check \
         dot-clean clean
 
 # ------------------------------------------------------------------------------
@@ -266,6 +282,48 @@ ulx3s-term:
 		echo "[FAIL] No USB serial port found: connect the ULX3S, or pass ULX3S_PORT=/dev/..."; exit 1; \
 	fi
 	@$(PYTHON) $(ROHD_DIR)/boards/ulx3s/ulx3s_term.py "$(ULX3S_PORT)" $(ULX3S_BAUD)
+
+# ------------------------------------------------------------------------------
+# ASIC RTL Generation & Structural Preflight (Road to OpenROAD, Track D.2)
+# ------------------------------------------------------------------------------
+
+$(ASIC_BLD):
+	mkdir -p $(ASIC_BLD)
+
+generate-asic: setup | $(ASIC_BLD)
+	@echo "==> Assembling ASIC Boot ROM ($(ASIC_BOOT_PROGRAM)) -> $(ASIC_BLD)/boot_rom.hex..."
+	@case "$(ASIC_BOOT_PROGRAM)" in \
+		*.a4) \
+			$(ACT4C) -I "$(dir $(ASIC_BOOT_PROGRAM))" -I $(LIB_DIR) "$(ASIC_BOOT_PROGRAM)" -o "$(ASIC_BLD)/boot_rom.asm" && \
+			$(MR4ASM) -I $(LIB_DIR) "$(ASIC_BLD)/boot_rom.asm" --hex -o "$(ASIC_BLD)/boot_rom.hex" -l "$(ASIC_BLD)/boot_rom.lst" ;; \
+		*) \
+			$(MR4ASM) -I $(LIB_DIR) "$(ASIC_BOOT_PROGRAM)" --hex -o "$(ASIC_BLD)/boot_rom.hex" -l "$(ASIC_BLD)/boot_rom.lst" ;; \
+	esac
+	@echo "==> Generating ASIC SystemVerilog ($(ASIC_SV))..."
+	@cd $(ROHD_DIR) && $(DART) run bin/generate_asic.dart \
+		--boot-hex "$(CURDIR)/$(ASIC_BLD)/boot_rom.hex" \
+		--boot-rom-base "$(ASIC_BOOT_ROM_BASE)" \
+		--boot-rom-words "$(ASIC_BOOT_ROM_WORDS)" \
+		--out "$(CURDIR)/$(ASIC_BLD)" \
+		--mem-target "$(ASIC_MEM_TARGET)" \
+		--mem-words "$(ASIC_MEM_WORDS)" \
+		--mem-latency "$(ASIC_MEM_LATENCY)" \
+		--clk-mhz "$(ASIC_CLOCK_MHZ)" \
+		--uart-divisor "$(ASIC_UART_DIVISOR)" \
+		$(if $(filter 1,$(ASIC_ENABLE_SPI)),--enable-spi,) \
+		$(if $(filter 1,$(ASIC_ENABLE_MATH)),--enable-math,)
+	@$(DOT_CLEAN_CMD)
+
+asic-check: generate-asic
+	@echo "==> Checking $(ASIC_SV) for forbidden FPGA/ECP5 primitives..."
+	@if grep -n -E "EHXPLLL|ODDRX1F|ram_style|syn_useioff|\\\$$readmemh" "$(ASIC_SV)"; then \
+		echo "[FAIL] Forbidden FPGA primitive or \$$readmemh found in $(ASIC_SV)!"; exit 1; \
+	fi
+	@echo "==> Running Yosys ASIC structural preflight (log: $(ASIC_BLD)/asic_check.log)..."
+	@$(YOSYS) -l "$(ASIC_BLD)/asic_check.log" \
+		-p "read_verilog -sv -DSYNTHESIS $(ASIC_SV); hierarchy -check -top $(ASIC_TOP); proc; opt; check -assert; stat" | tail -n 35
+	@echo "==> [PASS] ASIC structural preflight clean: $(ASIC_SV)"
+	@$(DOT_CLEAN_CMD)
 
 # ------------------------------------------------------------------------------
 # Maintenance

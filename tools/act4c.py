@@ -27,6 +27,8 @@ TOKEN_TYPES = [
     ("GE",         r">="),
     ("EQ",         r"=="),
     ("NE",         r"!="),
+    ("SHL_ASSIGN", r"<<="),
+    ("SHR_ASSIGN", r">>="),
     ("SHL",        r"<<"),
     ("SHR",        r">>"),
     ("LOG_AND",    r"&&"),
@@ -41,8 +43,6 @@ TOKEN_TYPES = [
     ("AND_ASSIGN", r"&="),
     ("OR_ASSIGN",  r"\|="),
     ("XOR_ASSIGN", r"\^="),
-    ("SHL_ASSIGN", r"<<="),
-    ("SHR_ASSIGN", r">>="),
     ("ASSIGN",     r"="),
     ("LT",         r"<"),
     ("GT",         r">"),
@@ -925,13 +925,15 @@ class Parser:
 
 class CodeGen:
     def __init__(self, ast: List[ASTNode], structs: Dict[str, StructDef], constants: Dict[str, int],
-                 string_literals: List[Tuple[str, str]], org: int = 0x0200, no_preamble: bool = False):
+                 string_literals: List[Tuple[str, str]], org: int = 0x0200, no_preamble: bool = False,
+                 hw_math: bool = False):
         self.ast = ast
         self.structs = structs
         self.constants = constants
         self.string_literals = string_literals
         self.org = org
         self.no_preamble = no_preamble
+        self.hw_math = hw_math
         self.asm: List[str] = []
         self.label_counter = 0
 
@@ -1046,6 +1048,138 @@ class CodeGen:
             self.emit("RRET")
             self.emit_raw("")
 
+        # Optional Hardware Math Accelerator runtime helpers & CPU_CAPS guard (--hw-math)
+        if self.hw_math:
+            self.emit_raw("; --- Hardware Math Accelerator Runtime (--hw-math, MMIO 0x0010-0x0016) ---")
+            if "main" in self.functions:
+                self.emit_raw("_act4_require_hw_math:")
+                self.emit("RPUSH   R0")
+                self.emit("LOAD16  R0, 0x001C")       # CPU_CAPS
+                self.emit("LD      R1, (R0)")
+                self.emit("LD      R0, 8")            # CAP_MATH_ACCEL = 0x0008 (bit 3)
+                self.emit("AND     R1, R0")
+                self.emit("LOAD16  R0, _act4_hw_math_missing")
+                self.emit("JMP.Z   R0, R1")
+                self.emit("RRET")
+                self.emit_raw("_act4_hw_math_missing:")
+                use_sys_con = (
+                    self.no_preamble
+                    and "sys_puts" in self.functions
+                    and (reachable is None or "sys_puts" in reachable)
+                    and len(self.functions["sys_puts"].params) == 1
+                )
+                if use_sys_con:
+                    fn_wc = self.functions["sys_puts"]
+                    self.emit("LOAD16  R1, _act4_hw_math_err_msg")
+                    self.emit(f"LOAD16  R0, _sys_puts_{fn_wc.params[0][0]}")
+                    self.emit("LD      (R0), R1")
+                    self.emit("RCALL   _sys_puts")
+                else:
+                    self.emit("LOAD16  R0, 0x001C")       # Check CAP_UART (bit 2) before direct UART print
+                    self.emit("LD      R1, (R0)")
+                    self.emit("LD      R0, 4")
+                    self.emit("AND     R1, R0")
+                    self.emit("LOAD16  R0, _act4_hw_math_exit")
+                    self.emit("JMP.Z   R0, R1")
+                    self.emit("LOAD16  R2, _act4_hw_math_err_msg")
+                    self.emit_raw("_act4_hw_math_puts:")
+                    self.emit("LD      R3, (R2++)")
+                    self.emit("BYTE_GET_LO R1, R3")
+                    self.emit("LOAD16  R0, _act4_hw_math_exit")
+                    self.emit("JMP.Z   R0, R1")
+                    self.emit("PUTC    R1")
+                    self.emit("BYTE_GET_HI R1, R3")
+                    self.emit("LOAD16  R0, _act4_hw_math_exit")
+                    self.emit("JMP.Z   R0, R1")
+                    self.emit("PUTC    R1")
+                    self.emit("LOAD16  R0, _act4_hw_math_puts")
+                    self.emit("JMP     R0")
+                self.emit_raw("_act4_hw_math_exit:")
+                if self.no_preamble:
+                    # MR4OS worker app: pop guard return link and return R1=1 from _main -> SYS_EXIT(1)
+                    self.emit("RPOP    R0")
+                    self.emit("LD      R0, 1")
+                    self.emit("LD      R1, R0")
+                    self.emit("LOAD16  R0, _ACT4_RET")
+                    self.emit("JMP     R0")
+                else:
+                    # Standalone binary: leave error code R1=1 and halt cleanly
+                    self.emit("LD      R0, 1")
+                    self.emit("LD      R1, R0")
+                    self.emit_raw("_act4_hw_math_halt:")
+                    self.emit("LOAD16  R0, _act4_hw_math_halt")
+                    self.emit("JMP     R0")
+                self.emit_raw("")
+
+            # Register-direct 16-bit HW Math wrappers (R1=A, R2=B -> R1=result; zero APUSH/APOP!)
+            self.emit_raw("_ACT4_HW_MUL:")
+            self.emit("RPUSH   R0")
+            self.emit("LD0     R3")                   # CMD_MUL = 0
+            self.emit("LOAD16  R0, _ACT4_HW_EXEC")
+            self.emit("JMP     R0")
+            self.emit_raw("_ACT4_HW_DIV:")
+            self.emit("RPUSH   R0")
+            self.emit("LD      R0, 4")                # CMD_DIVU = 4
+            self.emit("LD      R3, R0")
+            self.emit("LOAD16  R0, _ACT4_HW_EXEC")
+            self.emit("JMP     R0")
+            self.emit_raw("_ACT4_HW_MOD:")
+            self.emit("RPUSH   R0")
+            self.emit("LD      R0, 5")                # CMD_REMU = 5
+            self.emit("LD      R3, R0")
+            self.emit("LOAD16  R0, _ACT4_HW_EXEC")
+            self.emit("JMP     R0")
+            self.emit_raw("_ACT4_HW_SHL:")
+            self.emit("RPUSH   R0")
+            self.emit("LOAD16  R0, 0xFFF0")
+            self.emit("AND     R0, R2")
+            self.emit("LOAD16  R3, _ACT4_HW_SHL_GO")
+            self.emit("JMP.Z   R3, R0")
+            self.emit("LD0     R1")
+            self.emit("RRET")
+            self.emit_raw("_ACT4_HW_SHL_GO:")
+            self.emit("LD      R0, 8")                # CMD_SLL = 8
+            self.emit("LD      R3, R0")
+            self.emit("LOAD16  R0, _ACT4_HW_EXEC")
+            self.emit("JMP     R0")
+            self.emit_raw("_ACT4_HW_SHR:")
+            self.emit("RPUSH   R0")
+            self.emit("LOAD16  R0, 0xFFF0")
+            self.emit("AND     R0, R2")
+            self.emit("LOAD16  R3, _ACT4_HW_SHR_GO")
+            self.emit("JMP.Z   R3, R0")
+            self.emit("LD0     R1")
+            self.emit("RRET")
+            self.emit_raw("_ACT4_HW_SHR_GO:")
+            self.emit("LD      R0, 9")                # CMD_SRL = 9
+            self.emit("LD      R3, R0")
+            self.emit_raw("_ACT4_HW_EXEC:")
+            self.emit("LOAD16  R0, 0x0010")           # MATH_A_LO
+            self.emit("LD      (R0), R1")
+            self.emit("INC     R0")                   # 0x0011 MATH_A_HI = 0
+            self.emit("LD0     R1")
+            self.emit("LD      (R0), R1")
+            self.emit("INC     R0")                   # 0x0012 MATH_B_LO
+            self.emit("LD      (R0), R2")
+            self.emit("INC     R0")                   # 0x0013 MATH_B_HI = 0
+            self.emit("LD      (R0), R1")
+            self.emit("INC     R0")                   # 0x0014 MATH_CMD = R3
+            self.emit("LD      (R0), R3")
+            self.emit("LD0     R2")
+            self.emit("INC     R2")                   # R2 = 1 (busy bit mask; R0 remains 0x0014)
+            self.emit_raw("_ACT4_HW_WAIT:")
+            self.emit("LD      R1, (R0)")             # Poll MATH_CMD_STAT[0]
+            self.emit("AND     R1, R2")
+            self.emit("LOAD16  R3, _ACT4_HW_DONE")
+            self.emit("JMP.Z   R3, R1")
+            self.emit("LOAD16  R3, _ACT4_HW_WAIT")
+            self.emit("JMP     R3")
+            self.emit_raw("_ACT4_HW_DONE:")
+            self.emit("INC     R0")                   # 0x0015 MATH_RES_LO
+            self.emit("LD      R1, (R0)")
+            self.emit("RRET")
+            self.emit_raw("")
+
         self.emit_raw("; ==============================================================================")
         self.emit_raw("; Standard Runtime Library (placed before .bss so trailing zeros trim cleanly)")
         self.emit_raw("; ==============================================================================")
@@ -1087,12 +1221,14 @@ class CodeGen:
                 sz = decl.typ.word_size(self.structs)
                 bss_globals.append((lbl, sz))
 
-        if self.string_literals:
+        if self.string_literals or (self.hw_math and "main" in self.functions):
             self.emit_raw("")
             self.emit_raw("; --- String Literals ---")
             for lbl, s in self.string_literals:
                 clean_s = s.replace('"', '\\"')
                 self.emit_raw(f'{lbl}: .asciz "{clean_s}"')
+            if self.hw_math and "main" in self.functions:
+                self.emit_raw('_act4_hw_math_err_msg: .asciz "\\r\\nERR: CPU lacks HW Math Accelerator (CPU_CAPS.b3=0)\\r\\n"')
 
         # Trailing Zero-Initialized Storage (.bss) via .resw (trimmed from binary on disk!)
         self.emit_raw("")
@@ -1113,6 +1249,8 @@ class CodeGen:
             return None
         reachable = {"main"}
         reachable.update(self.trap_bindings.values())
+        if self.hw_math and self.no_preamble and "sys_puts" in self.functions:
+            reachable.add("sys_puts")
         worklist = list(reachable)
 
         def collect_refs(node: Any):
@@ -1259,6 +1397,9 @@ class CodeGen:
             if fn.name == "main":
                 self.emit("LOAD16  R0, _act4_zero_bss")
                 self.emit("LINK    R0, R0")
+                if self.hw_math:
+                    self.emit("LOAD16  R0, _act4_require_hw_math")
+                    self.emit("LINK    R0, R0")
 
         for decl in fn.locals_decls:
             if decl.init_expr is not None and not decl.typ.array_size:
@@ -1430,20 +1571,57 @@ class CodeGen:
             elif base_op == "^":
                 self.emit("XOR     R1, R2")
             elif base_op == "*":
-                self.emit("RCALL   _ACT4_APUSH_R1")
-                self.emit("APUSH   R2")
-                self.emit("RCALL   MULT")
-                self.emit("RCALL   _ACT4_APOP_R1")
+                if self.hw_math:
+                    self.emit("RCALL   _ACT4_HW_MUL")
+                else:
+                    self.emit("RCALL   _ACT4_APUSH_R1")
+                    self.emit("APUSH   R2")
+                    self.emit("RCALL   MULT")
+                    self.emit("RCALL   _ACT4_APOP_R1")
             elif base_op == "/":
-                self.emit("RCALL   _ACT4_APUSH_R1")
-                self.emit("APUSH   R2")
-                self.emit("RCALL   DIV")
-                self.emit("RCALL   _ACT4_APOP_R1")
+                if self.hw_math:
+                    self.emit("RCALL   _ACT4_HW_DIV")
+                else:
+                    self.emit("RCALL   _ACT4_APUSH_R1")
+                    self.emit("APUSH   R2")
+                    self.emit("RCALL   DIV")
+                    self.emit("RCALL   _ACT4_APOP_R1")
             elif base_op == "%":
-                self.emit("RCALL   _ACT4_APUSH_R1")
-                self.emit("APUSH   R2")
-                self.emit("RCALL   MOD")
-                self.emit("RCALL   _ACT4_APOP_R1")
+                if self.hw_math:
+                    self.emit("RCALL   _ACT4_HW_MOD")
+                else:
+                    self.emit("RCALL   _ACT4_APUSH_R1")
+                    self.emit("APUSH   R2")
+                    self.emit("RCALL   MOD")
+                    self.emit("RCALL   _ACT4_APOP_R1")
+            elif base_op == "<<":
+                if self.hw_math:
+                    self.emit("RCALL   _ACT4_HW_SHL")
+                else:
+                    lbl_lp = self.new_label("shla_loop")
+                    lbl_end = self.new_label("shla_done")
+                    self.emit_raw(f"{lbl_lp}:")
+                    self.emit(f"LOAD16  R0, {lbl_end}")
+                    self.emit("JMP.Z   R0, R2")
+                    self.emit("SHIFT.L R1")
+                    self.emit("DEC     R2")
+                    self.emit(f"LOAD16  R0, {lbl_lp}")
+                    self.emit("JMP     R0")
+                    self.emit_raw(f"{lbl_end}:")
+            elif base_op == ">>":
+                if self.hw_math:
+                    self.emit("RCALL   _ACT4_HW_SHR")
+                else:
+                    lbl_lp = self.new_label("shra_loop")
+                    lbl_end = self.new_label("shra_done")
+                    self.emit_raw(f"{lbl_lp}:")
+                    self.emit(f"LOAD16  R0, {lbl_end}")
+                    self.emit("JMP.Z   R0, R2")
+                    self.emit("SHIFT.R R1")
+                    self.emit("DEC     R2")
+                    self.emit(f"LOAD16  R0, {lbl_lp}")
+                    self.emit("JMP     R0")
+                    self.emit_raw(f"{lbl_end}:")
 
             self.emit("APOP    R0")
             self.emit("LD      (R0), R1")
@@ -1731,11 +1909,15 @@ class CodeGen:
                             self.emit("SHIFT.L R1")
                             s >>= 1
                     else:
-                        self.emit("RCALL   _ACT4_APUSH_R1")
-                        self.emit_load_const("R1", elem_sz)
-                        self.emit("RCALL   _ACT4_APUSH_R1")
-                        self.emit("RCALL   MULT")
-                        self.emit("RCALL   _ACT4_APOP_R1")
+                        if self.hw_math:
+                            self.emit_load_const("R2", elem_sz)
+                            self.emit("RCALL   _ACT4_HW_MUL")
+                        else:
+                            self.emit("RCALL   _ACT4_APUSH_R1")
+                            self.emit_load_const("R1", elem_sz)
+                            self.emit("RCALL   _ACT4_APUSH_R1")
+                            self.emit("RCALL   MULT")
+                            self.emit("RCALL   _ACT4_APOP_R1")
                 self.gen_simple_into_reg(expr.target, "R2")
                 self.emit("ADD     R1, R2")
                 self.emit("LD      R0, R1")
@@ -1751,11 +1933,15 @@ class CodeGen:
                             self.emit("SHIFT.L R1")
                             s >>= 1
                     else:
-                        self.emit("RCALL   _ACT4_APUSH_R1")
-                        self.emit_load_const("R1", elem_sz)
-                        self.emit("RCALL   _ACT4_APUSH_R1")
-                        self.emit("RCALL   MULT")
-                        self.emit("RCALL   _ACT4_APOP_R1")
+                        if self.hw_math:
+                            self.emit_load_const("R2", elem_sz)
+                            self.emit("RCALL   _ACT4_HW_MUL")
+                        else:
+                            self.emit("RCALL   _ACT4_APUSH_R1")
+                            self.emit_load_const("R1", elem_sz)
+                            self.emit("RCALL   _ACT4_APUSH_R1")
+                            self.emit("RCALL   MULT")
+                            self.emit("RCALL   _ACT4_APOP_R1")
 
                 self.emit("RCALL   _ACT4_APOP_R2")
                 self.emit("ADD     R1, R2")
@@ -1865,13 +2051,23 @@ class CodeGen:
         rhs_const = self.get_const_val(expr.rhs)
         if expr.op == ">>" and rhs_const is not None:
             self.gen_expr(expr.lhs)
-            for _ in range(rhs_const & 0x0F):
-                self.emit("SHIFT.R R1")
+            cnt = rhs_const & 0x0F
+            if self.hw_math and cnt >= 4:
+                self.emit_load_const("R2", cnt)
+                self.emit("RCALL   _ACT4_HW_SHR")
+            else:
+                for _ in range(cnt):
+                    self.emit("SHIFT.R R1")
             return
         if expr.op == "<<" and rhs_const is not None:
             self.gen_expr(expr.lhs)
-            for _ in range(rhs_const & 0x0F):
-                self.emit("SHIFT.L R1")
+            cnt = rhs_const & 0x0F
+            if self.hw_math and cnt >= 4:
+                self.emit_load_const("R2", cnt)
+                self.emit("RCALL   _ACT4_HW_SHL")
+            else:
+                for _ in range(cnt):
+                    self.emit("SHIFT.L R1")
             return
         if expr.op == "*" and rhs_const is not None and rhs_const > 0 and (rhs_const & (rhs_const - 1)) == 0 and rhs_const <= 64:
             self.gen_expr(expr.lhs)
@@ -1945,42 +2141,57 @@ class CodeGen:
         elif expr.op == ">=":
             self.emit("RCALL   _CMP_GE")
         elif expr.op == "*":
-            self.emit("RCALL   _ACT4_APUSH_R1")
-            self.emit("APUSH   R2")
-            self.emit("RCALL   MULT")
-            self.emit("RCALL   _ACT4_APOP_R1")
+            if self.hw_math:
+                self.emit("RCALL   _ACT4_HW_MUL")
+            else:
+                self.emit("RCALL   _ACT4_APUSH_R1")
+                self.emit("APUSH   R2")
+                self.emit("RCALL   MULT")
+                self.emit("RCALL   _ACT4_APOP_R1")
         elif expr.op == "/":
-            self.emit("RCALL   _ACT4_APUSH_R1")
-            self.emit("APUSH   R2")
-            self.emit("RCALL   DIV")
-            self.emit("RCALL   _ACT4_APOP_R1")
+            if self.hw_math:
+                self.emit("RCALL   _ACT4_HW_DIV")
+            else:
+                self.emit("RCALL   _ACT4_APUSH_R1")
+                self.emit("APUSH   R2")
+                self.emit("RCALL   DIV")
+                self.emit("RCALL   _ACT4_APOP_R1")
         elif expr.op == "%":
-            self.emit("RCALL   _ACT4_APUSH_R1")
-            self.emit("APUSH   R2")
-            self.emit("RCALL   MOD")
-            self.emit("RCALL   _ACT4_APOP_R1")
+            if self.hw_math:
+                self.emit("RCALL   _ACT4_HW_MOD")
+            else:
+                self.emit("RCALL   _ACT4_APUSH_R1")
+                self.emit("APUSH   R2")
+                self.emit("RCALL   MOD")
+                self.emit("RCALL   _ACT4_APOP_R1")
         elif expr.op == ">>":
-            lbl_lp = self.new_label("shr_loop")
-            lbl_end = self.new_label("shr_done")
-            self.emit_raw(f"{lbl_lp}:")
-            self.emit(f"LOAD16  R0, {lbl_end}")
-            self.emit("JMP.Z   R0, R2")
-            self.emit("SHIFT.R R1")
-            self.emit("DEC     R2")
-            self.emit(f"LOAD16  R0, {lbl_lp}")
-            self.emit("JMP     R0")
-            self.emit_raw(f"{lbl_end}:")
+            if self.hw_math:
+                self.emit("RCALL   _ACT4_HW_SHR")
+            else:
+                lbl_lp = self.new_label("shr_loop")
+                lbl_end = self.new_label("shr_done")
+                self.emit_raw(f"{lbl_lp}:")
+                self.emit(f"LOAD16  R0, {lbl_end}")
+                self.emit("JMP.Z   R0, R2")
+                self.emit("SHIFT.R R1")
+                self.emit("DEC     R2")
+                self.emit(f"LOAD16  R0, {lbl_lp}")
+                self.emit("JMP     R0")
+                self.emit_raw(f"{lbl_end}:")
         elif expr.op == "<<":
-            lbl_lp = self.new_label("shl_loop")
-            lbl_end = self.new_label("shl_done")
-            self.emit_raw(f"{lbl_lp}:")
-            self.emit(f"LOAD16  R0, {lbl_end}")
-            self.emit("JMP.Z   R0, R2")
-            self.emit("SHIFT.L R1")
-            self.emit("DEC     R2")
-            self.emit(f"LOAD16  R0, {lbl_lp}")
-            self.emit("JMP     R0")
-            self.emit_raw(f"{lbl_end}:")
+            if self.hw_math:
+                self.emit("RCALL   _ACT4_HW_SHL")
+            else:
+                lbl_lp = self.new_label("shl_loop")
+                lbl_end = self.new_label("shl_done")
+                self.emit_raw(f"{lbl_lp}:")
+                self.emit(f"LOAD16  R0, {lbl_end}")
+                self.emit("JMP.Z   R0, R2")
+                self.emit("SHIFT.L R1")
+                self.emit("DEC     R2")
+                self.emit(f"LOAD16  R0, {lbl_lp}")
+                self.emit("JMP     R0")
+                self.emit_raw(f"{lbl_end}:")
 
     def gen_call(self, call: CallExpr):
         if isinstance(call.callee, VarRef) and call.callee.name in self.functions:
@@ -2037,6 +2248,8 @@ def main():
                         help="Code origin address (default: 0x0200)")
     parser.add_argument("--nopreamble", action="store_true",
                         help="Omit startup vector and stack initialization preamble")
+    parser.add_argument("--hw-math", action="store_true",
+                        help="Lower *, /, %%, and shifts to HW Math Accelerator (0x0010-0x0016) with startup CPU_CAPS guard")
     parser.add_argument("-I", "-i", "--include", action="append", default=[],
                         help="Add directory to import search path")
     args = parser.parse_args()
@@ -2099,7 +2312,7 @@ def main():
         sys.exit(1)
 
     codegen = CodeGen(ast, structs, constants, parser_obj.string_literals,
-                      org=args.org, no_preamble=args.nopreamble)
+                      org=args.org, no_preamble=args.nopreamble, hw_math=args.hw_math)
     asm_output = codegen.generate()
 
     out_file = args.output

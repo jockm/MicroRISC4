@@ -709,6 +709,14 @@ class MiniRISC4Sim:
         self.noc_ni = noc_ni if noc_ni is not None else CoreNetworkInterface(self.core_id)
         self.enable_cpuid = True
         self.enable_uart = True
+        self.enable_math = False
+        self.math_a_lo = 0
+        self.math_a_hi = 0
+        self.math_b_lo = 0
+        self.math_b_hi = 0
+        self.math_res_lo = 0
+        self.math_res_hi = 0
+        self.math_div_by_zero = 0
         self.slot = 0          # 0 = Slot 0 [7:0], 1 = Slot 1 [15:8]
         self.trace = trace
         self.running = True
@@ -778,6 +786,67 @@ class MiniRISC4Sim:
             return (addr & ADDR_MASK) >= (self.cache_base_addr & ADDR_MASK)
         return False
 
+    def _exec_math_cmd(self, cmd: int):
+        """Exact mirror of hardware 1-DSP MathAccelerator (0x0010-0x0016)."""
+        cmd &= 0x0F
+        a_u = ((self.math_a_hi & 0xFFFF) << 16) | (self.math_a_lo & 0xFFFF)
+        b_u = ((self.math_b_hi & 0xFFFF) << 16) | (self.math_b_lo & 0xFFFF)
+        a_s = a_u - (1 << 32) if (a_u & 0x80000000) else a_u
+        b_s = b_u - (1 << 32) if (b_u & 0x80000000) else b_u
+        shamt = self.math_b_lo & 0x1F
+        self.math_div_by_zero = 0
+        res = 0
+        if cmd == 0x0:      # MUL
+            res = (a_u * b_u) & 0xFFFFFFFF
+        elif cmd == 0x1:    # MULH
+            res = ((a_s * b_s) >> 32) & 0xFFFFFFFF
+        elif cmd == 0x2:    # MULHU
+            res = ((a_u * b_u) >> 32) & 0xFFFFFFFF
+        elif cmd == 0x3:    # MULHSU
+            res = ((a_s * b_u) >> 32) & 0xFFFFFFFF
+        elif cmd == 0x4:    # DIVU
+            if b_u == 0:
+                self.math_div_by_zero = 1
+                res = 0xFFFFFFFF
+            else:
+                res = (a_u // b_u) & 0xFFFFFFFF
+        elif cmd == 0x5:    # REMU
+            if b_u == 0:
+                self.math_div_by_zero = 1
+                res = a_u & 0xFFFFFFFF
+            else:
+                res = (a_u % b_u) & 0xFFFFFFFF
+        elif cmd == 0x6:    # DIV (signed, trunc toward 0)
+            if b_s == 0:
+                self.math_div_by_zero = 1
+                res = 0xFFFFFFFF
+            elif a_u == 0x80000000 and b_s == -1:
+                res = 0x80000000
+            else:
+                q = abs(a_s) // abs(b_s)
+                if (a_s < 0) ^ (b_s < 0):
+                    q = -q
+                res = q & 0xFFFFFFFF
+        elif cmd == 0x7:    # REM (signed, sign matches dividend A)
+            if b_s == 0:
+                self.math_div_by_zero = 1
+                res = a_u & 0xFFFFFFFF
+            elif a_u == 0x80000000 and b_s == -1:
+                res = 0
+            else:
+                r = abs(a_s) % abs(b_s)
+                if a_s < 0:
+                    r = -r
+                res = r & 0xFFFFFFFF
+        elif cmd == 0x8:    # SLL
+            res = (a_u << shamt) & 0xFFFFFFFF
+        elif cmd == 0x9:    # SRL
+            res = (a_u >> shamt) & 0xFFFFFFFF
+        elif cmd == 0xA:    # SRA
+            res = (a_s >> shamt) & 0xFFFFFFFF
+        self.math_res_lo = res & 0xFFFF
+        self.math_res_hi = (res >> 16) & 0xFFFF
+
     def read_mem(self, addr: int) -> int:
         addr &= ADDR_MASK
         if addr == ADDR_UART_RX:
@@ -792,6 +861,21 @@ class MiniRISC4Sim:
             return self.fifo_in_queue.popleft() if self.fifo_in_queue else 0x0000
         if addr == 0x000D and getattr(self, 'enable_cpuid', True):
             return getattr(self, 'core_id', 0) & 0xFFFF
+        if self.enable_math and 0x0010 <= addr <= 0x0016:
+            if addr == 0x0010:
+                return self.math_a_lo & WORD_MASK
+            if addr == 0x0011:
+                return self.math_a_hi & WORD_MASK
+            if addr == 0x0012:
+                return self.math_b_lo & WORD_MASK
+            if addr == 0x0013:
+                return self.math_b_hi & WORD_MASK
+            if addr == 0x0014:
+                return (self.math_div_by_zero & 1) << 1
+            if addr == 0x0015:
+                return self.math_res_lo & WORD_MASK
+            if addr == 0x0016:
+                return self.math_res_hi & WORD_MASK
         if addr == 0x0018 and self.sd_card is not None:
             return (1 if self.sd_card.cs_n else 0) | ((1 if self.sd_card.fast_clk else 0) << 1)
         if addr == 0x0019 and self.sd_card is not None:
@@ -808,6 +892,8 @@ class MiniRISC4Sim:
                 caps |= CAP_CPUID
             if getattr(self, "enable_uart", True):
                 caps |= CAP_UART
+            if getattr(self, "enable_math", False):
+                caps |= CAP_MATH_ACCEL
             if self.sd_card is not None:
                 caps |= CAP_SPI
             if self.sdram_cache is not None:
@@ -864,6 +950,18 @@ class MiniRISC4Sim:
         elif addr == 0x000C and self.mailbox_handler is not None:
             self.mem[addr] = val
             self.mailbox_handler(val)
+        elif self.enable_math and 0x0010 <= addr <= 0x0016:
+            if addr == 0x0010:
+                self.math_a_lo = val
+            elif addr == 0x0011:
+                self.math_a_hi = val
+            elif addr == 0x0012:
+                self.math_b_lo = val
+            elif addr == 0x0013:
+                self.math_b_hi = val
+            elif addr == 0x0014:
+                self._exec_math_cmd(val)
+            return
         elif addr == 0x0018 and self.sd_card is not None:
             self.sd_card.set_ctrl(val)
             self.mem[addr] = val
@@ -1398,6 +1496,7 @@ def main():
     parser.add_argument("--core-id", type=lambda x: int(x, 0), default=0, help="Hardware Core ID (default: 0)")
     parser.add_argument("--disable-cpuid", action="store_true", help="Disable CPUID at 0x000D (treat as RAM)")
     parser.add_argument("--disable-uart", action="store_true", help="Disable UART MMIO at 0x000E/0x000F (treat as RAM)")
+    parser.add_argument("--enable-math", action="store_true", help="Enable 32-bit Math Accelerator MMIO at 0x0010-0x0016 (sets CAP_MATH_ACCEL)")
     parser.add_argument("--trapbase", type=lambda x: int(x, 0), default=0x0100, help="Vector table base address (default: 0x0010)")
     parser.add_argument("--startaddr", type=lambda x: int(x, 0), default=None,
                         help="Starting word address (hex e.g. 0x0100). Default: reset vector at mem[0xFFF0]")
@@ -1418,6 +1517,9 @@ def main():
         sys.exit(1)
 
     sim = MiniRISC4Sim(trace=args.trace, core_id=args.core_id, profile=args.profile)
+    sim.enable_cpuid = not args.disable_cpuid
+    sim.enable_uart = not args.disable_uart
+    sim.enable_math = args.enable_math
     sim.trap_base = args.trapbase & ADDR_MASK
     if args.sd_image:
         sim.sd_card = SpiSdCard(Path(args.sd_image).read_bytes())

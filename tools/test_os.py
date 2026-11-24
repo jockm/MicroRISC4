@@ -36,6 +36,7 @@ def compile_and_assemble(
     org: int | None = None,
     nopreamble: bool = False,
     sparsebin: bool = False,
+    hw_math: bool = False,
 ) -> Path:
     asm_path = out_bin.with_suffix(".asm")
     lst_path = out_bin.with_suffix(".lst")
@@ -52,6 +53,8 @@ def compile_and_assemble(
         cmd_c.extend(["--org", hex(org)])
     if nopreamble:
         cmd_c.append("--nopreamble")
+    if hw_math:
+        cmd_c.append("--hw-math")
     subprocess.run(cmd_c, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     cmd_a = [
@@ -2393,6 +2396,249 @@ void main(void) {
         assert worker_sim.mem[0x0005] == 0xFAFF
 
 
+# ------------------------------------------------------------------------------
+# Test 18: Track B.2 Hardware Math Accelerator Codegen (--hw-math) & CPU_CAPS Guard
+# ------------------------------------------------------------------------------
+def test_hw_math_codegen(_args):
+    # Part 1 & 2: Standalone program testing *, /, %, *=, /=, %=, <<, >>, <<=, >>=,
+    # constant shifts >= 4, shift counts >= 16, div-by-zero parity, non-pow2 struct
+    # indexing, and a math-heavy checksum loop for cycle-count speedup comparison.
+    src = """
+u16 uart_tx @ 0x000F;
+u16 sentinel @ 0x2000;
+
+type Triplet {
+    u16 a;
+    u16 b;
+    u16 c;
+};
+
+Triplet tris[6];
+
+void putc(u16 c) {
+    while (uart_tx != 0) {}
+    uart_tx = c;
+}
+
+void puts(u16 *s) {
+    u16 i = 0;
+    u16 c = 0;
+    while (true) {
+        c = getbyte(s, i);
+        if (c == 0) { return; }
+        putc(c);
+        i++;
+    }
+}
+
+void puthex(u16 v) {
+    u16 i = 0;
+    u16 nib = 0;
+    while (i < 4) {
+        nib = (v >> 12) & 0x000F;
+        if (nib < 10) { putc(48 + nib); }
+        else { putc(55 + nib); }
+        v = v << 4;
+        i++;
+    }
+}
+
+void check(u16 cond, u16 code) {
+    if (cond == 0) {
+        puts("FAIL:");
+        putc(code);
+        putc(10);
+        while (true) {}
+    }
+}
+
+void main(void) {
+    u16 x = 0;
+    u16 y = 0;
+    u16 sh = 0;
+    u16 i = 0;
+    u16 acc = 0;
+
+    sentinel = 0xCAFE;
+
+    // Basic *, /, %
+    x = 300; y = 200; check(x * y == 60000, 65);
+    x = 0xFFFF; y = 0xFFFF; check(x * y == 1, 66);
+    x = 65535; y = 257; check(x / y == 255, 67);
+    check(x % y == 0, 68);
+    x = 54321; y = 123; check(x / y == 441, 69);
+    check(x % y == 78, 70);
+
+    // Divide-by-zero parity with M4R_LIB.asm (Q=0xFFFF, R=dividend)
+    x = 1234; y = 0;
+    check(x / y == 0xFFFF, 71);
+    check(x % y == 1234, 72);
+
+    // Compound assignments *=, /=, %=, <<=, >>=
+    x = 17; x *= 19; check(x == 323, 73);
+    x /= 10; check(x == 32, 74);
+    x %= 7; check(x == 4, 75);
+    sh = 5; x <<= sh; check(x == 128, 76);
+    sh = 3; x >>= sh; check(x == 16, 77);
+
+    // Constant shifts >= 4 & variable shifts including >= 16
+    x = 0x00AB; check((x << 8) == 0xAB00, 78);
+    x = 0xF123; check((x >> 4) == 0x0F12, 79);
+    sh = 7; x = 0x00FF; check((x << sh) == 0x7F80, 80);
+    sh = 9; x = 0x8000; check((x >> sh) == 0x0040, 81);
+    sh = 16; x = 0xFFFF; check((x << sh) == 0, 82);
+    check((x >> sh) == 0, 83);
+    sh = 25; check((x << sh) == 0, 84);
+    check((x >> sh) == 0, 85);
+
+    // Non-power-of-two struct indexing (elem_sz = 3)
+    i = 0;
+    while (i < 6) {
+        tris[i].a = i * 11 + 1;
+        tris[i].b = i * 23 + 2;
+        tris[i].c = i * 37 + 3;
+        i++;
+    }
+    check(tris[4].a == 45, 86);
+    check(tris[5].b == 117, 87);
+    check(tris[3].c == 114, 88);
+
+    // Math-heavy checksum loop to compare SW vs HW cycle counts
+    acc = 0x1357;
+    i = 1;
+    while (i <= 40) {
+        x = (i * 977) + 13;
+        y = (i * 19) + 3;
+        acc ^= (x / y) + (x % y) + (i << 5) + (x >> 6);
+        i++;
+    }
+    puts("OK:");
+    puthex(acc);
+    putc(10);
+    while (true) {}
+}
+"""
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td)
+        a4 = p / "math_bench.a4"
+        sw_bin = p / "math_sw.bin"
+        hw_bin = p / "math_hw.bin"
+        a4.write_text(src, encoding="utf-8")
+
+        compile_and_assemble(a4, sw_bin, hw_math=False)
+        compile_and_assemble(a4, hw_bin, hw_math=True)
+
+        # 1a. Software baseline (M4R_LIB.asm)
+        sim_sw = mr4sim.MiniRISC4Sim(core_id=0)
+        sim_sw.load_binary(str(sw_bin))
+        sim_sw.pc = 0x0100
+        uart_sw, bad_sw = attach_uart_and_watch(sim_sw)
+        for _ in range(500000):
+            sim_sw.step()
+            if "\n" in "".join(uart_sw):
+                break
+        out_sw = "".join(uart_sw).strip()
+        sw_cycles = sim_sw.cycles
+        assert out_sw.startswith("OK:"), f"SW math test failed: {out_sw!r}"
+        assert not bad_sw, f"SW bad low-mem writes: {bad_sw}"
+        assert sim_sw.mem[0x0005] == 0xFAFF
+
+        # 1b. Hardware Math Accelerator (--hw-math + --enable-math)
+        sim_hw = mr4sim.MiniRISC4Sim(core_id=0)
+        sim_hw.enable_math = True
+        sim_hw.load_binary(str(hw_bin))
+        sim_hw.pc = 0x0100
+        uart_hw, bad_hw = attach_uart_and_watch(sim_hw)
+        for _ in range(500000):
+            sim_hw.step()
+            if "\n" in "".join(uart_hw):
+                break
+        out_hw = "".join(uart_hw).strip()
+        hw_cycles = sim_hw.cycles
+        assert out_hw == out_sw, f"HW/SW mismatch: hw={out_hw!r} vs sw={out_sw!r}"
+        assert not bad_hw, f"HW bad low-mem writes: {bad_hw}"
+        assert sim_hw.mem[0x0005] == 0xFAFF
+        assert sim_hw.mem[0x2000] == 0xCAFE
+        speedup = sw_cycles / max(hw_cycles, 1)
+        assert speedup >= 2.0, f"Expected >=2.0x speedup, got {speedup:.2f}x (sw={sw_cycles}, hw={hw_cycles})"
+
+        # 2. Startup CPU_CAPS guard when hardware math accelerator is ABSENT
+        sim_nohw = mr4sim.MiniRISC4Sim(core_id=0)
+        sim_nohw.enable_math = False
+        sim_nohw.load_binary(str(hw_bin))
+        sim_nohw.pc = 0x0100
+        uart_nohw, bad_nohw = attach_uart_and_watch(sim_nohw)
+        for _ in range(50000):
+            sim_nohw.step()
+        out_nohw = "".join(uart_nohw)
+        assert "ERR: CPU lacks HW Math Accelerator (CPU_CAPS.b3=0)" in out_nohw, (
+            f"Missing startup guard error message: {out_nohw!r}"
+        )
+        assert sim_nohw.r[1] == 1, f"Expected error exit code R1=1, got {sim_nohw.r[1]}"
+        assert sim_nohw.mem[0x2000] == 0, f"_main body ran despite missing HW math! sentinel=0x{sim_nohw.mem[0x2000]:04X}"
+        assert not bad_nohw, f"Guard bad low-mem writes: {bad_nohw}"
+
+        # 3. MR4OS worker app (--nopreamble --hw-math) cleanly exits with code 1 when worker lacks HW math
+        worker_app_src = """
+import "sys.a4";
+
+void main(void) {
+    u16 a = 123;
+    u16 b = 45;
+    u16 c = a * b;
+    sys_puts("SHOULD_NOT_RUN\\r\\n");
+}
+"""
+        w_a4 = p / "hwapp.a4"
+        w_bin = p / "hwapp.prg"
+        w_a4.write_text(worker_app_src, encoding="utf-8")
+        compile_and_assemble(w_a4, w_bin, org=0x0400, nopreamble=True, sparsebin=True, hw_math=True)
+
+        sd_root = p / "sd_root"
+        sd_root.mkdir()
+        shutil.copy(w_bin, sd_root / "HWAPP.PRG")
+        sd_img = p / "hwapp_test.img"
+        subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
+             "-o", str(sd_img), "--size-mb", "16", "--spc", "1"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
+        os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
+        os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+        os_sim.pc = 0x0100
+        os_uart, os_bad = attach_uart_and_watch(os_sim)
+
+        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim.enable_math = False
+        worker_sim.enable_uart = False
+        worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+        worker_sim.pc = 0x0100
+        worker_sim._poll_stdin = lambda: None
+        mr4sim.connect_os_workers(os_sim, [worker_sim])
+
+        assert run_until_prompt(os_sim, os_uart, 1500000, worker=worker_sim), "OS boot failed"
+        seg_start = len(os_uart)
+        for ch in "! HWAPP.PRG\r":
+            os_sim.rx_queue.append(ord(ch))
+        assert run_until_prompt(os_sim, os_uart, 8000000, worker=worker_sim), "HWAPP.PRG did not exit cleanly"
+        seg = "".join(os_uart[seg_start:])
+        assert "ERR: CPU lacks HW Math Accelerator (CPU_CAPS.b3=0)" in seg, f"Missing worker guard msg:\n{seg!r}"
+        assert "SHOULD_NOT_RUN" not in seg, f"Worker _main ran despite missing HW math!\n{seg!r}"
+        procs_addr = os_sim.sym_to_addr["_procs"]
+        pid1_state = procs_addr + 10
+        assert os_sim.mem[pid1_state] == 0, f"PID 1 still active: {os_sim.mem[pid1_state]}"
+        assert os_sim.mem[pid1_state + 1] == 1, f"Expected PID 1 exit code 1, got {os_sim.mem[pid1_state + 1]}"
+        assert not os_bad, f"OS bad low-mem writes: {os_bad}"
+        assert worker_sim.mem[0x0004] == 0xFEFF, f"Worker RSP leaked: 0x{worker_sim.mem[0x0004]:04X}"
+        assert worker_sim.mem[0x0005] == 0xFAFF, f"Worker ASP leaked: 0x{worker_sim.mem[0x0005]:04X}"
+        print(f"    (hw_math speedup: {speedup:.2f}x — SW {sw_cycles} vs HW {hw_cycles} cycles, {out_hw})")
+
+
 TESTS = [
     ("compiler_runtime", test_compiler_runtime),
     ("trap_isr", test_trap_isr),
@@ -2411,6 +2657,7 @@ TESTS = [
     ("os_path_and_history", test_os_path_and_history),
     ("os_term_lib", test_os_term_lib),
     ("os_scripts", test_os_scripts),
+    ("hw_math_codegen", test_hw_math_codegen),
 ]
 
 

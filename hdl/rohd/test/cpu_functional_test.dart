@@ -370,4 +370,169 @@ void main() {
     expect(doneCycle!, lessThanOrEqualTo(28),
         reason: 'Expected zero-bubble ~1.0 cyc/PUSH8 (got $doneCycle cycles)');
   });
+
+  test('ACT4 --hw-math end-to-end on CpuCore (1-DSP MathAccelerator + CPU_CAPS guard)', () async {
+    final tmpDir = Directory.systemTemp.createTempSync('mr4_hw_math_rtl_');
+    try {
+      final a4File = File('${tmpDir.path}/hw_math_rtl.a4');
+      final asmFile = File('${tmpDir.path}/hw_math_rtl.asm');
+      final binFile = File('${tmpDir.path}/hw_math_rtl.bin');
+
+      a4File.writeAsStringSync('''
+u16 uart_tx @ 0x000F;
+u16 out0 @ 0x1000;
+u16 out1 @ 0x1001;
+u16 out2 @ 0x1002;
+u16 out3 @ 0x1003;
+u16 out4 @ 0x1004;
+u16 out5 @ 0x1005;
+u16 out6 @ 0x1006;
+u16 out7 @ 0x1007;
+
+void putc(u16 c) {
+    while (uart_tx != 0) {}
+    uart_tx = c;
+}
+
+void main(void) {
+    u16 a = 300;
+    u16 b = 200;
+    u16 sh = 5;
+    out0 = a * b;          // 60000 (0xEA60)
+    a = 54321; b = 123;
+    out1 = a / b;          // 441   (0x01B9)
+    out2 = a % b;          // 78    (0x004E)
+    a = 1234; b = 0;
+    out3 = a / b;          // 0xFFFF (div-by-zero)
+    out4 = a % b;          // 1234  (0x04D2)
+    a = 0x00AB;
+    out5 = a << 8;         // 0xAB00
+    a = 0x00FF;
+    out6 = a << sh;        // 0x1FE0
+    sh = 16;
+    out7 = a >> sh;        // 0x0000
+    putc(72); putc(87); putc(79); putc(75); putc(10); // "HWOK\\n"
+    while (true) {}
+}
+''');
+
+      final comp = Process.runSync('python3', [
+        '../../tools/act4c.py',
+        a4File.path,
+        '-o',
+        asmFile.path,
+        '-I',
+        '../../lib',
+        '--hw-math',
+      ]);
+      expect(comp.exitCode, equals(0), reason: 'act4c failed: ${comp.stderr}');
+
+      final assem = Process.runSync('python3', [
+        '../../tools/mr4asm.py',
+        '-I',
+        '../../lib',
+        asmFile.path,
+        '-o',
+        binFile.path,
+      ]);
+      expect(assem.exitCode, equals(0), reason: 'mr4asm failed: ${assem.stderr}');
+
+      final bytes = binFile.readAsBytesSync();
+      final mem = <int, int>{};
+      for (var i = 0; i + 1 < bytes.length; i += 2) {
+        final w = (bytes[i + 1] << 8) | bytes[i];
+        if (w != 0) mem[i >> 1] = w;
+      }
+
+      // Run A: CpuCore WITH 1-DSP MathAccelerator enabled
+      final txEnable = <int>[];
+      final clkA = SimpleClockGenerator(10).clk;
+      final rstNA = Logic(name: 'rst_n_a');
+      final rxA = Logic(name: 'rx_a', width: 16);
+      final txStA = Logic(name: 'tx_st_a', width: 16);
+      final cpuA = CpuCore(
+        clk: clkA,
+        rstN: rstNA,
+        mmioRxData: rxA,
+        mmioTxStatus: txStA,
+        config: const CpuConfig(
+          coreId: 0,
+          enableCpuid: true,
+          enableUart: true,
+          enableCrossTraps: false,
+          enableMathAccel: true,
+          trapTableBase: 0x0100,
+          memWords: 65536,
+        ),
+        initialMemory: Map<int, int>.from(mem),
+      );
+      await cpuA.build();
+      rstNA.put(0);
+      rxA.put(0);
+      txStA.put(0);
+      clkA.posedge.listen((_) {
+        if (cpuA.txStrobe.value.isValid && cpuA.txStrobe.value.toBool()) {
+          txEnable.add(cpuA.txData.value.toInt() & 0xFF);
+        }
+      });
+      Simulator.registerAction(22, () => rstNA.put(1));
+      Simulator.setMaxSimTime(25 + 6000 * 10);
+      await Simulator.run();
+
+      expect(String.fromCharCodes(txEnable), equals('HWOK\n'));
+      expect(cpuA.ram.mem[0x1000], equals(60000));
+      expect(cpuA.ram.mem[0x1001], equals(441));
+      expect(cpuA.ram.mem[0x1002], equals(78));
+      expect(cpuA.ram.mem[0x1003], equals(0xFFFF));
+      expect(cpuA.ram.mem[0x1004], equals(1234));
+      expect(cpuA.ram.mem[0x1005], equals(0xAB00));
+      expect(cpuA.ram.mem[0x1006], equals(0x1FE0));
+      expect(cpuA.ram.mem[0x1007], equals(0x0000));
+
+      // Reset simulator between runs
+      await Simulator.reset();
+
+      // Run B: EXACT SAME binary on CpuCore WITHOUT MathAccelerator -> startup CPU_CAPS guard triggers!
+      final txDisable = <int>[];
+      final clkB = SimpleClockGenerator(10).clk;
+      final rstNB = Logic(name: 'rst_n_b');
+      final rxB = Logic(name: 'rx_b', width: 16);
+      final txStB = Logic(name: 'tx_st_b', width: 16);
+      final cpuB = CpuCore(
+        clk: clkB,
+        rstN: rstNB,
+        mmioRxData: rxB,
+        mmioTxStatus: txStB,
+        config: const CpuConfig(
+          coreId: 0,
+          enableCpuid: true,
+          enableUart: true,
+          enableCrossTraps: false,
+          enableMathAccel: false,
+          trapTableBase: 0x0100,
+          memWords: 65536,
+        ),
+        initialMemory: Map<int, int>.from(mem),
+      );
+      await cpuB.build();
+      rstNB.put(0);
+      rxB.put(0);
+      txStB.put(0);
+      clkB.posedge.listen((_) {
+        if (cpuB.txStrobe.value.isValid && cpuB.txStrobe.value.toBool()) {
+          txDisable.add(cpuB.txData.value.toInt() & 0xFF);
+        }
+      });
+      Simulator.registerAction(22, () => rstNB.put(1));
+      Simulator.setMaxSimTime(25 + 6000 * 10);
+      await Simulator.run();
+
+      final errOut = String.fromCharCodes(txDisable);
+      expect(errOut, contains('ERR: CPU lacks HW Math Accelerator (CPU_CAPS.b3=0)'));
+      expect(cpuB.ram.mem[0x1000], equals(0),
+          reason: '_main body must not execute when CAP_MATH_ACCEL == 0');
+    } finally {
+      tmpDir.deleteSync(recursive: true);
+    }
+  });
 }

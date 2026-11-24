@@ -14,6 +14,8 @@ abstract class MiniRISC4Constants {
   static const int trapAlignAddr = 0xFFFF;
   static const int addrUartRx = 0x000E;
   static const int addrUartTx = 0x000F;
+  static const int addrEpc    = 0x001E; // R/W: Hardware Exception Program Counter (EPC)
+  static const int opEretByte = 0x0F;   // 1-byte ERET instruction (PC <- EPC, preserves R0..R3)
 
   // Lean Direct-Addressed NoC Ring & Doorbell MMIO Registers (0x0020-0x002A)
   static const int addrNocTxData    = 0x0020; // W: send 16-bit DATA word to dstCore

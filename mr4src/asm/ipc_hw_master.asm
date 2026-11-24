@@ -32,7 +32,7 @@ _reset_vector:
 ; --- Trap 14: Hardware NoC Doorbell/MBOX ISR (<= 16 words) ---
 .org 0x01E0
 _trap14_vector:
-    XCHG    R0                  ; Save interrupted return PC in shadow_r0
+    XCHG    R0                  ; Save user's LIVE R0 in shadow_r0 (PC is in hardware EPC)
     LOAD16  R0, _trap14_isr
     JMP     R0
 
@@ -83,7 +83,7 @@ _trap14_isr:
     XCHG    R2
     XCHG    R1
     XCHG    R0
-    JMP     R0
+    ERET
 
 _main:
 run_suite:

@@ -8,6 +8,7 @@ class CpuConfig {
   final bool enableCpuid;
   final bool enableUart;
   final bool enableCrossTraps;
+  final bool? enableEpc;
   final bool enableShadowRegs;
   final bool enableMathAccel;
   final bool enableSpi; // Configurable Math Engine at 0x0010-0x0016
@@ -25,6 +26,7 @@ class CpuConfig {
     this.enableCpuid = true,
     this.enableUart = true,
     this.enableCrossTraps = false,
+    this.enableEpc,
     this.enableShadowRegs = true,
     this.enableMathAccel = false,
     this.enableSpi = false,
@@ -40,6 +42,7 @@ class CpuConfig {
 
   int get addrWidth => (memWords - 1).bitLength;
   int get memTop => memWords - 1;
+  bool get hasEpc => enableEpc ?? enableCrossTraps;
 
   /// Standalone core with standard peripherals.
   factory CpuConfig.standalone({bool enableMath = true}) => CpuConfig(

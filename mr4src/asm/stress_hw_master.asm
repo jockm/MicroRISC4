@@ -83,7 +83,7 @@ _trap14_isr:
     XCHG    R2
     XCHG    R1
     XCHG    R0
-    JMP     R0
+    ERET
 
 _main:
     ; Initialize counters & LFSR seed = 0xACE1

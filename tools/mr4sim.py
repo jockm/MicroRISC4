@@ -44,6 +44,7 @@ BYTE_MASK       = 0xFF
 
 ADDR_UART_RX    = 0x000E
 ADDR_UART_TX    = 0x000F
+ADDR_EPC        = 0x001E
 ADDR_RESET_VEC  = 0x0100
 TRAP_BASE       = 0x0100
 
@@ -497,7 +498,7 @@ class ExecutionProfiler:
 
     def _src_regs(self, opcode: int, rr: int, rl: int):
         if opcode == OP_LD_REG:
-            return () if (rr == 0 and rl == 0) else (rl,)
+            return () if ((rr == 0 and rl == 0) or (rr == 3 and rl == 3)) else (rl,)
         if opcode == OP_LD_IMM4:
             return ()
         if opcode == OP_LD_PEEK or opcode == OP_LD_POP:
@@ -540,6 +541,11 @@ class ExecutionProfiler:
         if opcode == OP_LD_REG:
             if rr == 0 and rl == 0:
                 self.counts["nop"] += 1
+            elif rr == 3 and rl == 3:
+                self.counts["jmp"] += 1
+                taken_cf = True
+                hw_cyc = 4
+                self.hw_branch_flush_cycles += 3
             else:
                 self.counts["move_ldi4"] += 1
         elif opcode == OP_LD_IMM4:
@@ -681,6 +687,7 @@ class MiniRISC4Sim:
         self.r = [0] * 4
         self.shadow_r = [0] * 4
         self.pc = 0
+        self.epc = 0
         self.trap_base = 0x0100
         self.core_id = core_id & 0xFFFF
         self.noc_ni = noc_ni if noc_ni is not None else CoreNetworkInterface(self.core_id)
@@ -777,6 +784,8 @@ class MiniRISC4Sim:
             v = getattr(self.sd_card, "_last_rx", 0xFF)
             self.sd_card._last_rx = 0xFF
             return v
+        if addr == ADDR_EPC:
+            return self.epc & WORD_MASK
         if addr == ADDR_NOC_SEL_CH:
             return self.noc_ni.sel_ch & WORD_MASK
         if addr == ADDR_NOC_RX_DATA:
@@ -829,6 +838,9 @@ class MiniRISC4Sim:
             self.mem[addr] = val
         elif addr == 0x001A and self.sd_card is not None:
             self.sd_card._last_rx = self.sd_card.xfer(val)
+        elif addr == ADDR_EPC:
+            self.epc = val
+            self.mem[addr] = val
         elif addr == ADDR_NOC_TX_DATA:
             self.noc_ni.send_data(val)
             self.mem[addr] = val
@@ -872,9 +884,18 @@ class MiniRISC4Sim:
         self.slot = 0
 
     def trigger_trap(self, vec: int):
-        """Enter direct-stride hardware trap slot (matches cpu_core.dart ext_trap_req)."""
+        """Enter direct-stride hardware trap slot (matches cpu_core.dart ext_trap_req).
+
+        Always latches interrupted return PC into hardware EPC (0x001E).
+        Hardware async Trap 14 preserves R0 completely (return via ERET);
+        legacy software-mailbox traps (e.g. Trap 1 in MR4OS) also set R0 for
+        backwards compatibility until Track B.3 migrates MR4OS to Lean Ring.
+        """
         target_slot = (self.trap_base + ((vec & 0x0F) << 4)) & ADDR_MASK
-        self.r[0] = (self.pc if self.slot == 0 else (self.pc + 1)) & ADDR_MASK
+        ret_pc = (self.pc if self.slot == 0 else (self.pc + 1)) & ADDR_MASK
+        self.epc = ret_pc
+        if (vec & 0x0F) != 14:
+            self.r[0] = ret_pc
         self._branch_to(target_slot)
 
     def step(self):
@@ -933,7 +954,12 @@ class MiniRISC4Sim:
         # ----------------------------------------------------------------------
         branch_taken = False
         if opcode == OP_LD_REG:
-            self.r[rr] = self.r[rl]
+            if rr == 3 and rl == 3:
+                # 0x0F: ERET — atomic return to hardware EPC (preserves R0..R3)
+                branch_taken = True
+                self._branch_to(self.epc)
+            else:
+                self.r[rr] = self.r[rl]
 
         elif opcode == OP_LD_IMM4:
             self.r[0] = arg
@@ -1023,6 +1049,7 @@ class MiniRISC4Sim:
                 # Word-alignment fault for PUSH8, LINK, TRAP -> direct-stride Trap 15
                 print(f"\n[FAULT] Slot 1 alignment violation at PC:0x{current_pc:04X}")
                 self.r[0] = (current_pc + 1) & ADDR_MASK
+                self.epc = self.r[0]
                 self._branch_to((self.trap_base + (15 << 4)) & ADDR_MASK)
                 if self.profiler is not None:
                     self.profiler.record(OP_JMP_SPECIAL, SUB_TRAP, 0, current_slot, True)
@@ -1051,6 +1078,7 @@ class MiniRISC4Sim:
                 vec = self.r[rl] & 0x0F
                 target_slot = (self.trap_base + (vec << 4)) & ADDR_MASK
                 self.r[0] = (current_pc + 1) & ADDR_MASK
+                self.epc = self.r[0]
                 self._branch_to(target_slot)
 
         if self.profiler is not None:

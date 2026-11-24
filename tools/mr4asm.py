@@ -62,6 +62,7 @@ NIBBLE_MASK         = 0x0F
 SLOT_0              = 0              # Low byte: bits [7:0]
 SLOT_1              = 1              # High byte: bits [15:8]
 NOP_BYTE            = 0x00           # LD R0, R0 acts as canonical 1-byte NOP
+ERET_BYTE           = 0x0F           # 1-byte ERET: PC <- EPC (preserves R0..R3)
 MAX_MACRO_RECURSION = 20             # Maximum allowed nested macro depth
 
 # Primary Opcode Nibbles (Bits [7:4])
@@ -678,6 +679,10 @@ class Assembler:
 
             if mnemonic == "NOP":
                 emit_byte(NOP_BYTE, line)
+                continue
+
+            if mnemonic == "ERET":
+                emit_byte(ERET_BYTE, line)
                 continue
 
             # LD Instruction Group (Opcodes 0x0 through 0x5)

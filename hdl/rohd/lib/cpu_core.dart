@@ -187,6 +187,10 @@ class CpuCore extends Module {
     final isMmioTx = config.enableUart
         ? (isMmioPage & mmioOff.eq(Const(MiniRISC4Constants.addrUartTx, width: 6)))
         : Const(0);
+    final hasEpc = config.hasEpc;
+    final isMmioEpc = hasEpc
+        ? (isMmioPage & mmioOff.eq(Const(MiniRISC4Constants.addrEpc, width: 6)))
+        : Const(0);
 
     // Math Accelerator Conditional Instantiation
     Logic? mathRdata;
@@ -235,6 +239,7 @@ class CpuCore extends Module {
     final isMmio = isMmioCpuid |
         isMmioRx |
         isMmioTx |
+        isMmioEpc |
         isMathMatch |
         isSpiMatch |
         isNocMatch;
@@ -271,6 +276,10 @@ class CpuCore extends Module {
     final trapAlignFaultConst =
         Const(config.trapTableBase + (15 << 4), width: 16);
 
+    // Dedicated hardware Exception Program Counter (0x001E, R/W) for trap-safe
+    // asynchronous Trap 14 delivery & 1-byte ERET (0x0F) return.
+    final epcQ = Logic(name: 'epc_q', width: 16);
+
     // Pre-muxed peripheral/MMIO read bus (strictly excludes wide BRAM output)
     final mmioOnlyData = mux(
       isMmioCpuid,
@@ -282,15 +291,19 @@ class CpuCore extends Module {
           isMmioTx,
           txStatus,
           mux(
-            isMathMatch,
-            mathRdata ?? Const(0, width: 16),
+            isMmioEpc,
+            epcQ,
             mux(
-              isSpiMatch,
-              spiRdata ?? Const(0, width: 16),
+              isMathMatch,
+              mathRdata ?? Const(0, width: 16),
               mux(
-                isNocMatch,
-                nocRdataIn,
-                Const(0, width: 16),
+                isSpiMatch,
+                spiRdata ?? Const(0, width: 16),
+                mux(
+                  isNocMatch,
+                  nocRdataIn,
+                  Const(0, width: 16),
+                ),
               ),
             ),
           ),
@@ -307,6 +320,7 @@ class CpuCore extends Module {
     final decUseOneAsAddBQ = Logic(name: 'dec_use_one_add_b_q');
     final decArithSubQ = Logic(name: 'dec_arith_sub_q');
     final illegalSlot1 = Logic(name: 'dec_illegal_slot1_q');
+    final decIsEretQ = Logic(name: 'dec_is_eret_q');
     final extWrPendingQ = Logic(name: 'ext_wr_pending_q');
 
     // Staged read-data selection: keeps wide BRAM read path out of the MMIO mux tree
@@ -457,7 +471,8 @@ class CpuCore extends Module {
             isOpSub |
             isSubInc |
             isSubDec);
-    final execNormalWbEn = isOpLdReg |
+    final isEretExec = hasEpc ? decIsEretQ : Const(0);
+    final execNormalWbEn = (isOpLdReg & ~isEretExec) |
         isOpLdImm4 |
         isOpLdPostinc |
         isOpLdPredec |
@@ -482,16 +497,19 @@ class CpuCore extends Module {
       mux(execWbUseRl, decRlQ, decRrQ),
     );
 
-    final wbEn = crossTrapTake | inMemRd | (inExec & execWbEn);
+    // When hardware EPC is enabled, async cross-traps (Trap 14) latch return PC
+    // into epcQ WITHOUT clobbering R0 (simplifying register-file writeback too!).
+    final crossTrapClobbersR0 = hasEpc ? Const(0) : crossTrapTake;
+    final wbEn = crossTrapClobbersR0 | inMemRd | (inExec & execWbEn);
     final wbIdx = mux(
-      crossTrapTake,
+      crossTrapClobbersR0,
       Const(0, width: 2),
       mux(inMemRd, destReg, execWbIdx),
     );
     final crossTrapLinkPc =
         mux(slot.eq(MiniRISC4Constants.slotByte0), pc, pcPlus1);
     final wbFastData = mux(
-      crossTrapTake,
+      crossTrapClobbersR0,
       crossTrapLinkPc,
       mux(
         inMemRd,
@@ -526,6 +544,8 @@ class CpuCore extends Module {
       decUseOneAsAddBQ: Const(0, width: 1),
       decArithSubQ: Const(0, width: 1),
       illegalSlot1: Const(0, width: 1),
+      if (hasEpc) decIsEretQ: Const(0, width: 1),
+      if (hasEpc) epcQ: Const(0, width: 16),
       if (useExtCache) extWrPendingQ: Const(0, width: 1),
       txData: Const(0, width: 8),
       txStrobe: Const(0, width: 1),
@@ -536,6 +556,18 @@ class CpuCore extends Module {
       If(wbEn, then: [
         ..._writeReg(r, wbIdx, wbData),
       ]),
+      if (hasEpc)
+        If(crossTrapTake, then: [
+          epcQ < crossTrapLinkPc,
+        ], orElse: [
+          If(inExec & (illegalSlot1 | isSubTrap), then: [
+            epcQ < pcPlus1,
+          ], orElse: [
+            If(portBEn & portBWe & isMmioEpc, then: [
+              epcQ < portBWdata,
+            ]),
+          ]),
+        ]),
       if (config.enableShadowRegs)
         If(inExec & ~illegalSlot1 & isSubXchg, then: [
           ..._writeReg(shadowR, decRlQ, regL),
@@ -619,6 +651,7 @@ class CpuCore extends Module {
                         decArithSubQ,
                         illegalSlot1,
                         isSlot1: false,
+                        decIsEretQ: hasEpc ? decIsEretQ : null,
                       ),
                       state < Const(_stExec, width: 3),
                     ]),
@@ -653,6 +686,7 @@ class CpuCore extends Module {
                   decArithSubQ,
                   illegalSlot1,
                   isSlot1: false,
+                  decIsEretQ: hasEpc ? decIsEretQ : null,
                 ),
                 portAAddr < portAAddrPlus1,
                 portAEn < 1,
@@ -687,6 +721,7 @@ class CpuCore extends Module {
                         useExtCache: useExtCache,
                         isExtPc: isExtPc,
                         isExtNextPc: isExtNextPc,
+                        decIsEretQ: hasEpc ? decIsEretQ : null,
                       );
                   return [
                 portBEn < 0,
@@ -700,6 +735,17 @@ class CpuCore extends Module {
                       trapAlignFaultConst, pc, portAAddr, portAEn, slot, state),
                 ], orElse: [
                   Case(decOpQ, [
+                    // 0x0: LD Rr, Rl — 0x0F (ERET) returns atomically to epcQ
+                    if (hasEpc)
+                      CaseItem(Const(MiniRISC4Constants.opLdReg, width: 4), [
+                        If(decIsEretQ, then: [
+                          _branchTo(
+                              epcQ, pc, portAAddr, portAEn, slot, state),
+                        ], orElse: [
+                          advance(),
+                        ]),
+                      ]),
+
                     // 0x2: LD Rr, (Rl) - Peek
                     CaseItem(Const(MiniRISC4Constants.opLdPeek, width: 4), [
                       portAEn < 0,
@@ -877,6 +923,7 @@ class CpuCore extends Module {
                         useExtCache: useExtCache,
                         isExtPc: isExtPc,
                         isExtNextPc: isExtNextPc,
+                        decIsEretQ: hasEpc ? decIsEretQ : null,
                       ),
                     ], orElse: [
                       state < Const(_stMemWait2, width: 3),
@@ -919,6 +966,7 @@ class CpuCore extends Module {
                           useExtCache: useExtCache,
                           isExtPc: isExtPc,
                           isExtNextPc: isExtNextPc,
+                          decIsEretQ: hasEpc ? decIsEretQ : null,
                         ),
                       ], orElse: [
                         mmioRdataReg < dcRespDataIn,
@@ -963,6 +1011,7 @@ class CpuCore extends Module {
                   useExtCache: useExtCache,
                   isExtPc: isExtPc,
                   isExtNextPc: isExtNextPc,
+                  decIsEretQ: hasEpc ? decIsEretQ : null,
                 ),
               ]),
             ], defaultItem: [
@@ -983,6 +1032,7 @@ class CpuCore extends Module {
     Logic decArithSubQ,
     Logic decIllegalSlot1Q, {
     required bool isSlot1,
+    Logic? decIsEretQ,
   }) {
     final op = byteVal.slice(7, 4);
     final rr = byteVal.slice(3, 2);
@@ -1005,6 +1055,8 @@ class CpuCore extends Module {
       decUseOneAsAddBQ < (isPostinc | isPredec | isRotIncDec),
       decArithSubQ < (isSub | isPredec | isDec),
       decIllegalSlot1Q < isIllegalSlot1,
+      if (decIsEretQ != null)
+        decIsEretQ < byteVal.eq(Const(MiniRISC4Constants.opEretByte, width: 8)),
     ];
   }
 
@@ -1050,6 +1102,7 @@ class CpuCore extends Module {
     bool useExtCache = false,
     Logic? isExtPc,
     Logic? isExtNextPc,
+    Logic? decIsEretQ,
   }) {
     final slot1LocalAdvance = <Conditional>[
       pc < pcPlus1,
@@ -1065,6 +1118,7 @@ class CpuCore extends Module {
         decArithSubQ,
         decIllegalSlot1Q,
         isSlot1: false,
+        decIsEretQ: decIsEretQ,
       ),
       portAAddr < portAAddrPlus1,
       portAEn < 1,
@@ -1087,6 +1141,7 @@ class CpuCore extends Module {
         decArithSubQ,
         decIllegalSlot1Q,
         isSlot1: true,
+        decIsEretQ: decIsEretQ,
       ),
     ], orElse: [
       if (useExtCache && isExtPc != null && isExtNextPc != null)

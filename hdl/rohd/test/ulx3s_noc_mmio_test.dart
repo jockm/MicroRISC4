@@ -175,6 +175,7 @@ void main() {
       int inc(int rl) => 0xC8 | (rl & 3);
       int xchg(int rl) => 0xBC | (rl & 3);
       int jmp(int rl) => 0xF0 | (rl & 3);
+      int eret() => MiniRISC4Constants.opEretByte;
 
       void emitProg(Map<int, int> mem, int startAddr, List<int> words) {
         for (var i = 0; i < words.length; i++) {
@@ -212,15 +213,22 @@ void main() {
         ...load16(1, 0xCAFE),
         pack2(poke(0, 1)),
         // Jump to idle loop at 0x0130
+        // Hold live sentinel 0xBEEF in R0 across the interruptible idle loop!
+        // With hardware EPC + ERET, async Trap 14 MUST NOT clobber R0.
+        ...load16(0, 0xBEEF),
         ...load16(3, 0x0130),
         pack2(jmp(3)),
       ]);
       emitProg(core0Mem, 0x0130, [
+        // Continuously store live R0 into [0x0305] so post-trap R0 integrity is verified
+        ...load16(2, 0x0305),
+        pack2(poke(2, 0)),
         pack2(jmp(3)),
       ]);
-      // Core 0 Trap 14 handler (0x01E0)
+      // Core 0 Trap 14 handler (0x01E0) — saves ALL live regs including R0 and returns via ERET!
       emitProg(core0Mem, 0x01E0, [
-        pack2(xchg(0)), // Save return PC in shadow R0
+        pack2(xchg(0), xchg(1)), // Save live R0, R1 in shadow bank (PC is in hardware EPC)
+        pack2(xchg(2)),
         ...load16(0, MiniRISC4Constants.addrNocMboxSrc),
         pack2(peek(1, 0)),
         ...load16(2, 0x0301),
@@ -233,8 +241,13 @@ void main() {
         ...load16(2, 0x0304),
         pack2(peek(1, 2), inc(1)),
         pack2(poke(2, 1)),
-        pack2(xchg(0)), // Restore return PC
-        pack2(jmp(0)),
+        // Snapshot hardware EPC (0x001E) -> [0x0306]
+        ...load16(0, MiniRISC4Constants.addrEpc),
+        pack2(peek(1, 0)),
+        ...load16(2, 0x0306),
+        pack2(poke(2, 1)),
+        pack2(xchg(2), xchg(1)),
+        pack2(xchg(0), eret()), // Restore live R0 and return atomically to hardware EPC!
       ]);
 
       // Core 1 program (middle transit core): stores CPUID -> [0x0300], NOC_INFO -> [0x0301], idles
@@ -270,15 +283,20 @@ void main() {
         ...load16(0, MiniRISC4Constants.addrNocDstCore),
         ...load16(1, 0),
         pack2(poke(0, 1)),
+        // Hold live sentinel 0xACED in R0 across interruptible loop!
+        ...load16(0, 0xACED),
         ...load16(3, 0x0120),
         pack2(jmp(3)),
       ]);
       emitProg(core2Mem, 0x0120, [
+        ...load16(2, 0x0305),
+        pack2(poke(2, 0)),
         pack2(jmp(3)),
       ]);
-      // Core 2 Trap 14 handler (0x01E0)
+      // Core 2 Trap 14 handler (0x01E0) — preserves live R0..R2 and returns via ERET!
       emitProg(core2Mem, 0x01E0, [
-        pack2(xchg(0)), // Save return PC
+        pack2(xchg(0), xchg(1)), // Save live R0, R1 (PC is in hardware EPC)
+        pack2(xchg(2)),
         ...load16(0, MiniRISC4Constants.addrNocMboxSrc),
         pack2(peek(1, 0)),
         ...load16(2, 0x0301),
@@ -298,8 +316,13 @@ void main() {
         ...load16(2, 0x0304),
         pack2(peek(1, 2), inc(1)),
         pack2(poke(2, 1)),
-        pack2(xchg(0)), // Restore return PC
-        pack2(jmp(0)),
+        // Snapshot hardware EPC (0x001E) -> [0x0306]
+        ...load16(0, MiniRISC4Constants.addrEpc),
+        pack2(peek(1, 0)),
+        ...load16(2, 0x0306),
+        pack2(poke(2, 1)),
+        pack2(xchg(2), xchg(1)),
+        pack2(xchg(0), eret()), // Restore live R0 and return atomically to hardware EPC!
       ]);
 
       final clk25 = SimpleClockGenerator(10).clk;
@@ -355,9 +378,98 @@ void main() {
         expect(top.cores[0].ram.mem[0x0302], equals(0x4243));
         expect(top.cores[0].ram.mem[0x0304], equals(1));
 
+        // Verify live R0 sentinels were 100% preserved across async Trap 14 + ERET!
+        expect(top.cores[0].ram.mem[0x0305], equals(0xBEEF));
+        expect(top.cores[2].ram.mem[0x0305], equals(0xACED));
+        // Verify hardware EPC (0x001E) captured Core 0's interrupted idle-loop PC
+        expect(top.cores[0].ram.mem[0x0306], inInclusiveRange(0x0130, 0x0134));
+
         Simulator.endSimulation();
       });
 
+      await Simulator.run();
+    });
+
+    test("Hardware EPC (0x001E) R/W + ERET (0x0F) preserves all 4 registers R0..R3", () async {
+      int pack2(int b0, [int b1 = 0x00]) => ((b1 & 0xFF) << 8) | (b0 & 0xFF);
+      int push8(int rl, int imm8) => ((imm8 & 0xFF) << 8) | (0xF8 | (rl & 3));
+      int poke(int rr, int rl) => (0x3 << 4) | ((rr & 3) << 2) | (rl & 3);
+      int jmp(int rl) => 0xF0 | (rl & 3);
+      int eret() => MiniRISC4Constants.opEretByte;
+      List<int> load16(int rl, int val) => [
+            push8(rl, (val >> 8) & 0xFF),
+            push8(rl, val & 0xFF),
+          ];
+
+      final mem = <int, int>{};
+      void emit(int addr, List<int> words) {
+        for (var i = 0; i < words.length; i++) {
+          mem[addr + i] = words[i];
+        }
+      }
+
+      // 0x0100: Write target 0x0220 to EPC (0x001E), load R0..R3 with 4 distinct
+      // live sentinels, then execute ERET (0x0F)!
+      emit(0x0100, [
+        ...load16(0, MiniRISC4Constants.addrEpc),
+        ...load16(1, 0x0220),
+        pack2(poke(0, 1)),
+        ...load16(0, 0x1111),
+        ...load16(1, 0x2222),
+        ...load16(2, 0x3333),
+        ...load16(3, 0x4444),
+        pack2(eret()),
+      ]);
+
+      // 0x0220: Store all 4 registers using shadow swap to prove ERET clobbered NONE of them!
+      int xchg(int rl) => 0xBC | (rl & 3);
+      emit(0x0220, [
+        pack2(xchg(0)),
+        ...load16(0, 0x0310),
+        pack2(poke(0, 1)), // [0x0310] = R1 (0x2222)
+        ...load16(0, 0x0311),
+        pack2(poke(0, 2)), // [0x0311] = R2 (0x3333)
+        ...load16(0, 0x0312),
+        pack2(poke(0, 3)), // [0x0312] = R3 (0x4444)
+        pack2(xchg(0)),    // restore R0 (0x1111)
+        ...load16(1, 0x0313),
+        pack2(poke(1, 0)), // [0x0313] = R0 (0x1111)
+        ...load16(3, 0x0240),
+        pack2(jmp(3)),
+      ]);
+      emit(0x0240, [pack2(jmp(3))]);
+
+      final clk25 = SimpleClockGenerator(10).clk;
+      final btnPwrN = Logic(name: "btn_pwr_n");
+      final ftdiTxd = Logic(name: "ftdi_txd");
+      final top = Ulx3sTop(
+        clk25mhz: clk25,
+        btnPwrN: btnPwrN,
+        ftdiTxd: ftdiTxd,
+        config: const CpuConfig(
+          coreId: 0,
+          enableCpuid: true,
+          enableUart: true,
+          enableCrossTraps: true,
+          enableEpc: true,
+          trapTableBase: 0x0100,
+          memWords: 2048,
+        ),
+        initHexFile: null,
+        initialMemory: mem,
+      );
+      await top.build();
+
+      btnPwrN.put(0);
+      ftdiTxd.put(1);
+      Simulator.registerAction(25, () => btnPwrN.put(1));
+      Simulator.registerAction(800, () {
+        expect(top.cpu.ram.mem[0x0313], equals(0x1111));
+        expect(top.cpu.ram.mem[0x0310], equals(0x2222));
+        expect(top.cpu.ram.mem[0x0311], equals(0x3333));
+        expect(top.cpu.ram.mem[0x0312], equals(0x4444));
+        Simulator.endSimulation();
+      });
       await Simulator.run();
     });
   });

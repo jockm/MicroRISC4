@@ -454,7 +454,8 @@ asic-tile-flow:
 # Step 2 (Track D.4): Assemble 4-tile hierarchical `mr4_quad_top` chip from hardened `mr4_tile` macro.
 asic-quad-flow:
 	@if [ ! -f "$(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/mr4_tile/base/mr4_tile.lef" ] || \
-	    [ ! -f "$(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/mr4_tile/base/mr4_tile.lib" ]; then \
+	    ( [ ! -f "$(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/mr4_tile/base/mr4_tile_typ.lib" ] && \
+	      [ ! -f "$(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/mr4_tile/base/mr4_tile.lib" ] ); then \
 		echo "[FAIL] Hardened mr4_tile abstracts not found for $(ASIC_PLATFORM). Run 'make asic-tile-flow ASIC_PLATFORM=$(ASIC_PLATFORM)' first."; exit 1; \
 	fi
 	@if [ ! -f "$(ASIC_TILE_BLD)/$(ASIC_QUAD_TOP).sv" ]; then \

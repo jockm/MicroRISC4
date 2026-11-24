@@ -44,8 +44,24 @@ BYTE_MASK       = 0xFF
 
 ADDR_UART_RX    = 0x000E
 ADDR_UART_TX    = 0x000F
+ADDR_CPU_VER    = 0x001B  # RO: {major[7:0], minor[7:0]} = 0x0001 (v0.1)
+ADDR_CPU_CAPS   = 0x001C  # RO: Primary 16-bit capability bitmask
+ADDR_CPU_CAPS2  = 0x001D  # RO: Expansion capability word (reserved = 0x0000)
 ADDR_EPC        = 0x001E
 ADDR_RESET_VEC  = 0x0100
+
+CPU_VERSION_WORD = 0x0001  # v0.1
+CAP_SHADOW_REGS  = 1 << 0
+CAP_CPUID        = 1 << 1
+CAP_UART         = 1 << 2
+CAP_MATH_ACCEL   = 1 << 3
+CAP_FPU          = 1 << 4
+CAP_SPI          = 1 << 5
+CAP_NOC          = 1 << 6
+CAP_CROSS_TRAPS  = 1 << 7
+CAP_EPC_ERET     = 1 << 8
+CAP_SDRAM_CACHE  = 1 << 9
+CAP_PIPELINED    = 1 << 10
 TRAP_BASE       = 0x0100
 
 # MiniRISC4 Primary Opcodes (Bits [7:4] / [15:12])
@@ -784,6 +800,21 @@ class MiniRISC4Sim:
             v = getattr(self.sd_card, "_last_rx", 0xFF)
             self.sd_card._last_rx = 0xFF
             return v
+        if addr == ADDR_CPU_VER:
+            return CPU_VERSION_WORD
+        if addr == ADDR_CPU_CAPS:
+            caps = CAP_SHADOW_REGS | CAP_NOC | CAP_CROSS_TRAPS | CAP_EPC_ERET
+            if getattr(self, "enable_cpuid", True):
+                caps |= CAP_CPUID
+            if getattr(self, "enable_uart", True):
+                caps |= CAP_UART
+            if self.sd_card is not None:
+                caps |= CAP_SPI
+            if self.sdram_cache is not None:
+                caps |= CAP_SDRAM_CACHE
+            return caps & WORD_MASK
+        if addr == ADDR_CPU_CAPS2:
+            return 0x0000
         if addr == ADDR_EPC:
             return self.epc & WORD_MASK
         if addr == ADDR_NOC_SEL_CH:
@@ -838,6 +869,8 @@ class MiniRISC4Sim:
             self.mem[addr] = val
         elif addr == 0x001A and self.sd_card is not None:
             self.sd_card._last_rx = self.sd_card.xfer(val)
+        elif addr in (ADDR_CPU_VER, ADDR_CPU_CAPS, ADDR_CPU_CAPS2):
+            return  # Read-only CPU info constants
         elif addr == ADDR_EPC:
             self.epc = val
             self.mem[addr] = val

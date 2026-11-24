@@ -390,6 +390,100 @@ void main() {
       await Simulator.run();
     });
 
+    test("Read-only CPU_VER (0x001B), CPU_CAPS (0x001C), and CPU_CAPS2 (0x001D) constants", () async {
+      int pack2(int b0, [int b1 = 0x00]) => ((b1 & 0xFF) << 8) | (b0 & 0xFF);
+      int push8(int rl, int imm8) => ((imm8 & 0xFF) << 8) | (0xF8 | (rl & 3));
+      int peek(int rr, int rl) => (0x2 << 4) | ((rr & 3) << 2) | (rl & 3);
+      int poke(int rr, int rl) => (0x3 << 4) | ((rr & 3) << 2) | (rl & 3);
+      int jmp(int rl) => 0xF0 | (rl & 3);
+      List<int> load16(int rl, int val) => [
+            push8(rl, (val >> 8) & 0xFF),
+            push8(rl, val & 0xFF),
+          ];
+
+      final mem = <int, int>{};
+      void emit(int addr, List<int> words) {
+        for (var i = 0; i < words.length; i++) {
+          mem[addr + i] = words[i];
+        }
+      }
+
+      // Attempt writes to 0x001B..0x001D (must be ignored!), then read all three into 0x0320..0x0322
+      emit(0x0100, [
+        ...load16(1, 0xDEAD),
+        ...load16(0, MiniRISC4Constants.addrCpuVer),
+        pack2(poke(0, 1)),
+        ...load16(0, MiniRISC4Constants.addrCpuCaps),
+        pack2(poke(0, 1)),
+        ...load16(0, MiniRISC4Constants.addrCpuCaps2),
+        pack2(poke(0, 1)),
+        ...load16(0, MiniRISC4Constants.addrCpuVer),
+        pack2(peek(1, 0)),
+        ...load16(2, 0x0320),
+        pack2(poke(2, 1)),
+        ...load16(0, MiniRISC4Constants.addrCpuCaps),
+        pack2(peek(1, 0)),
+        ...load16(2, 0x0321),
+        pack2(poke(2, 1)),
+        ...load16(0, MiniRISC4Constants.addrCpuCaps2),
+        pack2(peek(1, 0)),
+        ...load16(2, 0x0322),
+        pack2(poke(2, 1)),
+        ...load16(3, 0x0140),
+        pack2(jmp(3)),
+      ]);
+      emit(0x0140, [pack2(jmp(3))]);
+
+      const cfg = CpuConfig(
+        coreId: 0,
+        enableCpuid: true,
+        enableUart: true,
+        enableCrossTraps: true,
+        enableShadowRegs: true,
+        enableMathAccel: false,
+        enableFpu: false,
+        enableSpi: false,
+        enableNoc: false,
+        enableSdramCache: false,
+        trapTableBase: 0x0100,
+        memWords: 2048,
+      );
+
+      final clk25 = SimpleClockGenerator(10).clk;
+      final btnPwrN = Logic(name: "btn_pwr_n");
+      final ftdiTxd = Logic(name: "ftdi_txd");
+      final top = Ulx3sTop(
+        clk25mhz: clk25,
+        btnPwrN: btnPwrN,
+        ftdiTxd: ftdiTxd,
+        config: cfg,
+        initHexFile: null,
+        initialMemory: mem,
+      );
+      await top.build();
+
+      btnPwrN.put(0);
+      ftdiTxd.put(1);
+      Simulator.registerAction(25, () => btnPwrN.put(1));
+      Simulator.registerAction(800, () {
+        // CPU_VER = 0.1 (0x0001), CPU_CAPS matches config, CPU_CAPS2 = 0x0000
+        expect(top.cpu.ram.mem[0x0320], equals(0x0001));
+        expect(
+          top.cpu.ram.mem[0x0321],
+          equals(
+            MiniRISC4Constants.capShadowRegs |
+                MiniRISC4Constants.capCpuid |
+                MiniRISC4Constants.capUart |
+                MiniRISC4Constants.capCrossTraps |
+                MiniRISC4Constants.capEpcEret,
+          ),
+        );
+        expect(top.cpu.ram.mem[0x0322], equals(0x0000));
+        Simulator.endSimulation();
+      });
+      await Simulator.run();
+    });
+
     test("Hardware EPC (0x001E) R/W + ERET (0x0F) preserves all 4 registers R0..R3", () async {
       int pack2(int b0, [int b1 = 0x00]) => ((b1 & 0xFF) << 8) | (b0 & 0xFF);
       int push8(int rl, int imm8) => ((imm8 & 0xFF) << 8) | (0xF8 | (rl & 3));

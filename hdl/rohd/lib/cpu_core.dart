@@ -188,6 +188,15 @@ class CpuCore extends Module {
         ? (isMmioPage & mmioOff.eq(Const(MiniRISC4Constants.addrUartTx, width: 6)))
         : Const(0);
     final hasEpc = config.hasEpc;
+    final isMmioCpuVer = config.enableCpuInfo
+        ? (isMmioPage & mmioOff.eq(Const(MiniRISC4Constants.addrCpuVer, width: 6)))
+        : Const(0);
+    final isMmioCpuCaps = config.enableCpuInfo
+        ? (isMmioPage & mmioOff.eq(Const(MiniRISC4Constants.addrCpuCaps, width: 6)))
+        : Const(0);
+    final isMmioCpuCaps2 = config.enableCpuInfo
+        ? (isMmioPage & mmioOff.eq(Const(MiniRISC4Constants.addrCpuCaps2, width: 6)))
+        : Const(0);
     final isMmioEpc = hasEpc
         ? (isMmioPage & mmioOff.eq(Const(MiniRISC4Constants.addrEpc, width: 6)))
         : Const(0);
@@ -239,6 +248,9 @@ class CpuCore extends Module {
     final isMmio = isMmioCpuid |
         isMmioRx |
         isMmioTx |
+        isMmioCpuVer |
+        isMmioCpuCaps |
+        isMmioCpuCaps2 |
         isMmioEpc |
         isMathMatch |
         isSpiMatch |
@@ -291,18 +303,30 @@ class CpuCore extends Module {
           isMmioTx,
           txStatus,
           mux(
-            isMmioEpc,
-            epcQ,
+            isMmioCpuVer,
+            Const(config.cpuVersionWord, width: 16),
             mux(
-              isMathMatch,
-              mathRdata ?? Const(0, width: 16),
+              isMmioCpuCaps,
+              Const(config.cpuCapsWord, width: 16),
               mux(
-                isSpiMatch,
-                spiRdata ?? Const(0, width: 16),
+                isMmioCpuCaps2,
+                Const(config.cpuCaps2Word, width: 16),
                 mux(
-                  isNocMatch,
-                  nocRdataIn,
-                  Const(0, width: 16),
+                  isMmioEpc,
+                  epcQ,
+                  mux(
+                    isMathMatch,
+                    mathRdata ?? Const(0, width: 16),
+                    mux(
+                      isSpiMatch,
+                      spiRdata ?? Const(0, width: 16),
+                      mux(
+                        isNocMatch,
+                        nocRdataIn,
+                        Const(0, width: 16),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ),

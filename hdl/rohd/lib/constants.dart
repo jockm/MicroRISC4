@@ -12,10 +12,28 @@ abstract class MiniRISC4Constants {
   // Memory Map & Hardware Addresses
   static const int trapTableBase = 0xFFF0;
   static const int trapAlignAddr = 0xFFFF;
-  static const int addrUartRx = 0x000E;
-  static const int addrUartTx = 0x000F;
-  static const int addrEpc    = 0x001E; // R/W: Hardware Exception Program Counter (EPC)
-  static const int opEretByte = 0x0F;   // 1-byte ERET instruction (PC <- EPC, preserves R0..R3)
+  static const int addrUartRx   = 0x000E;
+  static const int addrUartTx   = 0x000F;
+  static const int addrCpuVer   = 0x001B; // RO: {major[7:0], minor[7:0]} (v0.1 = 0x0001)
+  static const int addrCpuCaps  = 0x001C; // RO: Primary 16-bit CPU capability bitmask
+  static const int addrCpuCaps2 = 0x001D; // RO: Reserved expansion capability word (0x0000)
+  static const int addrEpc      = 0x001E; // R/W: Hardware Exception Program Counter (EPC)
+  static const int opEretByte   = 0x0F;   // 1-byte ERET instruction (PC <- EPC, preserves R0..R3)
+
+  // Architectural Version & CPU_CAPS (0x001C) Bit Definitions
+  static const int cpuVersionMajor = 0;
+  static const int cpuVersionMinor = 1;
+  static const int capShadowRegs   = 1 << 0;  // 0x0001: Hardware shadow regs + XCHG
+  static const int capCpuid        = 1 << 1;  // 0x0002: Hardware CPUID @ 0x000D
+  static const int capUart         = 1 << 2;  // 0x0004: Hardware UART @ 0x000E-0x000F
+  static const int capMathAccel    = 1 << 3;  // 0x0008: Integer Math Accelerator @ 0x0010-0x0016
+  static const int capFpu          = 1 << 4;  // 0x0010: Hardware Floating-Point Unit (FPU)
+  static const int capSpi          = 1 << 5;  // 0x0020: Hardware SPI Master @ 0x0018-0x001A
+  static const int capNoc          = 1 << 6;  // 0x0040: Lean Ring NoC @ 0x0020-0x002A
+  static const int capCrossTraps   = 1 << 7;  // 0x0080: Async cross-core Trap 14
+  static const int capEpcEret      = 1 << 8;  // 0x0100: Hardware EPC (0x001E) + ERET (0x0F)
+  static const int capSdramCache   = 1 << 9;  // 0x0200: External SDRAM I/D Cache subsystem
+  static const int capPipelined    = 1 << 10; // 0x0400: 4-stage pipelined CpuCore
 
   // Lean Direct-Addressed NoC Ring & Doorbell MMIO Registers (0x0020-0x002A)
   static const int addrNocTxData    = 0x0020; // W: send 16-bit DATA word to dstCore

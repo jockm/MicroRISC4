@@ -3,17 +3,25 @@
 // MiniRISC4 Modular Hardware Configuration Object
 // ==============================================================================
 
+import 'constants.dart';
+
 class CpuConfig {
   final int coreId;
   final bool enableCpuid;
+  final bool enableCpuInfo;
   final bool enableUart;
   final bool enableCrossTraps;
   final bool? enableEpc;
   final bool enableShadowRegs;
   final bool enableMathAccel;
-  final bool enableSpi; // Configurable Math Engine at 0x0010-0x0016
+  final bool enableFpu;
+  final bool enableSpi;
   final bool enableNoc;
   final bool enableSdramCache;
+  final bool isPipelined;
+  final int cpuVersionMajor;
+  final int cpuVersionMinor;
+  final int cpuCaps2;
   final int cacheLines;
   final int cacheLineWords;
   final int nocChannels;
@@ -24,14 +32,20 @@ class CpuConfig {
   const CpuConfig({
     this.coreId = 0,
     this.enableCpuid = true,
+    this.enableCpuInfo = true,
     this.enableUart = true,
     this.enableCrossTraps = false,
     this.enableEpc,
     this.enableShadowRegs = true,
     this.enableMathAccel = false,
+    this.enableFpu = false,
     this.enableSpi = false,
     this.enableNoc = false,
     this.enableSdramCache = false,
+    this.isPipelined = false,
+    this.cpuVersionMajor = MiniRISC4Constants.cpuVersionMajor,
+    this.cpuVersionMinor = MiniRISC4Constants.cpuVersionMinor,
+    this.cpuCaps2 = 0,
     this.cacheLines = 64,
     this.cacheLineWords = 8,
     this.nocChannels = 8,
@@ -43,6 +57,27 @@ class CpuConfig {
   int get addrWidth => (memWords - 1).bitLength;
   int get memTop => memWords - 1;
   bool get hasEpc => enableEpc ?? enableCrossTraps;
+
+  /// Read-only CPU_VER (0x001B): {major[7:0], minor[7:0]}.
+  int get cpuVersionWord =>
+      ((cpuVersionMajor & 0xFF) << 8) | (cpuVersionMinor & 0xFF);
+
+  /// Read-only CPU_CAPS (0x001C): primary 16-bit capability flags.
+  int get cpuCapsWord =>
+      (enableShadowRegs ? MiniRISC4Constants.capShadowRegs : 0) |
+      (enableCpuid ? MiniRISC4Constants.capCpuid : 0) |
+      (enableUart ? MiniRISC4Constants.capUart : 0) |
+      (enableMathAccel ? MiniRISC4Constants.capMathAccel : 0) |
+      (enableFpu ? MiniRISC4Constants.capFpu : 0) |
+      (enableSpi ? MiniRISC4Constants.capSpi : 0) |
+      (enableNoc ? MiniRISC4Constants.capNoc : 0) |
+      (enableCrossTraps ? MiniRISC4Constants.capCrossTraps : 0) |
+      (hasEpc ? MiniRISC4Constants.capEpcEret : 0) |
+      (enableSdramCache ? MiniRISC4Constants.capSdramCache : 0) |
+      (isPipelined ? MiniRISC4Constants.capPipelined : 0);
+
+  /// Read-only CPU_CAPS2 (0x001D): expansion capability word (reserved).
+  int get cpuCaps2Word => cpuCaps2 & 0xFFFF;
 
   /// Standalone core with standard peripherals.
   factory CpuConfig.standalone({bool enableMath = true}) => CpuConfig(

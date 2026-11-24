@@ -9,13 +9,29 @@ import 'cache_controllers.dart';
 import 'constants.dart';
 import 'sdram_controller.dart';
 
-/// Round-robin burst arbiter sharing a single [SdramController] across
-/// [numClients] streaming cache ports (typically `2 * numCores`: I-Cache +
-/// D-Cache per core). Locks the grant for an entire burst, then rotates the
-/// round-robin pointer so no core can starve.
+/// Pipelined, fully-registered round-robin burst arbiter sharing a single
+/// [SdramController] across [numClients] streaming cache ports (typically
+/// `2 * numCores`: I-Cache + D-Cache per core).
+///
+/// Timing architecture (all cross-die boundaries 100% FF-to-FF):
+/// - **2-stage command grant (`_stIdle -> _stLatch -> _stIssue`)**: separates
+///   the round-robin priority encoder from the 24-bit address mux, driving pure
+///   registered `sdram_cmd_*` outputs and a 1-cycle registered `client_cmd_ready`.
+/// - **Registered read return (`rdataQ`, `rvalidVecQ`)**: breaks the cross-die
+///   path from `SdramController` into remote cache `DP16KD` write ports.
+/// - **2-stage write pipeline (`wdataCapQ` + shared 4-word `wbuf` ring)**:
+///   captures each write-capable `DCache`'s `DP16KD.DO` locally on `wreadyVecQ`,
+///   then muxes pure FFs into a central 4-word skid buffer feeding
+///   `SdramController` at 1.0 word/cycle with zero bubbles and zero overflow.
 class SdramBurstArbiter extends Module {
   final int numClients;
   final int idWidth;
+
+  static const int _stIdle = 0;
+  static const int _stLatch = 1;
+  static const int _stIssue = 2;
+  static const int _stActive = 3;
+  static const int _stDrain = 4;
 
   SdramBurstArbiter({
     required Logic clk,
@@ -30,12 +46,15 @@ class SdramBurstArbiter extends Module {
     required Logic sdramRdata,
     required Logic sdramRdataValid,
     required Logic sdramWdataReady,
+    List<bool>? clientCanWrite,
     super.name = 'sdram_burst_arbiter',
   })  : numClients = clientCmdReq.length,
         idWidth = (clientCmdReq.length <= 1)
             ? 1
             : (clientCmdReq.length - 1).bitLength {
     assert(numClients >= 1, 'numClients must be >= 1');
+    final canWrite = clientCanWrite ?? List<bool>.filled(numClients, true);
+    assert(canWrite.length == numClients, 'clientCanWrite length mismatch');
 
     clk = addInput('clk', clk);
     reset = addInput('reset', reset);
@@ -76,11 +95,55 @@ class SdramBurstArbiter extends Module {
     final sWdata = addOutput('sdram_wdata', width: MiniRISC4Constants.dataWidth);
     final sWdataValid = addOutput('sdram_wdata_valid');
 
-    final busyQ = Logic(name: 'arb_busy_q');
+    // FSM & command registers
+    final stateQ = Logic(name: 'arb_state_q', width: 3);
     final grantIdxQ = Logic(name: 'grant_idx_q', width: idWidth);
     final grantRwQ = Logic(name: 'grant_rw_q');
+    final cmdAddrQ = Logic(name: 'cmd_addr_q', width: 24);
+    final cmdLenQ = Logic(name: 'cmd_len_q', width: 8);
     final remBeatsQ = Logic(name: 'rem_beats_q', width: 8);
+    final pullRemQ = Logic(name: 'pull_rem_q', width: 8);
     final rrPtrQ = Logic(name: 'rr_ptr_q', width: idWidth);
+
+    // Registered client-facing handshake & read-return signals
+    final cmdReadyVecQ = List.generate(
+      numClients,
+      (i) => Logic(name: 'cmd_ready_q_$i'),
+    );
+    final rvalidVecQ = List.generate(
+      numClients,
+      (i) => Logic(name: 'rvalid_q_$i'),
+    );
+    final rdataQ =
+        Logic(name: 'rdata_q', width: MiniRISC4Constants.dataWidth);
+
+    // Per-write-client local capture FF (breaks DP16KD.DO -> N:1 mux path)
+    final wreadyVecQ = <Logic>[];
+    final wdataCapQ = <int, Logic>{};
+    final writeClientIndices = <int>[];
+    for (var i = 0; i < numClients; i++) {
+      if (canWrite[i]) {
+        writeClientIndices.add(i);
+        wreadyVecQ.add(Logic(name: 'wready_q_$i'));
+        wdataCapQ[i] = Logic(
+          name: 'wdata_cap_q_$i',
+          width: MiniRISC4Constants.dataWidth,
+        );
+      } else {
+        wreadyVecQ.add(Const(0));
+      }
+    }
+
+    // Shared 4-entry central write skid ring (64 FFs total across the whole chip)
+    final wbuf = List.generate(
+      4,
+      (i) => Logic(name: 'wbuf_q_$i', width: MiniRISC4Constants.dataWidth),
+    );
+    final wWrPtrQ = Logic(name: 'wbuf_wr_ptr_q', width: 2);
+    final wRdPtrQ = Logic(name: 'wbuf_rd_ptr_q', width: 2);
+    final wCntQ = Logic(name: 'wbuf_cnt_q', width: 3);
+    final wStageValidQ = Logic(name: 'w_stage_valid_q');
+    final wReadyActiveQ = Logic(name: 'w_ready_active_q');
 
     Logic balancedMux(List<Logic> items, Logic sel, Logic fallback) {
       if (items.length == 1) return items[0];
@@ -99,8 +162,36 @@ class SdramBurstArbiter extends Module {
       return level[0];
     }
 
-    // Round-robin priority selection: first check clients >= rrPtrQ, else wrap
-    // around from 0..rrPtrQ-1.
+    // Helper: select a signal over write-capable clients only (halves mux width
+    // in SdramCacheCluster where I-Cache occupies even indices and D-Cache odd).
+    final isOddWriteLayout = writeClientIndices.isNotEmpty &&
+        writeClientIndices.length * 2 == numClients &&
+        List.generate(writeClientIndices.length, (k) => k * 2 + 1)
+            .asMap()
+            .entries
+            .every((e) => writeClientIndices[e.key] == e.value);
+
+    Logic selectWriteClient(Logic Function(int idx) getItem, Logic fallback) {
+      if (writeClientIndices.isEmpty) return fallback;
+      if (writeClientIndices.length == 1) {
+        return getItem(writeClientIndices[0]);
+      }
+      if (isOddWriteLayout && idWidth >= 2) {
+        final oddItems = [for (final idx in writeClientIndices) getItem(idx)];
+        return balancedMux(
+          oddItems,
+          grantIdxQ.slice(idWidth - 1, 1),
+          fallback,
+        );
+      }
+      final allItems = List<Logic>.generate(
+        numClients,
+        (i) => canWrite[i] ? getItem(i) : fallback,
+      );
+      return balancedMux(allItems, grantIdxQ, fallback);
+    }
+
+    // Stage 1 (_stIdle): Round-robin priority encoder on 1-bit reqs only
     Logic anyHi = Const(0);
     Logic idxHi = Const(0, width: idWidth);
     Logic anyLo = Const(0);
@@ -117,67 +208,207 @@ class SdramBurstArbiter extends Module {
     }
     final anyReq = anyHi | anyLo;
     final selIdx = mux(anyHi, idxHi, idxLo);
-
-    final selRw = balancedMux(rws, selIdx, Const(0));
-    final selAddr = balancedMux(addrs, selIdx, Const(0, width: 24));
-    final selLen = balancedMux(lens, selIdx, Const(8, width: 8));
-
-    final isIdle = ~busyQ;
-    final grantFire = isIdle & anyReq & sCmdReady;
-
-    // SDRAM command port
-    sCmdReq <= isIdle & anyReq;
-    sCmdRw <= selRw;
-    sCmdAddr <= selAddr;
-    sCmdBurstLen <= selLen;
-
-    // SDRAM write data port (driven by currently granted write client)
-    final grantedWdata =
-        balancedMux(wdatas, grantIdxQ, Const(0, width: MiniRISC4Constants.dataWidth));
-    final grantedWvalid = balancedMux(wvalids, grantIdxQ, Const(0));
-    sWdata <= grantedWdata;
-    sWdataValid <= busyQ & grantRwQ & grantedWvalid;
-
-    // Client return buses
-    clientRdataOut <= sRdata;
-    for (var i = 0; i < numClients; i++) {
-      final iConst = Const(i, width: idWidth);
-      output('client_cmd_ready_$i') <= grantFire & selIdx.eq(iConst);
-      output('client_rdata_valid_$i') <=
-          busyQ & (~grantRwQ) & sRdataValid & grantIdxQ.eq(iConst);
-      output('client_wdata_ready_$i') <=
-          busyQ & grantRwQ & sWdataReady & grantIdxQ.eq(iConst);
-    }
-
-    final beatTransfer =
-        busyQ & mux(grantRwQ, grantedWvalid & sWdataReady, sRdataValid);
     final nextRr = mux(
       selIdx.eq(Const(numClients - 1, width: idWidth)),
       Const(0, width: idWidth),
       selIdx + Const(1, width: idWidth),
     );
 
-    Sequential(clk, reset: reset, resetValues: {
-      busyQ: 0,
+    // Stage 2 (_stLatch): Mux command payload using registered grantIdxQ
+    final latchedRw = balancedMux(rws, grantIdxQ, Const(0));
+    final latchedAddr = balancedMux(addrs, grantIdxQ, Const(0, width: 24));
+    final latchedLen = balancedMux(lens, grantIdxQ, Const(8, width: 8));
+
+    final isIssue = stateQ.eq(Const(_stIssue, width: 3));
+    final isActive = stateQ.eq(Const(_stActive, width: 3));
+    final inWriteFlight = (isIssue | isActive) & grantRwQ;
+
+    // Pure-FF SDRAM command outputs
+    sCmdReq <= isIssue;
+    sCmdRw <= grantRwQ;
+    sCmdAddr <= cmdAddrQ;
+    sCmdBurstLen <= cmdLenQ;
+
+    // Central 4-word write ring -> SDRAM write port
+    final wbufOut = balancedMux(
+      wbuf,
+      wRdPtrQ,
+      Const(0, width: MiniRISC4Constants.dataWidth),
+    );
+    final wbufNonEmpty = ~wCntQ.eq(Const(0, width: 3));
+    final wOutValid = isActive & grantRwQ & wbufNonEmpty;
+    sWdata <= wbufOut;
+    sWdataValid <= wOutValid;
+
+    // Pure-FF client return buses
+    clientRdataOut <= rdataQ;
+    for (var i = 0; i < numClients; i++) {
+      output('client_cmd_ready_$i') <= cmdReadyVecQ[i];
+      output('client_rdata_valid_$i') <= rvalidVecQ[i];
+      output('client_wdata_ready_$i') <= wreadyVecQ[i];
+    }
+
+    // Write-pipeline flow control (guaranteed 0 overflow, 0 mid-burst underflow):
+    //   wCapFire:       selected write client transfers a word into wdataCapQ
+    //   wPush:          wdataCapQ pushes into wbuf[wWrPtrQ]
+    //   wPop:           SdramController consumes wbuf[wRdPtrQ]
+    //   wCntNext:       wbuf occupancy after this posedge
+    //   wStageValidNext: 1 iff a newly captured word will sit in wdataCapQ next cycle
+    //   wReadyNext:     assert wreadyVecQ[grantIdxQ] next cycle iff
+    //                   (pullRemNext > 0) && (wCntNext + wStageValidNext < 4)
+    final grantedWvalid = selectWriteClient((i) => wvalids[i], Const(0));
+    final grantedCapData = selectWriteClient(
+      (i) => wdataCapQ[i]!,
+      Const(0, width: MiniRISC4Constants.dataWidth),
+    );
+
+    final wCapFire = inWriteFlight & wReadyActiveQ & grantedWvalid;
+    final wPush = inWriteFlight & wStageValidQ;
+    final wPop = wOutValid & sWdataReady;
+
+    final wCntNext = mux(
+      wPush & (~wPop),
+      wCntQ + Const(1, width: 3),
+      mux(
+        (~wPush) & wPop,
+        wCntQ - Const(1, width: 3),
+        wCntQ,
+      ),
+    );
+    final pullRemNext = mux(
+      wCapFire,
+      pullRemQ - Const(1, width: 8),
+      pullRemQ,
+    );
+    final inFlightAfter =
+        wCntNext + [Const(0, width: 2), wCapFire].swizzle();
+    final wReadyNext = inWriteFlight &
+        pullRemNext.gt(Const(0, width: 8)) &
+        inFlightAfter.lt(Const(4, width: 3));
+
+    final resetVals = <Logic, dynamic>{
+      stateQ: Const(_stIdle, width: 3),
       grantIdxQ: 0,
       grantRwQ: 0,
+      cmdAddrQ: 0,
+      cmdLenQ: 0,
       remBeatsQ: 0,
+      pullRemQ: 0,
       rrPtrQ: 0,
-    }, [
-      If(grantFire, then: [
-        busyQ < 1,
-        grantIdxQ < selIdx,
-        grantRwQ < selRw,
-        remBeatsQ < selLen,
-        rrPtrQ < nextRr,
-      ], orElse: [
-        If(beatTransfer, then: [
-          If(remBeatsQ.lte(1), then: [
-            busyQ < 0,
-            remBeatsQ < 0,
-          ], orElse: [
-            remBeatsQ < remBeatsQ - Const(1, width: 8),
+      rdataQ: 0,
+      wWrPtrQ: 0,
+      wRdPtrQ: 0,
+      wCntQ: 0,
+      wStageValidQ: 0,
+      wReadyActiveQ: 0,
+      for (final c in cmdReadyVecQ) c: 0,
+      for (final r in rvalidVecQ) r: 0,
+      for (final idx in writeClientIndices) wreadyVecQ[idx]: 0,
+      for (final idx in writeClientIndices) wdataCapQ[idx]!: 0,
+      for (final b in wbuf) b: 0,
+    };
+
+    Sequential(clk, reset: reset, resetValues: resetVals, [
+      // Default single-cycle pulses cleared every cycle
+      for (final c in cmdReadyVecQ) c < 0,
+      for (final r in rvalidVecQ) r < 0,
+
+      // Per-write-client local data capture (adjacent to each DCache BRAM)
+      for (final idx in writeClientIndices)
+        If(wreadyVecQ[idx], then: [
+          wdataCapQ[idx]! < wdatas[idx],
+        ]),
+
+      // Write pipeline datapath (active throughout _stIssue and _stActive for writes)
+      If(inWriteFlight, then: [
+        wStageValidQ < wCapFire,
+        wReadyActiveQ < wReadyNext,
+        pullRemQ < pullRemNext,
+        wCntQ < wCntNext,
+        for (final idx in writeClientIndices)
+          wreadyVecQ[idx] <
+              (wReadyNext & grantIdxQ.eq(Const(idx, width: idWidth))),
+        If(wPush, then: [
+          Case(wWrPtrQ, [
+            for (var slot = 0; slot < 4; slot++)
+              CaseItem(Const(slot, width: 2), [
+                wbuf[slot] < grantedCapData,
+              ]),
           ]),
+          wWrPtrQ < wWrPtrQ + Const(1, width: 2),
+        ]),
+        If(wPop, then: [
+          wRdPtrQ < wRdPtrQ + Const(1, width: 2),
+        ]),
+      ], orElse: [
+        wStageValidQ < 0,
+        wReadyActiveQ < 0,
+        for (final idx in writeClientIndices) wreadyVecQ[idx] < 0,
+      ]),
+
+      Case(stateQ, [
+        // 0. IDLE: round-robin select client index (1-bit reqs only)
+        CaseItem(Const(_stIdle, width: 3), [
+          If(anyReq, then: [
+            grantIdxQ < selIdx,
+            rrPtrQ < nextRr,
+            stateQ < Const(_stLatch, width: 3),
+          ]),
+        ]),
+
+        // 1. LATCH: mux command payload from registered grantIdxQ and ack client
+        CaseItem(Const(_stLatch, width: 3), [
+          grantRwQ < latchedRw,
+          cmdAddrQ < latchedAddr,
+          cmdLenQ < latchedLen,
+          remBeatsQ < latchedLen,
+          pullRemQ < latchedLen,
+          wWrPtrQ < 0,
+          wRdPtrQ < 0,
+          wCntQ < 0,
+          wStageValidQ < 0,
+          wReadyActiveQ < 0,
+          for (var i = 0; i < numClients; i++)
+            cmdReadyVecQ[i] < grantIdxQ.eq(Const(i, width: idWidth)),
+          stateQ < Const(_stIssue, width: 3),
+        ]),
+
+        // 2. ISSUE: hold pure-FF sdram_cmd_req until SdramController accepts
+        CaseItem(Const(_stIssue, width: 3), [
+          If(sCmdReady, then: [
+            stateQ < Const(_stActive, width: 3),
+          ]),
+        ]),
+
+        // 3. ACTIVE: stream registered read beats back or drain write ring
+        CaseItem(Const(_stActive, width: 3), [
+          If(~grantRwQ, then: [
+            If(sRdataValid, then: [
+              rdataQ < sRdata,
+              for (var i = 0; i < numClients; i++)
+                rvalidVecQ[i] < grantIdxQ.eq(Const(i, width: idWidth)),
+              If(remBeatsQ.lte(Const(1, width: 8)), then: [
+                remBeatsQ < 0,
+                stateQ < Const(_stDrain, width: 3),
+              ], orElse: [
+                remBeatsQ < remBeatsQ - Const(1, width: 8),
+              ]),
+            ]),
+          ], orElse: [
+            If(wPop, then: [
+              If(remBeatsQ.lte(Const(1, width: 8)), then: [
+                remBeatsQ < 0,
+                stateQ < Const(_stIdle, width: 3),
+              ], orElse: [
+                remBeatsQ < remBeatsQ - Const(1, width: 8),
+              ]),
+            ]),
+          ]),
+        ]),
+
+        // 4. DRAIN: 1-cycle clean exit so final registered rvalidVecQ clears
+        CaseItem(Const(_stDrain, width: 3), [
+          stateQ < Const(_stIdle, width: 3),
         ]),
       ]),
     ]);
@@ -226,6 +457,7 @@ class SdramCacheCluster extends Module {
     final clientLen = <Logic>[];
     final clientWdata = <Logic>[];
     final clientWvalid = <Logic>[];
+    final clientCanWrite = <bool>[];
 
     final arbCmdReady = List.generate(
       numCores * 2,
@@ -240,6 +472,8 @@ class SdramCacheCluster extends Module {
       numCores * 2,
       (i) => Logic(name: 'arb_wready_$i'),
     );
+
+    final usePerCoreReadPipe = numCores > 1;
 
     for (var c = 0; c < numCores; c++) {
       final iV = addInput('ic_req_valid_$c', icReqValid[c]);
@@ -260,18 +494,69 @@ class SdramCacheCluster extends Module {
       final dcIdx = c * 2 + 1;
       final snoopDoneWire = Logic(name: 'snoop_done_core_$c');
 
+      // For multi-core clusters, add a tiny 1-stage local read-return repeater
+      // (18 FFs/core) so central arb.rdataQ fans out to N midpoint FFs instead
+      // of 2N cross-die DP16KD write ports.
+      late final Logic coreRdata;
+      late final Logic coreIcRvalid;
+      late final Logic coreDcRvalid;
+      if (usePerCoreReadPipe) {
+        coreRdata = Logic(
+          name: 'core_rdata_q_$c',
+          width: MiniRISC4Constants.dataWidth,
+        );
+        coreIcRvalid = Logic(name: 'core_ic_rvalid_q_$c');
+        coreDcRvalid = Logic(name: 'core_dc_rvalid_q_$c');
+        Sequential(clk, reset: reset, resetValues: {
+          coreRdata: 0,
+          coreIcRvalid: 0,
+          coreDcRvalid: 0,
+        }, [
+          coreRdata < arbRdata,
+          coreIcRvalid < arbRvalid[icIdx],
+          coreDcRvalid < arbRvalid[dcIdx],
+        ]);
+      } else {
+        coreRdata = arbRdata;
+        coreIcRvalid = arbRvalid[icIdx];
+        coreDcRvalid = arbRvalid[dcIdx];
+      }
+
+      // Register D-write -> I-Cache invalidation by 1 cycle (only indexBits + 1
+      // FFs/core). DCache takes >=2 cycles even on a hit, so I-Cache is still
+      // invalidated before dc_resp_valid while completely breaking the
+      // cross-module portBAddr -> isExt -> dV&dWe -> ICache.lookupHit path!
+      final offsetBits = (lineWords - 1).bitLength;
+      final indexBits = (numLines - 1).bitLength;
+      final idxHi = offsetBits + indexBits - 1;
+      final tagBits = MiniRISC4Constants.addrWidth - offsetBits - indexBits;
+      final invalValidQ = Logic(name: 'ic_inval_valid_q_$c');
+      final invalIdxQ = Logic(name: 'ic_inval_idx_q_$c', width: indexBits);
+      Sequential(clk, reset: reset, resetValues: {
+        invalValidQ: 0,
+        invalIdxQ: 0,
+      }, [
+        invalValidQ < (dV & dWe),
+        invalIdxQ < dA.slice(idxHi, offsetBits),
+      ]);
+      final invalAddrPadded = [
+        Const(0, width: tagBits),
+        invalIdxQ,
+        Const(0, width: offsetBits),
+      ].swizzle();
+
       final ic = ICache(
         clk: clk,
         reset: reset,
         reqValid: iV,
         reqAddr: iA,
         memCmdReady: arbCmdReady[icIdx],
-        memRdata: arbRdata,
-        memRdataValid: arbRvalid[icIdx],
+        memRdata: coreRdata,
+        memRdataValid: coreIcRvalid,
         flushAll: iFlush,
         // Per-core D-Cache write automatically invalidates matching I-Cache line
-        invalValid: dV & dWe,
-        invalAddr: dA,
+        invalValid: invalValidQ,
+        invalAddr: invalAddrPadded,
         // On I-Cache miss, snoop D-Cache to write back any dirty line first
         // so self-modifying code / monitor program loads are 100% coherent.
         snoopCleanDone: snoopDoneWire,
@@ -289,8 +574,8 @@ class SdramCacheCluster extends Module {
         reqAddr: dA,
         reqWdata: dW,
         memCmdReady: arbCmdReady[dcIdx],
-        memRdata: arbRdata,
-        memRdataValid: arbRvalid[dcIdx],
+        memRdata: coreRdata,
+        memRdataValid: coreDcRvalid,
         memWdataReady: arbWready[dcIdx],
         snoopCleanReq: ic.output('snoop_clean_req'),
         snoopCleanAddr: ic.output('snoop_clean_addr'),
@@ -320,6 +605,7 @@ class SdramCacheCluster extends Module {
       clientLen.add(ic.output('mem_cmd_burst_len'));
       clientWdata.add(Const(0, width: MiniRISC4Constants.dataWidth));
       clientWvalid.add(Const(0));
+      clientCanWrite.add(false);
 
       // D-Cache client (read + dirty writeback)
       clientReq.add(dc.output('mem_cmd_req'));
@@ -328,6 +614,7 @@ class SdramCacheCluster extends Module {
       clientLen.add(dc.output('mem_cmd_burst_len'));
       clientWdata.add(dc.output('mem_wdata'));
       clientWvalid.add(dc.output('mem_wdata_valid'));
+      clientCanWrite.add(true);
     }
 
     final sdramCmdReady = Logic(name: 'sdram_cmd_ready');
@@ -344,6 +631,7 @@ class SdramCacheCluster extends Module {
       clientCmdBurstLen: clientLen,
       clientWdata: clientWdata,
       clientWdataValid: clientWvalid,
+      clientCanWrite: clientCanWrite,
       sdramCmdReady: sdramCmdReady,
       sdramRdata: sdramRdata,
       sdramRdataValid: sdramRdataValid,

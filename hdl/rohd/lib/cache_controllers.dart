@@ -532,6 +532,7 @@ class DCache extends Module {
     final isWbData = stateQ.eq(Const(_stWbData, width: 3));
     final isRefillReq = stateQ.eq(Const(_stRefillReq, width: 3));
     final isRefillData = stateQ.eq(Const(_stRefillData, width: 3));
+    final isSnoop = useSnoop ? stateQ.eq(Const(_stSnoop, width: 3)) : Const(0);
 
     final lastBeat = beatQ.eq(Const(lineWords - 1, width: offsetBits));
     final wbFire = isWbData & memWdataReady;
@@ -539,12 +540,14 @@ class DCache extends Module {
     final refillDone = isRefillData & memRdataValid & lastBeat;
 
     // Tag storage in tiny distributed RAM (only 4-8 DPR16X4 slices).
-    // Stage 1 (_stIdle): read tagRam / validVec / dirtyVec into tagRdataQ /
-    // lineValidQ / lineDirtyQ. Stage 2 (_stLookup / _stSnoop): fast FF-only tag
-    // compare -> writeHitFire -> dataBram.WEA (doubles Fmax headroom to >105 MHz!).
-    final snoopIdx = snoopAddrIn.slice(idxHi, idxLo);
-    final tagRaddr =
-        useSnoop ? mux((~reqValid) & snoopReqIn, snoopIdx, inIndex) : inIndex;
+    // Stage 1 (_stIdle or _stSnoop): read tagRam / validVec / dirtyVec into
+    // tagRdataQ / lineValidQ / lineDirtyQ. Stage 2 (_stLookup): fast FF-only
+    // tag compare -> writeHitFire -> dataBram.WEA (>105 MHz).
+    // Using pure local FF `isSnoop` to select `qIndex` vs `inIndex` keeps
+    // external I-Cache snoop signals and CpuCore reqValid completely off the
+    // 64:1 validVec/dirtyVec muxes and DPR16X4 tag read address!
+    final snoopTake = useSnoop ? (snoopReqIn & (~snoopDoneQ)) : Const(0);
+    final tagRaddr = useSnoop ? mux(isSnoop, qIndex, inIndex) : inIndex;
     final tagRam = NocFifoRam(
       clk: clk,
       waddr: qIndex,
@@ -561,7 +564,8 @@ class DCache extends Module {
     final lookupHit = lineValidQ & tagRdataQ.eq(qTag);
     final lookupEvictDirty = lineValidQ & lineDirtyQ;
     final snoopDirtyHit = useSnoop ? (lookupHit & lineDirtyQ) : Const(0);
-    final writeHitFire = isLookup & lookupHit & reqWeQ;
+    final isCpuLookup = useSnoop ? (isLookup & (~snoopWbQ)) : isLookup;
+    final writeHitFire = isCpuLookup & lookupHit & reqWeQ;
 
     // Data BRAM address/write mux:
     // Use registered `isLookup` (not `writeHitFire`) to select addr/wdata/en so
@@ -589,7 +593,7 @@ class DCache extends Module {
     final bramWdata = mux(isLookup, reqWdataQ, refillWordMerge);
     final bramWe = writeHitFire | (isRefillData & memRdataValid);
     final bramEn = (isIdle & reqValid) |
-        (isLookup & reqWeQ) |
+        (isCpuLookup & reqWeQ) |
         (isRefillData & memRdataValid) |
         isWbPrime |
         isWbReq |
@@ -607,7 +611,7 @@ class DCache extends Module {
     );
 
     // Outputs
-    reqReady <= isIdle;
+    reqReady <= isIdle & (~snoopTake);
     respValid <= respValidQ;
     respData <= respDataQ;
     respHit <= respHitQ;
@@ -666,51 +670,80 @@ class DCache extends Module {
       ],
       Case(stateQ, [
         CaseItem(Const(_stIdle, width: 3), [
-          If(reqValid, then: [
-            reqAddrQ < reqAddr,
-            reqWeQ < reqWe,
-            reqWdataQ < reqWdata,
-            tagRdataQ < tagRam.rdata,
-            lineValidQ < inLineValid,
-            lineDirtyQ < inLineDirty,
-            if (useSnoop) snoopWbQ < 0,
-            stateQ < Const(_stLookup, width: 3),
-          ], orElse: [
-            if (useSnoop)
-              If(snoopReqIn & (~snoopDoneQ), then: [
-                reqAddrQ < snoopAddrIn,
+          if (useSnoop)
+            If(snoopTake, then: [
+              reqAddrQ < snoopAddrIn,
+              snoopWbQ < 1,
+              stateQ < Const(_stSnoop, width: 3),
+            ], orElse: [
+              If(reqValid, then: [
+                reqAddrQ < reqAddr,
+                reqWeQ < reqWe,
+                reqWdataQ < reqWdata,
                 tagRdataQ < tagRam.rdata,
                 lineValidQ < inLineValid,
                 lineDirtyQ < inLineDirty,
-                snoopWbQ < 1,
-                stateQ < Const(_stSnoop, width: 3),
+                snoopWbQ < 0,
+                stateQ < Const(_stLookup, width: 3),
               ]),
-          ]),
+            ])
+          else
+            If(reqValid, then: [
+              reqAddrQ < reqAddr,
+              reqWeQ < reqWe,
+              reqWdataQ < reqWdata,
+              tagRdataQ < tagRam.rdata,
+              lineValidQ < inLineValid,
+              lineDirtyQ < inLineDirty,
+              stateQ < Const(_stLookup, width: 3),
+            ]),
         ]),
         if (useSnoop)
           CaseItem(Const(_stSnoop, width: 3), [
-            If(snoopDirtyHit, then: [
-              stateQ < Const(_stWbPrime, width: 3),
-            ], orElse: [
-              snoopWbQ < 0,
-              snoopDoneQ < 1,
-              stateQ < Const(_stIdle, width: 3),
-            ]),
+            tagRdataQ < tagRam.rdata,
+            lineValidQ < inLineValid,
+            lineDirtyQ < inLineDirty,
+            stateQ < Const(_stLookup, width: 3),
           ]),
         CaseItem(Const(_stLookup, width: 3), [
-          If(lookupHit, then: [
-            respValidQ < 1,
-            respDataQ < mux(reqWeQ, reqWdataQ, dataBram.rdata),
-            respHitQ < 1,
-            stateQ < Const(_stIdle, width: 3),
-          ], orElse: [
-            beatQ < 0,
-            If(lookupEvictDirty, then: [
-              stateQ < Const(_stWbPrime, width: 3),
+          if (useSnoop)
+            If(snoopWbQ, then: [
+              If(snoopDirtyHit, then: [
+                stateQ < Const(_stWbPrime, width: 3),
+              ], orElse: [
+                snoopWbQ < 0,
+                snoopDoneQ < 1,
+                stateQ < Const(_stIdle, width: 3),
+              ]),
             ], orElse: [
-              stateQ < Const(_stRefillReq, width: 3),
+              If(lookupHit, then: [
+                respValidQ < 1,
+                respDataQ < mux(reqWeQ, reqWdataQ, dataBram.rdata),
+                respHitQ < 1,
+                stateQ < Const(_stIdle, width: 3),
+              ], orElse: [
+                beatQ < 0,
+                If(lookupEvictDirty, then: [
+                  stateQ < Const(_stWbPrime, width: 3),
+                ], orElse: [
+                  stateQ < Const(_stRefillReq, width: 3),
+                ]),
+              ]),
+            ])
+          else
+            If(lookupHit, then: [
+              respValidQ < 1,
+              respDataQ < mux(reqWeQ, reqWdataQ, dataBram.rdata),
+              respHitQ < 1,
+              stateQ < Const(_stIdle, width: 3),
+            ], orElse: [
+              beatQ < 0,
+              If(lookupEvictDirty, then: [
+                stateQ < Const(_stWbPrime, width: 3),
+              ], orElse: [
+                stateQ < Const(_stRefillReq, width: 3),
+              ]),
             ]),
-          ]),
         ]),
         // Prime CacheDataBram with word 0 of the dirty line before issuing WB cmd
         CaseItem(Const(_stWbPrime, width: 3), [

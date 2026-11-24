@@ -376,3 +376,22 @@ make asic-flow ORFS_USE_DOCKER=0 ORFS_ROOT="$HOME/OpenROAD-flow-scripts"
 When targeting a foundry PDK with compiled SRAM macros (`mr4_sram_dp_2048x16`),
 switch to `ASIC_MEM_TARGET=sram ASIC_MEM_WORDS=2048` and supply the macro views
 via `MR4_SRAM_LEFS`, `MR4_SRAM_LIBS`, and `MR4_SRAM_GDS` in `asic/mr4/config.mk`.
+
+### 3. Hierarchical multi-core tile macro flow (`mr4_tile` → `mr4_quad_top`)
+
+To harden one reusable compute tile (`mr4_tile`, with strapped `tile_id` and
+registered Lean Ring boundary hops) and assemble a 4-tile hierarchical chip
+(`mr4_quad_top`) with flat $F_{\max}$ scaling:
+
+```sh
+# 1. Structural preflight (ROHD generation + Yosys check on tile & blackbox quad)
+make asic-tile-check
+
+# 2. Harden ONE reusable mr4_tile macro and export LEF/LIB/GDS abstracts
+make asic-tile-flow
+
+# 3. Assemble 4x hardened mr4_tile macros into the hierarchical 4-core chip GDS
+make asic-quad-flow
+```
+
+Pass `ASIC_PLATFORM=asap7` (or `sky130hd`) to both steps to target another PDK.

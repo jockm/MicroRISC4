@@ -42,6 +42,7 @@ class CpuCore extends Module {
     Logic? dcReqReady,
     Logic? dcRespValid,
     Logic? dcRespData,
+    Logic? coreIdIn,
     this.config = const CpuConfig(),
     String? initHexFile,
     Map<int, int>? initialMemory,
@@ -53,6 +54,9 @@ class CpuCore extends Module {
 
     clk = addInput('clk', clk);
     rstN = addInput('rst_n', rstN);
+    final Logic? coreIdPort = coreIdIn != null
+        ? addInput('core_id_in', coreIdIn, width: coreIdIn.width)
+        : null;
 
     // Conditional Peripheral Inputs
     final Logic rxData;
@@ -323,7 +327,9 @@ class CpuCore extends Module {
     // Pre-muxed peripheral/MMIO read bus (excludes wide BRAM output)
     final mmioOnlyData = mux(
       isMmioCpuid,
-      Const(config.coreId, width: 16),
+      coreIdPort != null
+          ? coreIdPort.zeroExtend(16)
+          : Const(config.coreId, width: 16),
       mux(
         isMmioRx,
         rxData,

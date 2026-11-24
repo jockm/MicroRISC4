@@ -28,7 +28,7 @@ class AsicTop extends Module {
     int? uartDivisor,
     super.name = 'mr4_asic_top',
   })  : hasSpi = (config ?? const CpuConfig()).enableSpi,
-        uartDivisor = uartDivisor ?? _defaultUartDivisor((config ?? const CpuConfig()).clkFreqMhz) {
+        uartDivisor = uartDivisor ?? defaultUartDivisor((config ?? const CpuConfig()).clkFreqMhz) {
     final baseCfg = config ??
         const CpuConfig(
           coreId: 0,
@@ -164,7 +164,7 @@ class AsicTop extends Module {
     ]);
   }
 
-  static int _defaultUartDivisor(int clkFreqMhz) {
+  static int defaultUartDivisor(int clkFreqMhz) {
     // Default to ~115,200 baud rounded to nearest multiple of 4 (>= 4)
     final raw = (clkFreqMhz * 1000000) ~/ 115200;
     final aligned = ((raw + 2) ~/ 4) * 4;

@@ -25,6 +25,7 @@ class RegisteredNocHop extends Module {
     this.coreIdWidth = 2,
     Logic? outReady,
     int? targetCoreId,
+    Logic? targetCoreIdIn,
     super.name = 'reg_noc_hop',
   }) {
     final packWidth = 1 + 1 + coreIdWidth + coreIdWidth + MicroRISC4Constants.dataWidth;
@@ -38,6 +39,9 @@ class RegisteredNocHop extends Module {
     final pIn =
         addInput('inPayload', inPayload, width: MicroRISC4Constants.dataWidth);
     final rOut = addInput('outReady', outReady ?? Const(1));
+    final Logic? targetIdPort = targetCoreIdIn != null
+        ? addInput('targetCoreId', targetCoreIdIn, width: coreIdWidth)
+        : null;
 
     final inReadyOut = addOutput('inReady');
     final vOut = addOutput('outValid');
@@ -52,9 +56,11 @@ class RegisteredNocHop extends Module {
     final skidValidQ = Logic(name: 'skidValidQ');
     final skidDataQ = Logic(name: 'skidDataQ', width: packWidth);
 
-    final inDstLocal = targetCoreId != null
-        ? dcIn.eq(Const(targetCoreId, width: coreIdWidth))
-        : Const(0);
+    final inDstLocal = targetIdPort != null
+        ? dcIn.eq(targetIdPort)
+        : (targetCoreId != null
+            ? dcIn.eq(Const(targetCoreId, width: coreIdWidth))
+            : Const(0));
     final inPack = [inDstLocal, tIn, scIn, dcIn, pIn].swizzle();
     final inReady = ~skidValidQ;
     final inAccept = vIn & inReady;

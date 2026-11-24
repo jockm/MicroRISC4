@@ -78,6 +78,13 @@ ORFS_DOCKER_IMAGE      ?= openroad/orfs:latest
 ORFS_ROOT              ?= $(HOME)/OpenROAD-flow-scripts
 ORFS_TARGET            ?= finish
 
+# Hierarchical Multi-Core ASIC Tile & Cluster settings (Track D.4)
+ASIC_TILE_BLD          := $(BUILD_DIR)/asic_tile
+ASIC_TILE_BOOT_PROGRAM ?= mr4src/asm/asic_tile_boot.asm
+ASIC_TILE_CORES        ?= 4
+ASIC_TILE_NOC_FIFO     ?= 16
+ASIC_QUAD_TOP          ?= mr4_quad_top
+
 YOSYS          ?= yosys
 NEXTPNR_ECP5   ?= nextpnr-ecp5
 ECPPACK        ?= ecppack
@@ -94,6 +101,7 @@ SIM_PROGRAM    ?= $(BUILD_DIR)/monitor.bin
         test test-rohd sim debug \
         generate generate-ulx3s ulx3s-bit ulx3s-mr4os ulx3s-timing ulx3s-prog ulx3s-flash ulx3s-term \
         generate-asic asic-check asic-flow \
+        generate-asic-tile asic-tile-check asic-tile-flow asic-quad-flow \
         dot-clean clean
 
 # ------------------------------------------------------------------------------
@@ -130,6 +138,10 @@ help:
 	@echo "  make generate-asic    - Generate clean ASIC SystemVerilog ($(ASIC_SV))"
 	@echo "  make asic-check       - Run Yosys structural preflight on $(ASIC_SV)"
 	@echo "  make asic-flow        - Run OpenROAD-flow-scripts RTL-to-GDS via Docker (ASIC_PLATFORM=nangate45|asap7|sky130hd)"
+	@echo "  make generate-asic-tile - Generate hardened mr4_tile.sv + hierarchical mr4_quad_top.sv (Track D.4)"
+	@echo "  make asic-tile-check  - Run Yosys structural preflight on mr4_tile and hierarchical mr4_quad_top"
+	@echo "  make asic-tile-flow   - Harden 1x mr4_tile macro & export LEF/LIB/GDS abstracts via ORFS Docker"
+	@echo "  make asic-quad-flow   - Assemble 4-tile mr4_quad_top chip from hardened mr4_tile macro via ORFS Docker"
 	@echo "  make dot-clean        - Remove macOS ._ metadata files (where dot_clean exists)"
 	@echo "  make clean            - Remove $(BUILD_DIR)/ and generated SV/bitstream artifacts"
 	@echo "  make install-hooks    - Install the project's git hooks (tools/git-hooks) into this clone"
@@ -367,6 +379,108 @@ asic-flow:
 		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" $(ORFS_TARGET)'; \
 	fi
 	@echo "==> ORFS outputs under: $(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/$(ASIC_TOP)/base/"
+	@$(DOT_CLEAN_CMD)
+
+# ------------------------------------------------------------------------------
+# Hierarchical Multi-Core ASIC Tile Macro & Cluster Flow (Track D.4)
+# ------------------------------------------------------------------------------
+
+$(ASIC_TILE_BLD):
+	mkdir -p $(ASIC_TILE_BLD)
+
+generate-asic-tile: setup | $(ASIC_TILE_BLD)
+	@echo "==> Assembling unified Tile Boot ROM ($(ASIC_TILE_BOOT_PROGRAM)) -> $(ASIC_TILE_BLD)/tile_boot.hex..."
+	@$(MR4ASM) -I $(LIB_DIR) "$(ASIC_TILE_BOOT_PROGRAM)" --hex -o "$(ASIC_TILE_BLD)/tile_boot.hex" -l "$(ASIC_TILE_BLD)/tile_boot.lst"
+	@echo "==> Generating mr4_tile.sv, hierarchical $(ASIC_QUAD_TOP).sv, and $(ASIC_QUAD_TOP)_sim.sv..."
+	@cd $(ROHD_DIR) && $(DART) run bin/generate_asic_tile.dart \
+		--boot-hex "$(CURDIR)/$(ASIC_TILE_BLD)/tile_boot.hex" \
+		--boot-rom-base "$(ASIC_BOOT_ROM_BASE)" \
+		--boot-rom-words "$(ASIC_BOOT_ROM_WORDS)" \
+		--out "$(CURDIR)/$(ASIC_TILE_BLD)" \
+		--mem-target "$(if $(filter command line,$(origin ASIC_MEM_TARGET)),$(ASIC_MEM_TARGET),flop)" \
+		--mem-words "$(if $(filter command line,$(origin ASIC_MEM_WORDS)),$(ASIC_MEM_WORDS),1024)" \
+		--mem-latency "$(ASIC_MEM_LATENCY)" \
+		--clk-mhz "$(ASIC_CLOCK_MHZ)" \
+		--uart-divisor "$(ASIC_UART_DIVISOR)" \
+		--num-tiles "$(ASIC_TILE_CORES)" \
+		--noc-fifo-depth "$(ASIC_TILE_NOC_FIFO)" \
+		--top-name "$(ASIC_QUAD_TOP)" \
+		$(if $(filter 1,$(ASIC_ENABLE_MATH)),--enable-math,)
+	@$(DOT_CLEAN_CMD)
+
+asic-tile-check: generate-asic-tile
+	@echo "==> Checking $(ASIC_TILE_BLD)/mr4_tile.sv and $(ASIC_TILE_BLD)/$(ASIC_QUAD_TOP).sv for forbidden FPGA primitives..."
+	@if grep -n -E "EHXPLLL|ODDRX1F|ram_style|syn_useioff|\\\$$readmemh" "$(ASIC_TILE_BLD)/mr4_tile.sv" "$(ASIC_TILE_BLD)/$(ASIC_QUAD_TOP).sv"; then \
+		echo "[FAIL] Forbidden FPGA primitive or \$$readmemh found in tile ASIC RTL!"; exit 1; \
+	fi
+	@echo "==> Running Yosys preflight on mr4_tile (log: $(ASIC_TILE_BLD)/tile_check.log)..."
+	@$(YOSYS) -l "$(ASIC_TILE_BLD)/tile_check.log" \
+		-p "read_verilog -sv -DSYNTHESIS $(ASIC_TILE_BLD)/mr4_tile.sv; hierarchy -check -top mr4_tile; proc; opt; check -assert; stat" | tail -n 25
+	@echo "==> Running Yosys preflight on hierarchical $(ASIC_QUAD_TOP) (log: $(ASIC_TILE_BLD)/quad_check.log)..."
+	@$(YOSYS) -l "$(ASIC_TILE_BLD)/quad_check.log" \
+		-p "read_verilog -sv -DSYNTHESIS $(ASIC_TILE_BLD)/$(ASIC_QUAD_TOP).sv; hierarchy -check -top $(ASIC_QUAD_TOP); proc; opt; check -assert; stat" | tail -n 20
+	@echo "==> [PASS] Hierarchical mr4_tile + $(ASIC_QUAD_TOP) ASIC structural preflight clean!"
+	@$(DOT_CLEAN_CMD)
+
+# Step 1 (Track D.4): Harden 1x reusable `mr4_tile` macro and export LEF/LIB/GDS abstracts.
+asic-tile-flow:
+	@"$(MAKE)" generate-asic-tile \
+		ASIC_MEM_TARGET="$(if $(filter command line,$(origin ASIC_MEM_TARGET)),$(ASIC_MEM_TARGET),flop)" \
+		ASIC_MEM_WORDS="$(if $(filter command line,$(origin ASIC_MEM_WORDS)),$(ASIC_MEM_WORDS),1024)"
+	@mkdir -p "$(ASIC_BLD)/orfs"
+	@if [ "$(ORFS_USE_DOCKER)" = "1" ]; then \
+		command -v docker >/dev/null 2>&1 || { \
+			echo "[FAIL] docker not found in PATH. See GettingStarted.md for Docker + ORFS setup."; exit 1; \
+		}; \
+		HOST_ROOT="$(CURDIR)"; \
+		if command -v cygpath >/dev/null 2>&1; then \
+			HOST_ROOT="$$(cygpath -w "$(CURDIR)")"; \
+		fi; \
+		DOCKER_USER_FLAG=""; \
+		if [ "$$(uname -s)" = "Linux" ]; then \
+			DOCKER_USER_FLAG="-u $$(id -u):$$(id -g)"; \
+		fi; \
+		echo "==> Hardening reusable mr4_tile macro ($(ASIC_PLATFORM)) in Docker ($(ORFS_DOCKER_IMAGE))..."; \
+		MSYS_NO_PATHCONV=1 docker run --rm $$DOCKER_USER_FLAG \
+			-v "$$HOST_ROOT:/work/mr4" \
+			"$(ORFS_DOCKER_IMAGE)" \
+			bash -c 'cd /OpenROAD-flow-scripts && [ -f ./env.sh ] && source ./env.sh; exec make -C /OpenROAD-flow-scripts/flow DESIGN_CONFIG=/work/mr4/asic/mr4_tile/config.mk WORK_HOME=/work/mr4/build/asic/orfs PLATFORM="$(ASIC_PLATFORM)" finish generate_abstract'; \
+	else \
+		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4_tile/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" finish generate_abstract'; \
+	fi
+	@echo "==> Hardened mr4_tile abstracts ready under: $(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/mr4_tile/base/"
+	@$(DOT_CLEAN_CMD)
+
+# Step 2 (Track D.4): Assemble 4-tile hierarchical `mr4_quad_top` chip from hardened `mr4_tile` macro.
+asic-quad-flow:
+	@if [ ! -f "$(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/mr4_tile/base/mr4_tile.lef" ] || \
+	    [ ! -f "$(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/mr4_tile/base/mr4_tile.lib" ]; then \
+		echo "[FAIL] Hardened mr4_tile abstracts not found for $(ASIC_PLATFORM). Run 'make asic-tile-flow ASIC_PLATFORM=$(ASIC_PLATFORM)' first."; exit 1; \
+	fi
+	@if [ ! -f "$(ASIC_TILE_BLD)/$(ASIC_QUAD_TOP).sv" ]; then \
+		"$(MAKE)" generate-asic-tile; \
+	fi
+	@if [ "$(ORFS_USE_DOCKER)" = "1" ]; then \
+		command -v docker >/dev/null 2>&1 || { \
+			echo "[FAIL] docker not found in PATH. See GettingStarted.md for Docker + ORFS setup."; exit 1; \
+		}; \
+		HOST_ROOT="$(CURDIR)"; \
+		if command -v cygpath >/dev/null 2>&1; then \
+			HOST_ROOT="$$(cygpath -w "$(CURDIR)")"; \
+		fi; \
+		DOCKER_USER_FLAG=""; \
+		if [ "$$(uname -s)" = "Linux" ]; then \
+			DOCKER_USER_FLAG="-u $$(id -u):$$(id -g)"; \
+		fi; \
+		echo "==> Assembling hierarchical 4-tile $(ASIC_QUAD_TOP) ($(ASIC_PLATFORM)) in Docker ($(ORFS_DOCKER_IMAGE))..."; \
+		MSYS_NO_PATHCONV=1 docker run --rm $$DOCKER_USER_FLAG \
+			-v "$$HOST_ROOT:/work/mr4" \
+			"$(ORFS_DOCKER_IMAGE)" \
+			bash -c 'cd /OpenROAD-flow-scripts && [ -f ./env.sh ] && source ./env.sh; exec make -C /OpenROAD-flow-scripts/flow DESIGN_CONFIG=/work/mr4/asic/mr4_quad/config.mk WORK_HOME=/work/mr4/build/asic/orfs PLATFORM="$(ASIC_PLATFORM)" $(ORFS_TARGET)'; \
+	else \
+		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4_quad/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" $(ORFS_TARGET)'; \
+	fi
+	@echo "==> Hierarchical 4-tile $(ASIC_QUAD_TOP) GDSII ready under: $(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/$(ASIC_QUAD_TOP)/base/"
 	@$(DOT_CLEAN_CMD)
 
 # ------------------------------------------------------------------------------

@@ -19,13 +19,12 @@ class JedecSdramSimModel {
   int _wrRow = 0;
   int _wrCol = 0;
 
-  // Active read burst state (CL=2 sampled on negedge -> 2-stage pipe -> dq valid before E+3)
+  // Active read burst state (true JEDEC CL=2: READ at S0 -> _rdPipe0=D0; S1 drives D0 valid at P2 & S2)
   int _rdRem = 0;
   int _rdBank = 0;
   int _rdRow = 0;
   int _rdCol = 0;
   int _rdPipe0 = 0;
-  int _rdPipe1 = 0;
 
   void attach(Logic clk, Module sdramPins, Logic sdramDqIn) {
     _attachSignals(
@@ -77,7 +76,6 @@ class JedecSdramSimModel {
   }
 
   bool _rdValid0 = false;
-  bool _rdValid1 = false;
 
   void _attachSignals({
     required Logic clk,
@@ -107,11 +105,9 @@ class JedecSdramSimModel {
       final dqOutVal = dqOut.value.isValid ? dqOut.value.toInt() : 0;
       final dqOeVal = dqOe.value.isValid ? dqOe.value.toInt() : 0;
 
-      // Advance CL=2 read pipeline
-      final nextDq = _rdPipe1;
-      final nextDrive = _rdValid1;
-      final nextPipe1 = _rdPipe0;
-      final nextValid1 = _rdValid0;
+      // Advance true JEDEC CL=2 read pipeline (D0 driven after S1, valid at P2 & S2)
+      final nextDq = _rdPipe0;
+      final nextDrive = _rdValid0;
       var nextPipe0 = 0;
       var nextValid0 = false;
       if (_rdRem > 0) {
@@ -182,9 +178,7 @@ class JedecSdramSimModel {
       }
 
       _rdPipe0 = nextPipe0;
-      _rdPipe1 = nextPipe1;
       _rdValid0 = nextValid0;
-      _rdValid1 = nextValid1;
       driveDq(nextDq, nextDrive && dqOeVal == 0);
     });
   }

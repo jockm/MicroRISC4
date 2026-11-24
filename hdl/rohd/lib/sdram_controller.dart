@@ -6,25 +6,22 @@
 
 import 'package:rohd/rohd.dart';
 
-/// 16-bit falling-edge input capture register (`always_ff @(negedge clk)`).
+/// 16-bit rising-edge IOB input capture register (`(* syn_useioff = 1 *)`).
 ///
-/// Captures SDRAM read data `sdram_dq_in` in the center of the IS42S16160G
-/// `CL=2` valid window when `sdram_clk` is 180° phase-shifted via `ODDRX1F`,
-/// giving >8 ns setup and >7 ns hold margin even with unconstrained fabric
-/// routing from distant ECP5 PIO pins (`sdram_d[15]`/`sdram_d[13]`).
-class NegedgeReg16 extends Module with SystemVerilog {
-  NegedgeReg16({
+/// Packs all 16 SDRAM DQ input flip-flops directly into the ECP5 PIO IOLOGIC
+/// pads (`0.0 ns` fabric input routing delay across all pins `sdram_d[15:0]`),
+/// capturing `DOUT[0..7]` cleanly on `posedge E3..E10` with uniform setup &
+/// hold margin on every single bit regardless of die placement.
+class PosedgeIobReg16 extends Module with SystemVerilog {
+  PosedgeIobReg16({
     required Logic clk,
     required Logic d,
-    super.name = 'sdram_dq_negedge_reg',
+    super.name = 'sdram_dq_iob_reg',
   }) {
     clk = addInput('clk', clk);
     d = addInput('d', d, width: 16);
     final q = addOutput('q', width: 16);
-    q.put(0);
-    clk.negedge.listen((_) {
-      q.put(d.value);
-    });
+    Sequential(clk, [q < d]);
   }
 
   Logic get q => output('q');
@@ -36,9 +33,12 @@ module $definitionType (
   input  logic [15:0] d,
   output logic [15:0] q
 );
-  always_ff @(negedge clk) begin
-    q <= d;
+  (* syn_useioff = 1 *)
+  logic [15:0] q_iob;
+  always_ff @(posedge clk) begin
+    q_iob <= d;
   end
+  assign q = q_iob;
 endmodule
 ''';
 }
@@ -58,7 +58,7 @@ class SdramController extends Module {
   final int burstLen;
   final int initWaitCycles;
   final int refreshCycles;
-  final bool captureOnNegedge;
+  final bool useIobInputReg;
 
   static const int _stWait = 0;
   static const int _stInitPre = 1;
@@ -101,7 +101,7 @@ class SdramController extends Module {
     this.clkFreqMhz = 48,
     this.casLatency = 2,
     this.burstLen = 8,
-    this.captureOnNegedge = true,
+    this.useIobInputReg = true,
     int? initWaitCycles,
     int? refreshCycles,
     super.name = 'sdram_controller',
@@ -130,10 +130,15 @@ class SdramController extends Module {
     wdata = addInput('wdata', wdata, width: 16);
     wdataValid = addInput('wdata_valid', wdataValid);
     sdramDqIn = addInput('sdram_dq_in', sdramDqIn, width: 16);
-    final sampledDqIn = captureOnNegedge
-        ? NegedgeReg16(clk: clk, d: sdramDqIn, name: '${name}_dq_cap').q
+    final sampledDqIn = useIobInputReg
+        ? PosedgeIobReg16(clk: clk, d: sdramDqIn, name: '${name}_dq_iob').q
         : sdramDqIn;
-    final effCasWait = captureOnNegedge ? (casLatency + 1) : casLatency;
+    // JEDEC CL timing with 180-deg phase-shifted sdram_clk (S_k = P_k + 0.5T):
+    //   P0: READ issued; S0 (T0): SDRAM latches READ
+    //   CL=2 -> S1 (T1) drives D0 after tAC (~5.4ns), valid through P2..S2+tOH
+    //   Direct capture samples D0 at P2 (casTimer = CL-1 = 1);
+    //   1-stage IOB input register captures D0 at P2 and latches rdata at P3 (casTimer = CL = 2).
+    final effCasWait = useIobInputReg ? casLatency : (casLatency - 1);
 
     final cmdReady = addOutput('cmd_ready');
     final busy = addOutput('busy');

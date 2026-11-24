@@ -535,21 +535,29 @@ void main(void) {
         compile_and_assemble(a4, wr_bin, org=0x0400, nopreamble=True, sparsebin=True)
 
         # >4K-word binary proving streaming loader lifts the old RUN_BUF_MAX=4096 cap
-        big_src = """
+        # (uses non-zero initialized data so .bss trimming keeps it >8KB on disk, plus
+        #  a .bss array to verify runtime zero-fill!)
+        big_inits = ", ".join(["1"] + ["0"] * 4198 + ["2"])
+        big_src = f"""
 import "sys.a4";
 
-u16 big_pad[4200];
+u16 big_pad[4200] = {{ {big_inits} }};
+u16 big_bss[256];
 
-void main(void) {
+void main(void) {{
+    if (big_pad[0] != 1 || big_pad[4199] != 2 || big_bss[0] != 0 || big_bss[255] != 0) {{
+        sys_puts("BIGAPP_FAIL\\r\\n");
+        sys_exit(1);
+    }}
     big_pad[0] = 0x1234;
     big_pad[4199] = 0x5678;
-    if (big_pad[0] == 0x1234 && big_pad[4199] == 0x5678) {
+    if (big_pad[0] == 0x1234 && big_pad[4199] == 0x5678) {{
         sys_puts("BIGAPP_OK\\r\\n");
         sys_exit(0);
-    }
+    }}
     sys_puts("BIGAPP_FAIL\\r\\n");
     sys_exit(1);
-}
+}}
 """
         big_a4 = p / "bigapp.a4"
         big_bin = p / "bigapp.bin"
@@ -1966,7 +1974,7 @@ void main(void) {
 
         assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
 
-        def send_cmd(cmd_str, max_steps=36000000):
+        def send_cmd(cmd_str, max_steps=16000000):
             start = len(uart_out)
             for ch in cmd_str:
                 os_sim.rx_queue.append(ord(ch))
@@ -2037,7 +2045,7 @@ def test_os_path_and_history(args):
 
     assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
 
-    def send_cmd(cmd_str, max_steps=36000000):
+    def send_cmd(cmd_str, max_steps=16000000):
         start = len(uart_out)
         for ch in cmd_str:
             os_sim.rx_queue.append(ord(ch))
@@ -2391,9 +2399,7 @@ TESTS = [
     ("os_shell_fs", test_os_shell_fs),
     ("os_async_trap1", test_os_async_trap1),
     ("os_multicore_apps", test_os_multicore_apps),
-    # Temporarily disabled until compiler BSS zero-trimming shrinks MUL.PRG (<60K words);
-    # MUL.PRG and XI.PRG remain included in the FAT32 SD image.
-    # ("os_mul", test_os_mul),
+    ("os_mul", test_os_mul),
     ("os_spawn_multiworker", test_os_spawn_multiworker),
     ("os_edge_shell_and_kill", test_os_edge_shell_and_kill),
     ("os_stress_fd_syscalls_multicluster", test_os_stress_fd_syscalls_multicluster),

@@ -940,6 +940,7 @@ class CodeGen:
         self.current_func: Optional[FunctionDef] = None
         self.loop_stack: List[Tuple[str, str]] = []
         self.trap_bindings: Dict[int, str] = {}
+        self.bss_entries: List[Tuple[str, int]] = []
 
     def new_label(self, prefix: str = "L") -> str:
         self.label_counter += 1
@@ -1022,37 +1023,70 @@ class CodeGen:
                 if reachable is None or node.name in reachable:
                     self.gen_function(node)
 
-        # Global Variables & Static Memory Allocations
+        # Self-contained runtime .bss zero-fill helper (called once at _main entry)
+        if "main" in self.functions:
+            self.emit_raw("; --- Runtime BSS Zero-Init Helper ---")
+            self.emit_raw("_act4_zero_bss:")
+            self.emit("RPUSH   R0")
+            self.emit("LOAD16  R2, _act4_bss_start")
+            self.emit("LOAD16  R3, _act4_bss_end")
+            self.emit("SUB     R3, R2")
+            self.emit("LOAD16  R0, _act4_zero_bss_done")
+            self.emit("JMP.Z   R0, R3")
+            self.emit("LD0     R1")
+            self.emit_raw("_act4_zero_bss_loop:")
+            self.emit("LD      (R2), R1")
+            self.emit("INC     R2")
+            self.emit("DEC     R3")
+            self.emit("LOAD16  R0, _act4_zero_bss_done")
+            self.emit("JMP.Z   R0, R3")
+            self.emit("LOAD16  R0, _act4_zero_bss_loop")
+            self.emit("JMP     R0")
+            self.emit_raw("_act4_zero_bss_done:")
+            self.emit("RRET")
+            self.emit_raw("")
+
         self.emit_raw("; ==============================================================================")
-        self.emit_raw("; Global Data & Static Storage")
+        self.emit_raw("; Standard Runtime Library (placed before .bss so trailing zeros trim cleanly)")
+        self.emit_raw("; ==============================================================================")
+        self.emit_raw('.include "M4R_LIB.asm"')
+        self.emit_raw("")
+
+        # Initialized Non-Zero Global Data (.data) + String Literals (.rodata)
+        self.emit_raw("; ==============================================================================")
+        self.emit_raw("; Initialized Data (.data) & String Literals (.rodata)")
         self.emit_raw("; ==============================================================================")
 
+        bss_globals: List[Tuple[str, int]] = []
         for i in range(8):
-            self.emit_raw(f"_act4_arg{i}: .word 0")
-
+            bss_globals.append((f"_act4_arg{i}", 1))
         for i in range(8):
-            self.emit_raw(f"_act4_t{i}: .word 0")
+            bss_globals.append((f"_act4_t{i}", 1))
 
         for name, decl in self.global_vars.items():
             if decl.is_const or decl.address is not None:
                 continue
             lbl = f"_{name}"
             if decl.array_inits is not None:
-                inits = [f"0x{self.eval_const_init(e):04X}" for e in decl.array_inits]
-                self.emit_raw(f"{lbl}: .word " + ", ".join(inits))
+                vals = [self.eval_const_init(e) & 0xFFFF for e in decl.array_inits]
+                if any(v != 0 for v in vals):
+                    inits = [f"0x{v:04X}" for v in vals]
+                    self.emit_raw(f"{lbl}: .word " + ", ".join(inits))
+                else:
+                    bss_globals.append((lbl, len(vals)))
             elif decl.typ.array_size is not None:
                 sz = decl.typ.word_size(self.structs)
-                zeros = ", ".join(["0"] * sz)
-                self.emit_raw(f"{lbl}: .word {zeros}")
+                bss_globals.append((lbl, sz))
             elif decl.init_expr is not None:
-                v = self.eval_const_init(decl.init_expr)
-                self.emit_raw(f"{lbl}: .word 0x{v:04X}")
+                v = self.eval_const_init(decl.init_expr) & 0xFFFF
+                if v != 0:
+                    self.emit_raw(f"{lbl}: .word 0x{v:04X}")
+                else:
+                    bss_globals.append((lbl, 1))
             else:
                 sz = decl.typ.word_size(self.structs)
-                zeros = ", ".join(["0"] * sz)
-                self.emit_raw(f"{lbl}: .word {zeros}")
+                bss_globals.append((lbl, sz))
 
-        # String Literals
         if self.string_literals:
             self.emit_raw("")
             self.emit_raw("; --- String Literals ---")
@@ -1060,11 +1094,18 @@ class CodeGen:
                 clean_s = s.replace('"', '\\"')
                 self.emit_raw(f'{lbl}: .asciz "{clean_s}"')
 
+        # Trailing Zero-Initialized Storage (.bss) via .resw (trimmed from binary on disk!)
         self.emit_raw("")
         self.emit_raw("; ==============================================================================")
-        self.emit_raw("; Standard Runtime Library (placed after application code & data)")
+        self.emit_raw("; Uninitialized / Zero-Initialized Storage (.bss - trimmed from disk image)")
         self.emit_raw("; ==============================================================================")
-        self.emit_raw('.include "M4R_LIB.asm"')
+        self.emit(".align")
+        self.emit_raw("_act4_bss_start:")
+        for lbl, sz in bss_globals:
+            self.emit_raw(f"{lbl}: .resw {sz}")
+        for lbl, sz in self.bss_entries:
+            self.emit_raw(f"{lbl}: .resw {sz}")
+        self.emit_raw("_act4_bss_end:")
         return "\n".join(self.asm) + "\n"
 
     def compute_reachable_functions(self) -> Optional[set]:
@@ -1215,6 +1256,9 @@ class CodeGen:
             self.emit("RPUSH   R3")
         else:
             self.emit("RPUSH   R0")
+            if fn.name == "main":
+                self.emit("LOAD16  R0, _act4_zero_bss")
+                self.emit("LINK    R0, R0")
 
         for decl in fn.locals_decls:
             if decl.init_expr is not None and not decl.typ.array_size:
@@ -1240,11 +1284,10 @@ class CodeGen:
                 continue
             lbl = f"_{fn.name}_{decl.name}"
             sz = decl.typ.word_size(self.structs)
-            zeros = ", ".join(["0"] * sz)
-            self.emit_raw(f"{lbl}: .word {zeros}")
+            self.bss_entries.append((lbl, sz))
 
         for pname, ptype in fn.params:
-            self.emit_raw(f"_{fn.name}_{pname}: .word 0")
+            self.bss_entries.append((f"_{fn.name}_{pname}", 1))
         self.emit_raw("")
 
         self.current_func = None

@@ -516,6 +516,7 @@ class Assembler:
         self.symbols['CPUID_ADDR'] = 0x000D
         self.symbols['CPUID'] = 0x000D
         self.assembled_items: List[AssembledItem] = []
+        self.bss_lines: Dict[Tuple[str, int], Tuple[int, int]] = {}
         self.memory: Dict[int, int] = {}
 
     def assemble(self):
@@ -625,6 +626,20 @@ class Assembler:
                     val = evaluate_expression(w_expr, self.symbols, line, pass_num) & WORD_MASK
                     emit_byte(val & BYTE_MASK, line)
                     emit_byte((val >> 8) & BYTE_MASK, line)
+                continue
+
+            if mnemonic == ".RESW":
+                align_to_word(line, pad_with_nop=False)
+                count = evaluate_expression(operands, self.symbols, line, pass_num)
+                if count < 0 or (cur_word_addr + count) > MEM_WORD_SIZE:
+                    raise AssemblerError(
+                        f".RESW count out of 16-bit memory range: {count} at 0x{cur_word_addr:04X}",
+                        line,
+                    )
+                if pass_num == 2:
+                    self.bss_lines[(line.filename, line.line_no)] = (cur_word_addr, count)
+                cur_word_addr += count
+                cur_slot = SLOT_0
                 continue
 
             if mnemonic == ".BYTE":
@@ -891,6 +906,9 @@ def write_listing(filename: str, assembler: Assembler):
             w_addr = items[0].word_addr
             hex_bytes = " ".join(f"{it.byte_val:02X}" for it in items)
             lines_output.append(f"{w_addr:04X}    {line.text:<42} ; [{hex_bytes}]")
+        elif key in assembler.bss_lines:
+            w_addr, bss_cnt = assembler.bss_lines[key]
+            lines_output.append(f"{w_addr:04X}    {line.text:<42} ; [BSS: {bss_cnt}w]")
         else:
             if code_clean:
                 lines_output.append(f"        {line.text}")

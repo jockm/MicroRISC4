@@ -64,9 +64,9 @@ Before writing RTL or compiler code, Phase 2 targets the **four measured bottlen
   - Enable & hardware-verify `MathAccelerator` (`0x0010`–`0x0016`, ECP5 `MULT18X18D` DSP slices) on ULX3S-85F (`ULX3S_ENABLE_MATH=1`).
 
 ### Track B: Compiler & MR4OS Binary Efficiency + Live Hardware OS
-- [ ] **B.1 Compiler `.bss` Zero-Data Separation & Binary Trimming (`act4c.py` / `mr4asm.py`)**
-  - Group zero-initialized static arrays/globals at the end of compiled binaries (`.bss` section), emit `bss_words` in the `.PRG` load header, and zero-fill `.bss` in `worker_stub.asm` (`_stub_zero_bss`) instead of streaming zeros from SD.
-  - Verify `MUL.PRG` shrinks from ~`120 KB` to `<30 KB` and `XI.PRG` shrinks from ~`85 KB` to `<25 KB`; re-enable `os_mul` in `tools/test_os.py` so `make os-test` passes **17/17**.
+- [x] **B.1 Compiler `.bss` Zero-Data Separation & Binary Trimming (`act4c.py` / `mr4asm.py`)**
+  - Added `.resw <N>` directive to `tools/mr4asm.py` (advancing addresses & listing `.bss` symbols without emitting zero words to disk) and reordered `tools/act4c.py` into `.text` (functions + `_act4_zero_bss` + `M4R_LIB.asm`) → `.data`/`.rodata` (non-zero globals + strings) → `.bss` (all zero globals, arrays, and function locals/params), zero-filled at `_main` entry with zero loader/protocol changes.
+  - Verified massive shrinkage: **`MUL.PRG` `120,442 B → 29,878 B` (−75.2%, 4.0×)**, **`XI.PRG` `85,890 B → 19,050 B` (−77.8%, 4.5×)**, **`os_main.bin` `68,004 B → 64,716 B` (−4.8%)**, total SD app payload **`217.8 KB → 59.5 KB` (−72.7%)**; re-enabled `os_mul` and restored original `16M` `os_path_and_history` step budget — **17/17 `make os-test` PASS**.
 - [ ] **B.2 Hardware Math Accelerator Codegen (`act4c.py`)**
   - Add `--hw-math` lowering in `act4c.py` for 16/32-bit multiply, divide, modulo, and variable shifts via `0x0010`–`0x0016`, verified in `mr4sim.py` and ROHD co-sim.
 - [ ] **B.3 Unify MR4OS IPC onto Hardware Lean Ring (`0x0020`–`0x002A`) & Boot MR4OS on ULX3S-85F**

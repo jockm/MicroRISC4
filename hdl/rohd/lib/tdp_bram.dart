@@ -6,12 +6,14 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:rohd/rohd.dart';
+import 'memory_factory.dart';
 
-class TdpBram extends Module with SystemVerilog {
+class TdpBram extends Module with SystemVerilog implements DualPortMemory {
   final int depth;
   final int dataWidth;
   final int addrWidth;
   final String? initHexFile;
+  @override
   final Uint16List mem;
 
   static const int maxSingleBankWords = 16384;
@@ -171,7 +173,9 @@ class TdpBram extends Module with SystemVerilog {
     });
   }
 
+  @override
   Logic get portARdata => output('port_a_rdata');
+  @override
   Logic get portBRdata => output('port_b_rdata');
 
   @override

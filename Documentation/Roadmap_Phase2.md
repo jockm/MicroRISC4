@@ -109,9 +109,10 @@ Before writing RTL or compiler code, Phase 2 targets the **four measured bottlen
 
 ### Track D: Road to OpenROAD (ASIC RTL-to-GDS Flow)
 *(Implements [Road_to_OpenROAD.md](Road_to_OpenROAD.md) without disturbing the ULX3S ECP5 flow.)*
-- [ ] **D.1 Target-Selectable Memory Abstraction (`MemoryFactory`) & Boot ROM Strategy**
-  - Decouple `CpuCore`, `ICache`/`DCache`, and `NocRouterNi` from FPGA-only `TdpBram`/`ram_style`/`$readmemh` via a clean memory factory (`fpgaEcp5` vs `asicSram` / `asicFlop`).
-  - Implement a synthesizable mask-ROM or SPI-boot loader module for `0x0100` cold-start instruction fetch on manufactured silicon.
+- [x] **D.1 Target-Selectable Memory Abstraction (`MemoryFactory`) & Boot ROM Strategy**
+  - Added `hdl/rohd/lib/memory_factory.dart` (`MemoryTarget.fpgaEcp5` / `asicSram` / `asicFlop`, `DualPortMemory` interface, foundry-ready `AsicSramDpMacro` / `AsicSramSpMacro` black-box-under-`SYNTHESIS` wrappers, pure standard-cell `AsicDualPortSram` / `AsicSinglePortFlopRam` / `AsicSmallRam`, and synthesizable `AsicBootRom` + write-protected `DualPortRamWithBootRom` cold-start overlay supporting both 1-cycle and 2-cycle read latency).
+  - Decoupled `CpuCore`, `CpuConfig`, `TdpBram`, `ICache`/`DCache`, `SdramCacheCluster`, `NocRouterNi`, and `NocMultiCoreCacheWrapper` via `MemoryFactory`, eliminating FPGA-only `(* ram_style *)` attributes and `$readmemh` on ASIC targets while keeping the ULX3S-85F FPGA SystemVerilog **100% byte-for-byte identical** (`0` non-timestamp diff across 792 KB 4-core MR4OS SV).
+  - Verified **40/40 `make test-rohd` PASS** (including `memory_factory_test.dart`: cold-boot from uninitialized `0xA5A5` SRAM via `AsicBootRom` at both `memReadLatency = 1` and `2`, ROM write-protection, `asicFlop` zero-blackbox mode, and `ICache`/`DCache`/`NocRouterNi` ASIC RTL cleanliness) and **Yosys ASIC preflight (`read_verilog -sv -DSYNTHESIS; hierarchy -check -top CpuCore; proc; opt; check -assert; stat`) PASS** (`0` errors, `1 × mr4_sram_dp_2048x16` macro preserved, `0` SRAM flop explosions, `128`-bit prefetch queue only).
 - [ ] **D.2 `AsicTop`, Generator & Structural Preflight (`make generate-asic`, `make asic-check`)**
   - Add `hdl/rohd/lib/asic_top.dart` (clean chip-level clock/reset/UART/optional-SPI ports; zero ECP5 primitives like `EHXPLLL`, `ODDRX1F`, `syn_useioff`, LEDs, or board pins).
   - Emit `build/asic/mr4_asic_top.sv` and add `make asic-check` (`yosys` `hierarchy -check`, `proc`, `opt`, `check`, `stat`) confirming zero unresolved cells or unintended SRAM flop-explosions.

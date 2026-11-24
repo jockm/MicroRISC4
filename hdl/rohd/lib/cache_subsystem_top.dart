@@ -7,6 +7,7 @@
 import 'package:rohd/rohd.dart';
 import 'cache_controllers.dart';
 import 'constants.dart';
+import 'memory_factory.dart';
 import 'sdram_controller.dart';
 
 /// Pipelined, fully-registered round-robin burst arbiter sharing a single
@@ -444,6 +445,7 @@ class SdramCacheCluster extends Module {
     int extraReadPipeCycles = 0,
     int? initWaitCycles,
     int? refreshCycles,
+    MemoryTarget memoryTarget = MemoryTarget.fpgaEcp5,
     super.name = 'sdram_cache_cluster',
   }) {
     assert(numCores >= 1, 'numCores must be >= 1');
@@ -564,6 +566,7 @@ class SdramCacheCluster extends Module {
         coreId: c,
         numLines: numLines,
         lineWords: lineWords,
+        memoryTarget: memoryTarget,
         name: 'icache_core_$c',
       );
 
@@ -583,6 +586,7 @@ class SdramCacheCluster extends Module {
         coreId: c,
         numLines: numLines,
         lineWords: lineWords,
+        memoryTarget: memoryTarget,
         name: 'dcache_core_$c',
       );
       snoopDoneWire <= dc.output('snoop_clean_done');

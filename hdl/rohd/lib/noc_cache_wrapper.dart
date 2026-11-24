@@ -1,5 +1,6 @@
 import 'package:rohd/rohd.dart';
 import 'constants.dart';
+import 'memory_factory.dart';
 import 'noc_router.dart';
 
 /// Ultra-lean 2-slot elastic registered ring hop stage (primary + skid buffer)
@@ -119,6 +120,7 @@ class NocMultiCoreCacheWrapper extends Module {
   final int coreIdWidth;
   final int opRead;
   final int opWrite;
+  final MemoryTarget memoryTarget;
 
   NocMultiCoreCacheWrapper({
     required Logic clk,
@@ -138,6 +140,7 @@ class NocMultiCoreCacheWrapper extends Module {
     this.fifoDepth = 16,
     this.opRead = 0,
     this.opWrite = 1,
+    this.memoryTarget = MemoryTarget.fpgaEcp5,
     super.name = 'noc_multicore_cache_wrapper',
   }) : coreIdWidth = NocRouterNi.idWidthForCores(numCores) {
     assert(numCores >= 1, 'numCores must be >= 1');
@@ -233,6 +236,7 @@ class NocMultiCoreCacheWrapper extends Module {
         coreId: c,
         numCores: numCores,
         fifoDepth: fifoDepth,
+        memoryTarget: memoryTarget,
         name: 'noc_ni_core_$c',
       );
       nis.add(ni);

@@ -1,5 +1,6 @@
 import 'package:rohd/rohd.dart';
 import 'constants.dart';
+import 'memory_factory.dart';
 
 /// Synthesizable 1-write / 1-read synchronous-write, asynchronous-read RAM
 /// backing the per-core RX FIFO. Infers 4x ECP5 TRELLIS_DPR16X4 slices for a
@@ -118,6 +119,7 @@ class NocRouterNi extends Module {
   final int numCores;
   final int fifoDepth;
   final int coreIdWidth;
+  final MemoryTarget memoryTarget;
 
   static int idWidthForCores(int numCores) =>
       (numCores <= 1) ? 1 : (numCores - 1).bitLength;
@@ -137,6 +139,7 @@ class NocRouterNi extends Module {
     this.coreId = 0,
     this.numCores = 1,
     this.fifoDepth = 16,
+    this.memoryTarget = MemoryTarget.fpgaEcp5,
     super.name = 'noc_router_ni',
   }) : coreIdWidth = idWidthForCores(numCores) {
     assert(numCores >= 1, 'numCores must be >= 1');
@@ -220,9 +223,10 @@ class NocRouterNi extends Module {
     // Strictly registered backpressure (zero combinational loop into ring)
     inReadyOut <= mux(inType, mboxCanAccept, rxCanAccept);
 
-    // Shared RX FIFO storage (1W1R distributed RAM)
+    // Shared RX FIFO storage (1W1R distributed RAM on ECP5, pure flop regfile on ASIC)
     final rxPush = inValid & (~inType) & rxCanAccept;
-    final rxRam = NocFifoRam(
+    final rxRamRdata = MemoryFactory.createSmallRam(
+      target: memoryTarget,
       clk: clk,
       waddr: rxWrPtrQ,
       wdata: inPayload,
@@ -271,7 +275,7 @@ class NocRouterNi extends Module {
       rxNotEmpty,
     ].swizzle();
     final rxPopVal =
-        mux(rxNotEmpty, rxRam.rdata, Const(0, width: MiniRISC4Constants.dataWidth));
+        mux(rxNotEmpty, rxRamRdata, Const(0, width: MiniRISC4Constants.dataWidth));
     final mboxDataVal =
         mux(mboxValidQ, mboxDataQ, Const(0, width: MiniRISC4Constants.dataWidth));
     final nocInfoVal = ((fifoDepth & 0xFF) << 8) | (numCores & 0xFF);

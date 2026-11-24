@@ -9,13 +9,12 @@ import 'package:rohd/rohd.dart';
 import 'constants.dart';
 import 'cpu_config.dart';
 import 'math_accelerator.dart';
-import 'noc_router.dart';
+import 'memory_factory.dart';
 import 'spi_master.dart';
-import 'tdp_bram.dart';
 
 class CpuCore extends Module {
   final CpuConfig config;
-  late final TdpBram ram;
+  late final DualPortMemory ram;
 
   // Parallel Memory / MMIO / DCache Unit States
   static const int _memIdle = 0;
@@ -281,8 +280,9 @@ class CpuCore extends Module {
     final ramBWe =
         useExtCache ? (portBWe & ~isMmio & ~isExtPortB) : (portBWe & ~isMmio);
 
-    // Instantiate Synthesizable True Dual-Port BRAM
-    ram = TdpBram(
+    // Instantiate Target-Selectable True Dual-Port Memory (ECP5 BRAM or ASIC SRAM/Flop + Boot ROM)
+    ram = MemoryFactory.createMainRam(
+      target: config.memoryTarget,
       clk: clk,
       portAAddr: portAAddr.slice(addrHigh, 0),
       portAEn: portAEn,
@@ -292,8 +292,12 @@ class CpuCore extends Module {
       portBEn: portBEn,
       depth: config.memWords,
       dataWidth: 16,
+      readLatency: config.memReadLatency,
       initHexFile: initHexFile,
       initialMemory: initialMemory,
+      bootRomBase: config.bootRomBase,
+      bootRomWords: config.bootRomWords,
+      sramMacroName: config.sramMacroName,
       name: '${name}_ram',
     );
     portARdata <= ram.portARdata;
@@ -662,9 +666,10 @@ class CpuCore extends Module {
     final ifPushData =
         useExtCache ? mux(icRespPush, icRespDataIn, portARdata) : portARdata;
 
-    // 8x16 1W1R Distributed RAM Backing Prefetch Queue (4x TRELLIS_DPR16X4)
+    // 8x16 1W1R Backing Prefetch Queue (DPR16X4 on ECP5, pure flop regfile on ASIC)
     final iqPushSig = Logic(name: 'iq_push');
-    final iqRam = NocFifoRam(
+    final iqRamRdata = MemoryFactory.createSmallRam(
+      target: config.memoryTarget,
       clk: clk,
       waddr: iqWrPtrQ,
       wdata: ifPushData,
@@ -1230,7 +1235,7 @@ class CpuCore extends Module {
         // Pure-FF FWFT Head Register Refill (idWordQ / idValidQ)
         If(idNeedsRefill, then: [
           If(iqNotEmpty, then: [
-            idWordQ < iqRam.rdata,
+            idWordQ < iqRamRdata,
             idValidQ < 1,
           ], orElse: [
             If(bypassDirect, then: [

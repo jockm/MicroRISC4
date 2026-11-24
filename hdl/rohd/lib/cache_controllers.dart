@@ -7,7 +7,7 @@
 import 'dart:typed_data';
 import 'package:rohd/rohd.dart';
 import 'constants.dart';
-import 'noc_router.dart';
+import 'memory_factory.dart';
 
 /// Synthesizable single-port synchronous Block RAM (`DP16KD` on ECP5, compiled
 /// single-port SRAM macro on ASIC) with cycle-exact ROHD Dart simulation.
@@ -153,6 +153,7 @@ class ICache extends Module {
     this.coreId = 0,
     this.numLines = 64,
     this.lineWords = 8,
+    MemoryTarget memoryTarget = MemoryTarget.fpgaEcp5,
     super.name = 'icache',
   })  : offsetBits = (lineWords - 1).bitLength,
         indexBits = (numLines - 1).bitLength,
@@ -244,7 +245,8 @@ class ICache extends Module {
     // Tag storage in tiny distributed RAM (only 4-8 DPR16X4 slices).
     // Read on _stIdle into registered tagRdataQ / lineValidQ, then compared in
     // _stLookup against registered qTag (2-stage balanced pipeline -> >110 MHz).
-    final tagRam = NocFifoRam(
+    final tagRamRdata = MemoryFactory.createSmallRam(
+      target: memoryTarget,
       clk: clk,
       waddr: qIndex,
       wdata: qTag,
@@ -261,7 +263,7 @@ class ICache extends Module {
         (~flushAll) &
         (~(invalValid & invIndex.eq(qIndex)));
 
-    // Data storage in 1 single DP16KD Block RAM
+    // Data storage in 1 single DP16KD Block RAM (or ASIC SRAM/flop)
     final bramAddr = mux(
       isRefillData,
       [qIndex, fillBeatQ].swizzle(),
@@ -269,7 +271,8 @@ class ICache extends Module {
     );
     final bramWe = isRefillData & memRdataValid;
     final bramEn = (isIdle & reqValid) | bramWe;
-    final dataBram = CacheDataBram(
+    final dataBramRdata = MemoryFactory.createCacheDataRam(
+      target: memoryTarget,
       clk: clk,
       addr: bramAddr,
       wdata: memRdata,
@@ -332,7 +335,7 @@ class ICache extends Module {
         CaseItem(Const(_stIdle, width: 2), [
           If(reqValid, then: [
             reqAddrQ < reqAddr,
-            tagRdataQ < tagRam.rdata,
+            tagRdataQ < tagRamRdata,
             lineValidQ <
                 (inLineValid &
                     (~flushAll) &
@@ -343,7 +346,7 @@ class ICache extends Module {
         CaseItem(Const(_stLookup, width: 2), [
           If(lookupHit, then: [
             respValidQ < 1,
-            respDataQ < dataBram.rdata,
+            respDataQ < dataBramRdata,
             respHitQ < 1,
             stateQ < Const(_stIdle, width: 2),
           ], orElse: [
@@ -438,6 +441,7 @@ class DCache extends Module {
     this.coreId = 0,
     this.numLines = 64,
     this.lineWords = 8,
+    MemoryTarget memoryTarget = MemoryTarget.fpgaEcp5,
     super.name = 'dcache',
   })  : offsetBits = (lineWords - 1).bitLength,
         indexBits = (numLines - 1).bitLength,
@@ -548,7 +552,8 @@ class DCache extends Module {
     // 64:1 validVec/dirtyVec muxes and DPR16X4 tag read address!
     final snoopTake = useSnoop ? (snoopReqIn & (~snoopDoneQ)) : Const(0);
     final tagRaddr = useSnoop ? mux(isSnoop, qIndex, inIndex) : inIndex;
-    final tagRam = NocFifoRam(
+    final tagRamRdata = MemoryFactory.createSmallRam(
+      target: memoryTarget,
       clk: clk,
       waddr: qIndex,
       wdata: qTag,
@@ -599,7 +604,8 @@ class DCache extends Module {
         isWbReq |
         isWbData;
 
-    final dataBram = CacheDataBram(
+    final dataBramRdata = MemoryFactory.createCacheDataRam(
+      target: memoryTarget,
       clk: clk,
       addr: bramAddr,
       wdata: bramWdata,
@@ -626,7 +632,7 @@ class DCache extends Module {
       Const(0, width: offsetBits),
     ].swizzle();
     memCmdBurstLen <= Const(lineWords, width: 8);
-    memWdata <= dataBram.rdata;
+    memWdata <= dataBramRdata;
     memWdataValid <= isWbData;
 
     final resetVals = <Logic, dynamic>{
@@ -680,7 +686,7 @@ class DCache extends Module {
                 reqAddrQ < reqAddr,
                 reqWeQ < reqWe,
                 reqWdataQ < reqWdata,
-                tagRdataQ < tagRam.rdata,
+                tagRdataQ < tagRamRdata,
                 lineValidQ < inLineValid,
                 lineDirtyQ < inLineDirty,
                 snoopWbQ < 0,
@@ -692,7 +698,7 @@ class DCache extends Module {
               reqAddrQ < reqAddr,
               reqWeQ < reqWe,
               reqWdataQ < reqWdata,
-              tagRdataQ < tagRam.rdata,
+              tagRdataQ < tagRamRdata,
               lineValidQ < inLineValid,
               lineDirtyQ < inLineDirty,
               stateQ < Const(_stLookup, width: 3),
@@ -700,7 +706,7 @@ class DCache extends Module {
         ]),
         if (useSnoop)
           CaseItem(Const(_stSnoop, width: 3), [
-            tagRdataQ < tagRam.rdata,
+            tagRdataQ < tagRamRdata,
             lineValidQ < inLineValid,
             lineDirtyQ < inLineDirty,
             stateQ < Const(_stLookup, width: 3),
@@ -718,7 +724,7 @@ class DCache extends Module {
             ], orElse: [
               If(lookupHit, then: [
                 respValidQ < 1,
-                respDataQ < mux(reqWeQ, reqWdataQ, dataBram.rdata),
+                respDataQ < mux(reqWeQ, reqWdataQ, dataBramRdata),
                 respHitQ < 1,
                 stateQ < Const(_stIdle, width: 3),
               ], orElse: [
@@ -733,7 +739,7 @@ class DCache extends Module {
           else
             If(lookupHit, then: [
               respValidQ < 1,
-              respDataQ < mux(reqWeQ, reqWdataQ, dataBram.rdata),
+              respDataQ < mux(reqWeQ, reqWdataQ, dataBramRdata),
               respHitQ < 1,
               stateQ < Const(_stIdle, width: 3),
             ], orElse: [

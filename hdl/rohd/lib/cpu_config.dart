@@ -4,6 +4,7 @@
 // ==============================================================================
 
 import 'constants.dart';
+import 'memory_factory.dart';
 
 class CpuConfig {
   final int coreId;
@@ -20,6 +21,10 @@ class CpuConfig {
   final bool enableSdramCache;
   final bool isPipelined;
   final int memReadLatency;
+  final MemoryTarget memoryTarget;
+  final int bootRomBase;
+  final List<int>? bootRomWords;
+  final String? sramMacroName;
   final int clkFreqMhz;
   final int cpuVersionMajor;
   final int cpuVersionMinor;
@@ -46,6 +51,10 @@ class CpuConfig {
     this.enableSdramCache = false,
     this.isPipelined = true,
     this.memReadLatency = 2,
+    this.memoryTarget = MemoryTarget.fpgaEcp5,
+    this.bootRomBase = 0x0100,
+    this.bootRomWords,
+    this.sramMacroName,
     this.clkFreqMhz = 48,
     this.cpuVersionMajor = MiniRISC4Constants.cpuVersionMajor,
     this.cpuVersionMinor = MiniRISC4Constants.cpuVersionMinor,

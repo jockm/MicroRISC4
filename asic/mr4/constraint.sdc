@@ -15,31 +15,37 @@ if {[info exists ::env(PLATFORM)]} {
 }
 
 if {$current_platform eq "asap7"} {
-    set clk_period      [expr {[info exists ::env(CLOCK_PERIOD)] ? $::env(CLOCK_PERIOD) : 2000.0}]
-    set clk_uncertainty [expr {$clk_period * 0.05}]
-    set clk_slew        50.0
-    set io_slew         50.0
-    set out_load        10.0
+    set clk_period            [expr {[info exists ::env(CLOCK_PERIOD)] ? $::env(CLOCK_PERIOD) : 2000.0}]
+    set clk_uncertainty_setup 50.0
+    set clk_uncertainty_hold  15.0
+    set clk_slew              50.0
+    set io_slew               50.0
+    set out_load              10.0
 } elseif {$current_platform eq "sky130hd" || $current_platform eq "ihp-sg13g2"} {
-    set clk_period      [expr {[info exists ::env(CLOCK_PERIOD)] ? $::env(CLOCK_PERIOD) : 20.0}]
-    set clk_uncertainty [expr {$clk_period * 0.05}]
-    set clk_slew        0.20
-    set io_slew         0.25
-    set out_load        0.05
+    set clk_period            [expr {[info exists ::env(CLOCK_PERIOD)] ? $::env(CLOCK_PERIOD) : 20.0}]
+    set clk_uncertainty_setup 0.25
+    set clk_uncertainty_hold  0.05
+    set clk_slew              0.20
+    set io_slew               0.25
+    set out_load              0.05
 } else {
-    set clk_period      [expr {[info exists ::env(CLOCK_PERIOD)] ? $::env(CLOCK_PERIOD) : 10.0}]
-    set clk_uncertainty [expr {$clk_period * 0.05}]
-    set clk_slew        0.10
-    set io_slew         0.15
-    set out_load        10.0
+    set clk_period            [expr {[info exists ::env(CLOCK_PERIOD)] ? $::env(CLOCK_PERIOD) : 10.0}]
+    set clk_uncertainty_setup 0.25
+    set clk_uncertainty_hold  0.05
+    set clk_slew              0.10
+    set io_slew               0.15
+    set out_load              10.0
 }
 
 set clk_port_name "clk"
 set clk_port [get_ports $clk_port_name]
 
 create_clock -name core_clk -period $clk_period $clk_port
-set_clock_uncertainty $clk_uncertainty [get_clocks core_clk]
-set_clock_transition  $clk_slew        [get_clocks core_clk]
+# Separate setup vs. hold uncertainty: hold checks are same-edge (skew only, no
+# cycle-to-cycle PLL jitter), whereas setup includes jitter + skew margin.
+set_clock_uncertainty -setup $clk_uncertainty_setup [get_clocks core_clk]
+set_clock_uncertainty -hold  $clk_uncertainty_hold  [get_clocks core_clk]
+set_clock_transition         $clk_slew              [get_clocks core_clk]
 
 # Constrain EVERY non-clock input port (rst_n, uart_rxd, optional spi_miso)
 set non_clk_inputs [lsearch -inline -all -not -exact [all_inputs] $clk_port]

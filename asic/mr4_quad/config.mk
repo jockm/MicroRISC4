@@ -50,4 +50,6 @@ else
   export CLOCK_PERIOD        ?= 10.0
   export MACRO_PLACE_HALO    ?= 10 10
   export MACRO_PLACE_CHANNEL ?= 30 30
+  # Connect top-level M8/M9 power grid directly to mr4_tile's exposed M7 power pins
+  export PDN_TCL             ?= $(MR4_QUAD_DIR)/pdn_nangate45.tcl
 endif

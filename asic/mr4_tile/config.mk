@@ -22,8 +22,10 @@ export SDC_FILE        = $(MR4_TILE_DIR)/constraint.sdc
 # real standard-cell flip-flops (switch to ASIC_MEM_TARGET=sram for foundry macros).
 export SYNTH_MEMORY_MAX_BITS ?= 16384
 
-# Export abstract views from final routed/filled layout for hierarchical assembly
-export ABSTRACT_SOURCE ?= 6_final
+# Export abstract views from 5_route (post-routing + stdcell fill, BEFORE 6_1_fill
+# dummy metal fill) so upper layers metal8-metal10 stay obstruction-free above the
+# macro's metal7 power pins for top-level hierarchical PDN connections.
+export ABSTRACT_SOURCE ?= 5_route
 
 # Conservative utilization for clean macro routing and pin access
 export CORE_UTILIZATION       ?= 40

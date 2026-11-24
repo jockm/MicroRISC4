@@ -114,6 +114,7 @@ make ulx3s-timing
 
 ### In Progress / Pending Verification
 - All Priority 1–5 roadmap milestones are complete and hardware-verified on ULX3S-85F!
+- **Next:** See [Roadmap_Phase2.md](Roadmap_Phase2.md) for Phase 2 (Pipelined Multi-Core SDRAM Scaling, Compiler `.bss` Trimming, Live Hardware MR4OS, 4-Stage GHz-Ready Pipeline, and OpenROAD ASIC Flow).
 
 ---
 

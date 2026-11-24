@@ -66,9 +66,9 @@ Before writing RTL or compiler code, Phase 2 targets the **four measured bottlen
     - **4-Core SDRAM @ `84 MHz`:** `8484 LUT4`, `3489 TRELLIS_FF`, `80 DPR16X4`, `16 DP16KD`, `17 IOLOGIC` — **`94.78 MHz`** (PASS)
     - **8-Core SDRAM @ `84 MHz`:** `16710 LUT4`, `6685 TRELLIS_FF`, `160 DPR16X4`, `32 DP16KD`, `17 IOLOGIC` — **`92.97 MHz`** (PASS)
     - **4-Core SDRAM @ `96 MHz`:** `8442 LUT4`, `3489 TRELLIS_FF`, `80 DPR16X4`, `16 DP16KD`, `17 IOLOGIC` — **`100.79 MHz`** (PASS, **ULX3S-85F hardware soak PASS @ `96 MHz`, `0` errors**)
-- [ ] **A.3 ULX3S microSD SPI Wiring + Hardware Math Accelerator Bring-Up**
+- [ ] **A.3 ULX3S microSD SPI Wiring + Lean 1-DSP Math Accelerator Bring-Up**
   - Wire `SpiMaster` (`0x0018`–`0x001A`) to the ULX3S-85F onboard microSD slot in `ulx3s_v20.lpf` and `ulx3s_top.dart` (`ULX3S_ENABLE_SPI=1`) and hardware-verify SDHC `CMD0`/`CMD8`/`CMD55`/`ACMD41`/`CMD17` sector read.
-  - Enable & hardware-verify `MathAccelerator` (`0x0010`–`0x0016`, ECP5 `MULT18X18D` DSP slices) on ULX3S-85F (`ULX3S_ENABLE_MATH=1`).
+  - Refactor `MathAccelerator` (`0x0010`–`0x0016`) from the combinational 8-DSP 32×32 draft into an optional, per-core configurable (`ULX3S_ENABLE_MATH=0|1`, default off) **registered 1-DSP (`18×18`) multi-cycle unit** (`~180–260 LUT4`, `1 MULT18X18D` per enabled core, fast 2-LUT MMIO decode, 0 MHz $F_{\max}$ impact; supports Core-0-only or compute-subset selection to preserve maximum core count) and hardware-verify on ULX3S-85F.
 
 ### Track B: Compiler & MR4OS Binary Efficiency + Live Hardware OS
 - [x] **B.1 Compiler `.bss` Zero-Data Separation & Binary Trimming (`act4c.py` / `mr4asm.py`)**
@@ -81,8 +81,10 @@ Before writing RTL or compiler code, Phase 2 targets the **four measured bottlen
   - Boot **4-core MR4OS + FAT32 microSD shell + `! ls` / `! cat` / `! mul`** live on your ULX3S-85F board!
 
 ### Track C: Core Microarchitecture — GHz-Ready 4-Stage Pipeline
-- [ ] **C.1 CPI & Critical-Path Profiling Baseline**
-  - Instrument `mr4sim.py` and `yosys`/`nextpnr` to capture dynamic instruction mix (ALU / Load / Store / Branch / Stack / Trap), CPI, and per-stage logic-level histograms on `monitor`, `stress`, `os_main`, and `mul`.
+- [x] **C.1 CPI & Critical-Path Profiling Baseline**
+  - Added zero-overhead-when-off `ExecutionProfiler` (`--profile`, `--max-steps`) to `tools/mr4sim.py` modeling exact current `CpuCore` FSM cycles, load-use hazard distance, and 4-stage pipeline projections (2-cycle BRAM & 1-cycle SRAM).
+  - Profiled `monitor.bin` (`CPI 1.989 → 1.307/1.201`), `stress_hw_master/worker` (`CPI 1.853–2.125 → 1.369–1.399 / 1.195–1.237`), `os_main.bin` (`CPI 1.606–1.634 → 1.305–1.311 / 1.152–1.158`, `29–34%` `XCHG`), and `MUL.PRG` (`CPI 1.739 → 1.296 / 1.167`); identified `PUSH8` `_stFetchLatch` bubbles (`13–22%` of cycles) as the #1 software cycle sink alongside load stalls (`12–17%`) and branch flushes (`10–15%`).
+  - Captured `yosys` generic 2-input gate depth (**`35` levels**: `dec_rl_q → regfile mux → 16-bit adder → port_b_addr`) and `nextpnr-ecp5` 96 MHz critical path (**`9.92 ns`**, `2.79 ns` logic / `9` LUT levels + `7.13 ns` routing: `dec_imm4_q → regL==0 → FSM CE`) in [Profiling_Baseline_C1.md](Profiling_Baseline_C1.md).
 - [ ] **C.2 Trap-Safe Hardware Return Link (`EPC` / Non-Destructive Async Traps)**
   - Add a dedicated hardware `EPC` register (or dedicated trap-return instruction/MMIO) so asynchronous hardware Trap 14 never clobbers a live `R0` in user/kernel code.
 - [ ] **C.3 4-Stage In-Order Pipelined `CpuCore` (`IF → ID/RF → EX → WB`)**

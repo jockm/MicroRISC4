@@ -437,8 +437,240 @@ class NocCluster:
         self.tick_noc()
 
 
+class ExecutionProfiler:
+    """Dynamic instruction mix, load-use hazard, and hardware CPI profiler.
+
+    Models exact cycle counts of the current multi-cycle `CpuCore` FSM
+    (local BRAM) alongside analytical projections for the Track C.3 4-stage
+    in-order pipeline (`IF -> ID/RF -> EX -> WB`) on both 2-cycle ECP5 BRAM
+    and 1-cycle ASIC SRAM.
+    """
+    CATEGORIES = (
+        "alu",
+        "shift_rot_inc_dec",
+        "move_ldi4",
+        "nop",
+        "push8",
+        "load_peek",
+        "load_pop",
+        "store_poke",
+        "store_push",
+        "branch_taken",
+        "branch_not_taken",
+        "jmp",
+        "link",
+        "trap",
+        "xchg",
+    )
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.counts = {k: 0 for k in self.CATEGORIES}
+        self.total_insts = 0
+        self.slot0_insts = 0
+        self.slot1_insts = 0
+        # Exact current CpuCore FSM cycles (local BRAM)
+        self.hw_cycles = 0
+        self.hw_load_stall_cycles = 0
+        self.hw_branch_flush_cycles = 0
+        self.hw_push8_bubble_cycles = 0
+        # Dependency tracking for 4-stage pipeline projections
+        self._load_dest_1 = None  # dest reg of load 1 slot ago
+        self._load_dest_2 = None  # dest reg of load 2 slots ago
+        self.load_use_dist1 = 0
+        self.load_use_dist2 = 0
+        self.pipe_1cyc_sram_cycles = 0
+        self.pipe_2cyc_bram_cycles = 0
+        self.async_traps = 0
+
+    def record_async_trap(self):
+        self.async_traps += 1
+        self.counts["trap"] += 1
+        self.hw_cycles += 3
+        self.hw_branch_flush_cycles += 3
+        self.pipe_1cyc_sram_cycles += 2
+        self.pipe_2cyc_bram_cycles += 3
+        self._load_dest_2 = None
+        self._load_dest_1 = None
+
+    def _src_regs(self, opcode: int, rr: int, rl: int):
+        if opcode == OP_LD_REG:
+            return () if (rr == 0 and rl == 0) else (rl,)
+        if opcode == OP_LD_IMM4:
+            return ()
+        if opcode == OP_LD_PEEK or opcode == OP_LD_POP:
+            return (rl,)
+        if opcode == OP_LD_POKE or opcode == OP_LD_PUSH:
+            return (rr, rl)
+        if opcode in (OP_ADD, OP_SUB, OP_OR, OP_XOR, OP_AND):
+            return (rr, rl)
+        if opcode == OP_SHIFT or opcode == OP_ROT_INC_DEC:
+            return (rl,)
+        if opcode in (OP_JMP_Z, OP_JMP_M):
+            return (rr, rl)
+        if opcode == OP_JMP_SPECIAL:
+            return (rl,)
+        return ()
+
+    def record(self, opcode: int, rr: int, rl: int, slot: int, branch_taken: bool):
+        self.total_insts += 1
+        if slot == 0:
+            self.slot0_insts += 1
+        else:
+            self.slot1_insts += 1
+
+        srcs = self._src_regs(opcode, rr, rl)
+        hit1 = self._load_dest_1 is not None and self._load_dest_1 in srcs
+        hit2 = (not hit1) and (self._load_dest_2 is not None and self._load_dest_2 in srcs)
+        if hit1:
+            self.load_use_dist1 += 1
+        elif hit2:
+            self.load_use_dist2 += 1
+
+        # Classify instruction + exact hardware cycles
+        is_load = False
+        load_dest = None
+        taken_cf = False
+        hw_cyc = 1
+        p1_cyc = 1 + (1 if hit1 else 0)
+        p2_cyc = 1 + (2 if hit1 else (1 if hit2 else 0))
+
+        if opcode == OP_LD_REG:
+            if rr == 0 and rl == 0:
+                self.counts["nop"] += 1
+            else:
+                self.counts["move_ldi4"] += 1
+        elif opcode == OP_LD_IMM4:
+            self.counts["move_ldi4"] += 1
+        elif opcode == OP_LD_PEEK:
+            self.counts["load_peek"] += 1
+            is_load = True
+            load_dest = rr
+            hw_cyc = 4
+            self.hw_load_stall_cycles += 3
+        elif opcode == OP_LD_POKE:
+            self.counts["store_poke"] += 1
+        elif opcode == OP_LD_POP:
+            self.counts["load_pop"] += 1
+            is_load = True
+            load_dest = rr
+            hw_cyc = 4
+            self.hw_load_stall_cycles += 3
+        elif opcode == OP_LD_PUSH:
+            self.counts["store_push"] += 1
+        elif opcode in (OP_ADD, OP_SUB, OP_OR, OP_XOR, OP_AND):
+            self.counts["alu"] += 1
+        elif opcode == OP_SHIFT:
+            if rr == SUB_SHIFT_XCHG:
+                self.counts["xchg"] += 1
+            else:
+                self.counts["shift_rot_inc_dec"] += 1
+        elif opcode == OP_ROT_INC_DEC:
+            self.counts["shift_rot_inc_dec"] += 1
+        elif opcode in (OP_JMP_Z, OP_JMP_M):
+            if branch_taken:
+                self.counts["branch_taken"] += 1
+                taken_cf = True
+                hw_cyc = 4
+                self.hw_branch_flush_cycles += 3
+            else:
+                self.counts["branch_not_taken"] += 1
+        elif opcode == OP_JMP_SPECIAL:
+            if rr == SUB_JMP:
+                self.counts["jmp"] += 1
+                taken_cf = True
+                hw_cyc = 4
+                self.hw_branch_flush_cycles += 3
+            elif rr == SUB_LINK:
+                self.counts["link"] += 1
+                taken_cf = True
+                hw_cyc = 4
+                self.hw_branch_flush_cycles += 3
+            elif rr == SUB_PUSH8:
+                self.counts["push8"] += 1
+                hw_cyc = 2
+                self.hw_push8_bubble_cycles += 1
+            elif rr == SUB_TRAP:
+                self.counts["trap"] += 1
+                taken_cf = True
+                hw_cyc = 4
+                self.hw_branch_flush_cycles += 3
+
+        if taken_cf:
+            p1_cyc += 2
+            p2_cyc += 3
+
+        self.hw_cycles += hw_cyc
+        self.pipe_1cyc_sram_cycles += p1_cyc
+        self.pipe_2cyc_bram_cycles += p2_cyc
+
+        if taken_cf:
+            self._load_dest_2 = None
+            self._load_dest_1 = None
+        else:
+            self._load_dest_2 = self._load_dest_1
+            self._load_dest_1 = load_dest if is_load else None
+
+    def summary(self) -> dict:
+        n = max(1, self.total_insts)
+        loads = self.counts["load_peek"] + self.counts["load_pop"]
+        stores = self.counts["store_poke"] + self.counts["store_push"]
+        cf_taken = (
+            self.counts["branch_taken"]
+            + self.counts["jmp"]
+            + self.counts["link"]
+            + self.counts["trap"]
+        )
+        cpi_cur = self.hw_cycles / n
+        cpi_p2 = self.pipe_2cyc_bram_cycles / n
+        cpi_p1 = self.pipe_1cyc_sram_cycles / n
+        return {
+            "total_insts": self.total_insts,
+            "slot0_insts": self.slot0_insts,
+            "slot1_insts": self.slot1_insts,
+            "counts": dict(self.counts),
+            "loads": loads,
+            "stores": stores,
+            "cf_taken": cf_taken,
+            "load_use_dist1": self.load_use_dist1,
+            "load_use_dist2": self.load_use_dist2,
+            "load_use_dist1_pct": (100.0 * self.load_use_dist1 / loads) if loads else 0.0,
+            "hw_cycles": self.hw_cycles,
+            "hw_cpi": cpi_cur,
+            "hw_load_stall_pct": 100.0 * self.hw_load_stall_cycles / max(1, self.hw_cycles),
+            "hw_branch_flush_pct": 100.0 * self.hw_branch_flush_cycles / max(1, self.hw_cycles),
+            "hw_push8_bubble_pct": 100.0 * self.hw_push8_bubble_cycles / max(1, self.hw_cycles),
+            "hw_nop_pct": 100.0 * self.counts["nop"] / max(1, self.hw_cycles),
+            "pipe_2cyc_bram_cpi": cpi_p2,
+            "pipe_2cyc_bram_ipc_gain": cpi_cur / cpi_p2 if cpi_p2 else 1.0,
+            "pipe_1cyc_sram_cpi": cpi_p1,
+            "pipe_1cyc_sram_ipc_gain": cpi_cur / cpi_p1 if cpi_p1 else 1.0,
+        }
+
+    def format_report(self, title: str = "MiniRISC4 Execution Profile") -> str:
+        s = self.summary()
+        n = max(1, s["total_insts"])
+        c = s["counts"]
+        lines = [
+            f"=== {title} ===",
+            f"Dynamic slots: {s['total_insts']:,} (Slot0: {s['slot0_insts']:,}, Slot1: {s['slot1_insts']:,})",
+            f"Current CpuCore FSM (local BRAM): {s['hw_cycles']:,} cycles | CPI = {s['hw_cpi']:.3f}",
+            f"  Cycle breakdown: Load stalls {s['hw_load_stall_pct']:.1f}% | Branch flushes {s['hw_branch_flush_pct']:.1f}% | PUSH8 bubbles {s['hw_push8_bubble_pct']:.1f}% | NOP slots {s['hw_nop_pct']:.1f}%",
+            f"Load-Use Hazards: dist-1 = {s['load_use_dist1']:,} ({s['load_use_dist1_pct']:.1f}% of loads), dist-2 = {s['load_use_dist2']:,}",
+            f"Projected 4-Stage Pipeline (2-cyc BRAM): CPI = {s['pipe_2cyc_bram_cpi']:.3f} ({s['pipe_2cyc_bram_ipc_gain']:.2f}x IPC)",
+            f"Projected 4-Stage Pipeline (1-cyc SRAM): CPI = {s['pipe_1cyc_sram_cpi']:.3f} ({s['pipe_1cyc_sram_ipc_gain']:.2f}x IPC)",
+            "Instruction mix:",
+        ]
+        for k in self.CATEGORIES:
+            if c[k]:
+                lines.append(f"  {k:18s}: {c[k]:10,d} ({100.0 * c[k] / n:5.1f}%)")
+        return "\n".join(lines)
+
+
 class MiniRISC4Sim:
-    def __init__(self, trace: bool = False, core_id: int = 0, noc_ni: "CoreNetworkInterface | None" = None, mem_words: int = MEM_WORDS, sdram_cache: "SdramCacheSubsystem | None" = None, cache_base_addr: int | None = None, cache_fetch: bool = False):
+    def __init__(self, trace: bool = False, core_id: int = 0, noc_ni: "CoreNetworkInterface | None" = None, mem_words: int = MEM_WORDS, sdram_cache: "SdramCacheSubsystem | None" = None, cache_base_addr: int | None = None, cache_fetch: bool = False, profile: bool = False):
         assert 1 <= mem_words <= MEM_WORDS, "Per-core memory capped at 64K words (128K bytes)"
         self.mem_words = mem_words
         self.mem = [0] * mem_words
@@ -461,6 +693,7 @@ class MiniRISC4Sim:
         self.rx_queue = deque()
         self.sd_card = None
         self.cycles = 0
+        self.profiler = ExecutionProfiler() if profile else None
 
         # Optional inter-core FIFO (0x000A/0x000B) & Mailbox (0x000C) bus
         self.fifo_in_queue = None
@@ -654,6 +887,8 @@ class MiniRISC4Sim:
             if next_vec == 14 or self._safe_trap_boundary:
                 self.pending_traps.popleft()
                 self._safe_trap_boundary = False
+                if self.profiler is not None:
+                    self.profiler.record_async_trap()
                 self.trigger_trap(next_vec)
                 return
 
@@ -696,6 +931,7 @@ class MiniRISC4Sim:
         # ----------------------------------------------------------------------
         # Opcode Decoding
         # ----------------------------------------------------------------------
+        branch_taken = False
         if opcode == OP_LD_REG:
             self.r[rr] = self.r[rl]
 
@@ -773,11 +1009,13 @@ class MiniRISC4Sim:
         elif opcode == OP_JMP_Z:
             # JMP.Z Rr, Rl -> Branch to Rr if Rl == 0
             if self.r[rl] == 0:
+                branch_taken = True
                 self._branch_to(self.r[rr])
 
         elif opcode == OP_JMP_M:
             # JMP.M Rr, Rl -> Branch to Rr if Rl is negative (bit 15 set)
             if (self.r[rl] & 0x8000) != 0:
+                branch_taken = True
                 self._branch_to(self.r[rr])
 
         elif opcode == OP_JMP_SPECIAL:
@@ -786,14 +1024,18 @@ class MiniRISC4Sim:
                 print(f"\n[FAULT] Slot 1 alignment violation at PC:0x{current_pc:04X}")
                 self.r[0] = (current_pc + 1) & ADDR_MASK
                 self._branch_to((self.trap_base + (15 << 4)) & ADDR_MASK)
+                if self.profiler is not None:
+                    self.profiler.record(OP_JMP_SPECIAL, SUB_TRAP, 0, current_slot, True)
                 return
 
             if rr == SUB_JMP:
+                branch_taken = True
                 self._branch_to(self.r[rl])
                 if rl == 0:
                     self._safe_trap_boundary = True
 
             elif rr == SUB_LINK:
+                branch_taken = True
                 target = self.r[rl]
                 self.r[0] = (current_pc + 1) & ADDR_MASK
                 self._branch_to(target)
@@ -805,10 +1047,14 @@ class MiniRISC4Sim:
                 self.slot = 0
 
             elif rr == SUB_TRAP:
+                branch_taken = True
                 vec = self.r[rl] & 0x0F
                 target_slot = (self.trap_base + (vec << 4)) & ADDR_MASK
                 self.r[0] = (current_pc + 1) & ADDR_MASK
                 self._branch_to(target_slot)
+
+        if self.profiler is not None:
+            self.profiler.record(opcode, rr, rl, current_slot, branch_taken)
 
     def interactive_cli(self):
         """Interactive debugger command loop ((m4db))."""
@@ -1102,13 +1348,15 @@ def main():
     parser.add_argument("--sd-image", default=None, help="Path to FAT32 SD disk image for SPI SD card emulation")
     parser.add_argument("--worker", default=None, help="Path to worker_stub.bin to run on worker cores linked via FIFO/Mailbox")
     parser.add_argument("--workers", type=int, default=1, help="Number of worker cores to launch when --worker is set (1..3, default: 1)")
+    parser.add_argument("--profile", action="store_true", help="Collect and print dynamic instruction mix, load-use hazard, and CPI profile on exit")
+    parser.add_argument("--max-steps", type=int, default=0, help="Stop cleanly after N simulator steps (0 = unlimited)")
     args = parser.parse_args()
 
     if not os.path.exists(args.binary):
         print(f"Error: Binary file '{args.binary}' not found.", file=sys.stderr)
         sys.exit(1)
 
-    sim = MiniRISC4Sim(trace=args.trace, core_id=args.core_id)
+    sim = MiniRISC4Sim(trace=args.trace, core_id=args.core_id, profile=args.profile)
     sim.trap_base = args.trapbase & ADDR_MASK
     if args.sd_image:
         sim.sd_card = SpiSdCard(Path(args.sd_image).read_bytes())
@@ -1161,6 +1409,9 @@ def main():
                     for ws in worker_sims:
                         if not ws.halted:
                             ws.step()
+                    if args.max_steps > 0 and sim.cycles >= args.max_steps:
+                        sim.running = False
+                        break
 
             except KeyboardInterrupt:
                 if old_settings:
@@ -1171,6 +1422,8 @@ def main():
     finally:
         if old_settings:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+        if args.profile and sim.profiler is not None:
+            print("\n" + sim.profiler.format_report(os.path.basename(args.binary)), file=sys.stderr)
 
 
 if __name__ == "__main__":

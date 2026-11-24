@@ -451,39 +451,57 @@ def test_os_shell_fs(args):
 
 
 # ------------------------------------------------------------------------------
-# Test 4: Asynchronous Trap 1 ISR -> handle_syscall(SYS_PUTC) -> shell resumes
+# Test 4: Lean Ring MBOX Doorbell (Trap 14 ERET) -> GO Grant -> SYS_PUTC -> Shell
 # ------------------------------------------------------------------------------
 def test_os_async_trap1(args):
     sim = mr4sim.MiniRISC4Sim(core_id=0)
+    peer = mr4sim.MiniRISC4Sim(core_id=1)
+    peer.halted = True  # Synthetic peer NI only
+    fabric = mr4sim.connect_os_worker(sim, peer)
+
     sim.sd_card = mr4sim.SpiSdCard(Path(args.sd_image).read_bytes())
     sim.load_binary(str(OS_BUILD / "os_main.bin"))
     sim.load_symbols(str(OS_BUILD / "os_main.lst"))
     sim.pc = 0x0100
     uart_out, bad_writes = attach_uart_and_watch(sim)
 
-    fifo_in_q = deque()
-    fifo_out_q = deque()
-    sim.fifo_in_queue = fifo_in_q
-    sim.fifo_out_queue = fifo_out_q
-
     assert run_until_prompt(sim, uart_out, 1500000), "OS boot timed out"
 
-    # Enable console output for PID 1 and enqueue Class A SYS_PUTC('!') + async Trap 1
+    # Mark PID 1 running & console-enabled, then ring Core 0's Lean Ring MBOX doorbell
+    procs_addr = sim.sym_to_addr["_procs"]
+    sim.mem[procs_addr + 10] = 2  # PROC_RUN
     sim.mem[sim.sym_to_addr["_proc_con_out"] + 1] = 1
-    fifo_in_q.extend([(1 << 8) | 0x02, 2, ord("!"), 0])
-    sim.pending_traps.append(1)
+
+    peer.noc_ni.set_sel(0)
+    assert peer.noc_ni.send_mbox(0x5302), "Failed to send MBOX doorbell"
+
+    # Wait for Core 0's Trap 14 (ERET) + main loop to grant "GO" (0x474F)
+    got_grant = False
+    for _ in range(100000):
+        sim.step()
+        if len(peer.noc_ni.rx_fifo) >= 1:
+            tok = peer.noc_ni.fifo_r()
+            assert tok == 0x474F, f"Expected CMD_SYS_GRANT (0x474F), got 0x{tok:04X}"
+            got_grant = True
+            break
+    assert got_grant, "Core 0 did not send CMD_SYS_GRANT after MBOX doorbell"
+
+    # Stream Class A SYS_PUTC('!') packet into Core 0's Lean Ring RX FIFO
+    for w in ((1 << 8) | 0x02, 2, ord("!"), 0):
+        assert peer.noc_ni.send_data(w), f"Failed to push syscall word 0x{w:04X}"
 
     for _ in range(100000):
         sim.step()
-        if len(fifo_out_q) >= 2:
+        if len(peer.noc_ni.rx_fifo) >= 2:
             break
 
-    assert list(fifo_out_q) == [0, 0], f"Unexpected SYS_PUTC reply: {list(fifo_out_q)}"
+    reply = [peer.noc_ni.fifo_r(), peer.noc_ni.fifo_r()]
+    assert reply == [0, 0], f"Unexpected SYS_PUTC reply: {reply}"
     assert "mr4> !" in "".join(uart_out), "SYS_PUTC '!' missing from UART"
 
     for ch in "ps\r":
         sim.rx_queue.append(ord(ch))
-    assert run_until_prompt(sim, uart_out, 1500000), "Shell unresponsive after async Trap 1"
+    assert run_until_prompt(sim, uart_out, 1500000), "Shell unresponsive after Lean Ring Trap 14"
     assert "0    RUN    os_kernel" in "".join(uart_out)
     assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
     assert sim.mem[0x0005] == 0xFAFF, f"ASP leaked: 0x{sim.mem[0x0005]:04X}"

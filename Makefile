@@ -72,7 +72,7 @@ SIM_PROGRAM    ?= $(BUILD_DIR)/monitor.bin
 
 .PHONY: all help setup analyze build apps \
         test test-rohd sim debug \
-        generate generate-ulx3s ulx3s-bit ulx3s-timing ulx3s-prog ulx3s-flash ulx3s-term \
+        generate generate-ulx3s ulx3s-bit ulx3s-mr4os ulx3s-timing ulx3s-prog ulx3s-flash ulx3s-term \
         dot-clean clean
 
 # ------------------------------------------------------------------------------
@@ -181,7 +181,7 @@ generate-ulx3s: setup | $(ULX3S_BLD)
 	@echo "==> Building $(ULX3S_PROGRAM) for ULX3S-85F block RAM..."
 	@case "$(ULX3S_PROGRAM)" in \
 		*.a4) \
-			$(ACT4C) -I $(LIB_DIR) "$(ULX3S_PROGRAM)" -o "$(ULX3S_BLD)/program.asm" && \
+			$(ACT4C) -I "$(dir $(ULX3S_PROGRAM))" -I $(LIB_DIR) "$(ULX3S_PROGRAM)" -o "$(ULX3S_BLD)/program.asm" && \
 			$(MR4ASM) -I $(LIB_DIR) "$(ULX3S_BLD)/program.asm" --hex -o "$(ULX3S_BLD)/system_image.hex" -l "$(ULX3S_BLD)/program.lst" ;; \
 		*) \
 			$(MR4ASM) -I $(LIB_DIR) "$(ULX3S_PROGRAM)" --hex -o "$(ULX3S_BLD)/system_image.hex" -l "$(ULX3S_BLD)/program.lst" ;; \
@@ -190,7 +190,7 @@ generate-ulx3s: setup | $(ULX3S_BLD)
 		echo "==> Building worker $(ULX3S_WORKER_PROGRAM) for worker cores 1..N-1..."; \
 		case "$(ULX3S_WORKER_PROGRAM)" in \
 			*.a4) \
-				$(ACT4C) -I $(LIB_DIR) "$(ULX3S_WORKER_PROGRAM)" -o "$(ULX3S_BLD)/worker.asm" && \
+				$(ACT4C) -I "$(dir $(ULX3S_WORKER_PROGRAM))" -I $(LIB_DIR) "$(ULX3S_WORKER_PROGRAM)" -o "$(ULX3S_BLD)/worker.asm" && \
 				$(MR4ASM) -I $(LIB_DIR) "$(ULX3S_BLD)/worker.asm" --hex -o "$(ULX3S_BLD)/worker_image.hex" -l "$(ULX3S_BLD)/worker.lst" ;; \
 			*) \
 				$(MR4ASM) -I $(LIB_DIR) "$(ULX3S_WORKER_PROGRAM)" --hex -o "$(ULX3S_BLD)/worker_image.hex" -l "$(ULX3S_BLD)/worker.lst" ;; \
@@ -226,6 +226,18 @@ ulx3s-bit: generate-ulx3s
 	@grep "Max frequency for clock" $(ULX3S_BLD)/nextpnr.log | tail -1
 	@echo "==> Bitstream ready: $(ULX3S_BIT)"
 	@$(DOT_CLEAN_CMD)
+
+ulx3s-mr4os:
+	@$(MAKE) ulx3s-bit \
+		ULX3S_PROGRAM=mr4src/act4/os/os_main.a4 \
+		ULX3S_WORKER_PROGRAM=mr4src/asm/worker_stub.asm \
+		ULX3S_NOC_CORES=4 \
+		ULX3S_SDRAM_CACHE=1 \
+		ULX3S_ENABLE_SPI=1 \
+		ULX3S_ENABLE_MATH=all \
+		ULX3S_MEM_WORDS=65536 \
+		ULX3S_WORKER_MEM_WORDS=2048 \
+		ULX3S_CLOCK_MHZ=72
 
 ulx3s-timing:
 	@if [ ! -f "$(ULX3S_BLD)/nextpnr.log" ]; then \

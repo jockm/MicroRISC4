@@ -995,6 +995,9 @@ class CodeGen:
                     self.emit("RPUSH   R0")
                     self.emit(f"LOAD16  R0, _{fn_name}")
                     self.emit("JMP     R0")
+                elif vec == 14:
+                    # Hardware async cross-trap latches PC into EPC without touching R0
+                    self.emit("ERET")
                 else:
                     self.emit("JMP     R0")
             self.emit_raw("")

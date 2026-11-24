@@ -327,6 +327,169 @@ class CoreNetworkInterface:
             return payload
         return 0x0000
 
+    def get_sel(self) -> int:
+        return self.sel_ch
+
+    def set_sel(self, val: int):
+        self.sel_ch = val % self.num_ch
+
+    def noc_info(self) -> int:
+        return ((self.num_ch & 0xFF) << 8) | (self.num_cores & 0xFF)
+
+
+class LeanNocNI:
+    """Exact software mirror of hardware NocRouterNi (hdl/rohd/lib/noc_router.dart).
+
+    Models the direct-addressed Lean Elastic Ring (`0x0020`-`0x002A`):
+    - Shared finite RX FIFO (default 16 words)
+    - 1-entry registered TX flit with real backpressure (`tx_ready` bit 2 in `NOC_STAT`)
+    - 1-entry registered Doorbell/MBOX (`mbox_valid` bit 4 in `NOC_STAT`) with
+      one-shot Hardware Trap 14 (re-armed when `NOC_MBOX_DATA` is read)
+    - Direct `NOC_DST_CORE` (`0x0021`) with bounds check (`< num_cores`)
+    - `NOC_INFO` (`0x002A`) = `(fifo_depth << 8) | num_cores`
+    """
+    def __init__(self, core_id: int, num_cores: int, fifo_depth: int = 16,
+                 fabric: "LeanNocFabric | None" = None, sim: "MiniRISC4Sim | None" = None):
+        self.core_id = core_id
+        self.num_cores = num_cores
+        self.fifo_depth = fifo_depth
+        self.fabric = fabric
+        self.sim = sim
+
+        self.dst_core = core_id % max(num_cores, 1)
+        self.dst_valid = self.dst_core < num_cores
+        self.rx_fifo: deque[int] = deque()
+        # 1-entry TX holding register when destination is full: (is_mbox, dst_core, payload)
+        self.tx_pending: tuple[bool, int, int] | None = None
+        self.mbox_valid = False
+        self.mbox_data = 0
+        self.last_mbox_src = 0
+        self.mbox_trap_inflight = False
+        # Compatibility attributes for legacy read/write helpers
+        self.sel_ch = self.dst_core
+        self.cfg_ch_idx = 0
+        self.num_ch = 1
+        self.channel_table = [(self.dst_core, 0, True)]
+
+    def get_sel(self) -> int:
+        return self.dst_core
+
+    def set_sel(self, val: int):
+        val &= WORD_MASK
+        self.dst_valid = val < self.num_cores
+        mask = (1 << max(1, (self.num_cores - 1).bit_length())) - 1
+        self.dst_core = val & mask
+        self.sel_ch = self.dst_core
+
+    def noc_info(self) -> int:
+        return ((self.fifo_depth & 0xFF) << 8) | (self.num_cores & 0xFF)
+
+    def _try_deliver_tx(self) -> bool:
+        if self.tx_pending is None or self.fabric is None:
+            return True
+        is_mbox, dst, payload = self.tx_pending
+        if self.fabric.deliver(self.core_id, dst, is_mbox, payload):
+            self.tx_pending = None
+            return True
+        return False
+
+    def rx_stat(self) -> int:
+        if self.tx_pending is not None:
+            self._try_deliver_tx()
+        rx_not_empty = 1 if len(self.rx_fifo) > 0 else 0
+        rx_full = 1 if len(self.rx_fifo) >= self.fifo_depth else 0
+        tx_empty = 1 if self.tx_pending is None else 0
+        tx_ready = tx_empty
+        mbox_v = 1 if self.mbox_valid else 0
+        cnt = min(len(self.rx_fifo), 0xFF) << 8
+        return cnt | (mbox_v << 4) | (tx_empty << 3) | (tx_ready << 2) | (rx_full << 1) | rx_not_empty
+
+    def fifo_r(self) -> int:
+        val = self.rx_fifo.popleft() if self.rx_fifo else 0x0000
+        if self.fabric is not None:
+            self.fabric.flush_pending()
+        return val
+
+    def fifo_tryr(self) -> int:
+        return self.fifo_r()
+
+    def send_data(self, payload: int) -> bool:
+        if self.tx_pending is not None and not self._try_deliver_tx():
+            return False  # Matches hardware: write dropped when tx_ready == 0
+        if not self.dst_valid:
+            return False
+        payload &= WORD_MASK
+        if self.fabric is not None and self.fabric.deliver(self.core_id, self.dst_core, False, payload):
+            return True
+        self.tx_pending = (False, self.dst_core, payload)
+        return True
+
+    def send_mbox(self, payload: int) -> bool:
+        if self.tx_pending is not None and not self._try_deliver_tx():
+            return False  # Matches hardware: write dropped when tx_ready == 0
+        if not self.dst_valid:
+            return False
+        payload &= WORD_MASK
+        if self.fabric is not None and self.fabric.deliver(self.core_id, self.dst_core, True, payload):
+            return True
+        self.tx_pending = (True, self.dst_core, payload)
+        return True
+
+    def pop_mbox(self) -> int:
+        val = self.mbox_data if self.mbox_valid else 0x0000
+        self.mbox_valid = False
+        self.mbox_trap_inflight = False
+        if self.fabric is not None:
+            self.fabric.flush_pending()
+        return val
+
+
+class LeanNocFabric:
+    """Connects N LeanNocNI instances with exact finite-FIFO & MBOX backpressure."""
+    def __init__(self, sims: list["MiniRISC4Sim"], fifo_depth: int = 16):
+        max_cid = max((s.core_id for s in sims), default=0)
+        self.num_cores = max(len(sims), max_cid + 1)
+        self.fifo_depth = fifo_depth
+        self.nis: dict[int, LeanNocNI] = {}
+        for s in sims:
+            ni = LeanNocNI(
+                core_id=s.core_id,
+                num_cores=self.num_cores,
+                fifo_depth=fifo_depth,
+                fabric=self,
+                sim=s,
+            )
+            s.noc_ni = ni
+            self.nis[s.core_id] = ni
+
+    def deliver(self, src_cid: int, dst_cid: int, is_mbox: bool, payload: int) -> bool:
+        dst = self.nis.get(dst_cid)
+        if dst is None:
+            return True  # Drop unpopulated core ID cleanly
+        if is_mbox:
+            if dst.mbox_valid:
+                return False
+            dst.mbox_valid = True
+            dst.mbox_data = payload & WORD_MASK
+            dst.last_mbox_src = src_cid & WORD_MASK
+            if dst.sim is not None and not dst.sim.halted and not dst.mbox_trap_inflight:
+                dst.mbox_trap_inflight = True
+                dst.sim.pending_traps.append(14)
+            return True
+        if len(dst.rx_fifo) >= dst.fifo_depth:
+            return False
+        dst.rx_fifo.append(payload & WORD_MASK)
+        return True
+
+    def flush_pending(self):
+        progressed = True
+        while progressed:
+            progressed = False
+            for ni in self.nis.values():
+                if ni.tx_pending is not None:
+                    if ni._try_deliver_tx():
+                        progressed = True
+
 class NocCluster:
     """Registered ring or 2D-mesh multi-core simulator (1 cycle per registered hop)."""
     def __init__(self, num_cores: int, topology: str = "ring",
@@ -904,7 +1067,7 @@ class MiniRISC4Sim:
         if addr == ADDR_EPC:
             return self.epc & WORD_MASK
         if addr == ADDR_NOC_SEL_CH:
-            return self.noc_ni.sel_ch & WORD_MASK
+            return self.noc_ni.get_sel() & WORD_MASK
         if addr == ADDR_NOC_RX_DATA:
             return self.noc_ni.fifo_r() & WORD_MASK
         if addr == ADDR_NOC_RX_STAT:
@@ -921,7 +1084,7 @@ class MiniRISC4Sim:
             dst_c, dst_ch, _ = self.noc_ni.channel_table[self.noc_ni.cfg_ch_idx % self.noc_ni.num_ch]
             return ((dst_c & 0xFF) << 8) | (dst_ch & 0xFF)
         if addr == ADDR_NOC_INFO:
-            return ((self.noc_ni.num_ch & 0xFF) << 8) | (self.noc_ni.num_cores & 0xFF)
+            return self.noc_ni.noc_info() & WORD_MASK
         if self._uses_sdram_cache(addr):
             val, lat = self.sdram_cache.read_data_word(addr)
             if lat > 1:
@@ -976,8 +1139,8 @@ class MiniRISC4Sim:
             self.noc_ni.send_data(val)
             self.mem[addr] = val
         elif addr == ADDR_NOC_SEL_CH:
-            self.noc_ni.sel_ch = val % self.noc_ni.num_ch
-            self.mem[addr] = self.noc_ni.sel_ch
+            self.noc_ni.set_sel(val)
+            self.mem[addr] = self.noc_ni.get_sel()
         elif addr == ADDR_NOC_MBOX_SEND:
             self.noc_ni.send_mbox(val)
             self.mem[addr] = val
@@ -1036,7 +1199,7 @@ class MiniRISC4Sim:
 
         if self.pending_traps:
             next_vec = self.pending_traps[0]
-            if next_vec == 14 or self._safe_trap_boundary:
+            if (next_vec == 14 and self.slot == 0) or self._safe_trap_boundary:
                 self.pending_traps.popleft()
                 self._safe_trap_boundary = False
                 if self.profiler is not None:
@@ -1437,56 +1600,14 @@ Control:
 """)
 
 
-def connect_os_workers(os_sim: MiniRISC4Sim, worker_sims: list[MiniRISC4Sim]):
-    """Link Core 0 (OS) and Worker Cores 1..N via channel-selected FIFO (0x000A/B, 0x0021) and Mailbox (0x000C)."""
-    os_in_q: deque[int] = deque()
-    os_sim.fifo_in_queue = os_in_q
-    worker_in: dict[int, deque[int]] = {}
-    worker_stage: dict[int, deque[int]] = {}
-    cores: dict[int, MiniRISC4Sim] = {os_sim.core_id: os_sim}
-
-    def on_os_fifo_out(val: int):
-        sel = os_sim.noc_ni.sel_ch
-        target = sel if sel in worker_in else next(iter(worker_in))
-        worker_in[target].append(val)
-
-    os_sim.fifo_out_queue = on_os_fifo_out
-
-    def make_mailbox_handler(src_cid: int):
-        def on_mailbox(val: int):
-            dst_core = (val >> 8) & 0xFF
-            trap_num = val & 0x0F
-            if src_cid in worker_stage and dst_core == os_sim.core_id:
-                # Atomically deliver the worker's staged syscall packet into Core 0 FIFO_IN
-                q = worker_stage[src_cid]
-                while q:
-                    os_in_q.append(q.popleft())
-            target = cores.get(dst_core)
-            if target is not None and not target.halted:
-                if trap_num == 14 and dst_core in worker_in:
-                    # Drop stale inbound/outbound FIFO words when force-killing a worker
-                    worker_in[dst_core].clear()
-                    worker_stage[dst_core].clear()
-                target.pending_traps.append(trap_num)
-        return on_mailbox
-
-    os_sim.mailbox_handler = make_mailbox_handler(os_sim.core_id)
-
-    for w in worker_sims:
-        cid = w.core_id
-        cores[cid] = w
-        in_q: deque[int] = deque()
-        out_q: deque[int] = deque()
-        worker_in[cid] = in_q
-        worker_stage[cid] = out_q
-        w.fifo_in_queue = in_q
-        w.fifo_out_queue = out_q
-        w.mailbox_handler = make_mailbox_handler(cid)
+def connect_os_workers(os_sim: MiniRISC4Sim, worker_sims: list[MiniRISC4Sim], fifo_depth: int = 16) -> LeanNocFabric:
+    """Link Core 0 (OS) and Worker Cores 1..N via the unified Hardware Lean Ring (0x0020-0x002A)."""
+    return LeanNocFabric([os_sim, *worker_sims], fifo_depth=fifo_depth)
 
 
-def connect_os_worker(os_sim: MiniRISC4Sim, worker_sim: MiniRISC4Sim):
-    """Link Core 0 (OS) and a single Worker Core via inter-core FIFO (0x000A/B) and Mailbox (0x000C)."""
-    connect_os_workers(os_sim, [worker_sim])
+def connect_os_worker(os_sim: MiniRISC4Sim, worker_sim: MiniRISC4Sim, fifo_depth: int = 16) -> LeanNocFabric:
+    """Link Core 0 (OS) and a single Worker Core via the unified Hardware Lean Ring (0x0020-0x002A)."""
+    return connect_os_workers(os_sim, [worker_sim], fifo_depth=fifo_depth)
 
 
 def main():

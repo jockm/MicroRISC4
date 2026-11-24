@@ -1,6 +1,6 @@
 // ==============================================================================
 // FILE: mr4src/act4/os/os_main.a4
-// Core 0 OS Kernel Entry, Trap 1 Handler & Syscall Dispatcher
+// Core 0 OS Kernel Entry, Lean Ring Doorbell Arbitrator & Syscall Dispatcher
 // ==============================================================================
 
 import "os_uart.a4";
@@ -51,32 +51,24 @@ const u16 FAULT_ALIGN     = 0xFF0F;
 
 const u16 SYS_BUF_WORDS = 64;
 
-u16 msg_pending = 0;
 u16 sys_buf[SYS_BUF_WORDS];
 DirEntry sys_ent;
 
-// -----------------------------------------------------------------------------
-// Trap 1 ISR (0x0110): Zero-spill flag setter
-// Preserves R1 & R2 via hardware shadow registers so main/shell is undisturbed.
-// -----------------------------------------------------------------------------
-void on_msg_ready(void) @ trap(1) {
-    msg_pending++;
-}
-// Drain remaining words of an unhandled syscall so FIFO stays aligned
+// Drain remaining words of an unhandled syscall so RX FIFO stays aligned
 void drain_fifo(u16 count) {
     u16 dummy = 0;
     while (count > 0) {
-        dummy = fifo_in;
+        dummy = noc_rx_word();
         count--;
     }
 }
 
-// Read a Class B NUL-terminated packed string payload from fifo_in into sys_buf
+// Read a Class B NUL-terminated packed string payload from Lean Ring RX into sys_buf
 void read_fifo_str(u16 wlen) {
     u16 i = 0;
     u16 w = 0;
     while (i < wlen) {
-        w = fifo_in;
+        w = noc_rx_word();
         if (i < (SYS_BUF_WORDS - 1)) {
             sys_buf[i] = w;
         }
@@ -89,8 +81,8 @@ void read_fifo_str(u16 wlen) {
 }
 
 void handle_syscall(void) {
-    u16 hdr   = fifo_in;
-    u16 len   = fifo_in;
+    u16 hdr   = noc_rx_word();
+    u16 len   = noc_rx_word();
     u16 pid   = hdr >> 8;
     u16 id    = hdr & 0x00FF;
     u16 arg1  = 0;
@@ -101,12 +93,12 @@ void handle_syscall(void) {
     u16 ch    = 0;
     u16 fd    = 0;
 
-    // Direct all FIFO replies and FAT32 relative paths to the requesting worker core
-    fifo_sel = pid;
+    // Direct all Lean Ring replies and FAT32 relative paths to the requesting worker core
+    noc_dst_core = pid;
     proc_use_cwd(pid);
 
     if (id == SYS_EXIT) {
-        arg1 = fifo_in;
+        arg1 = noc_rx_word();
         if ((arg1 & FAULT_CODE_MASK) == FAULT_CODE_BASE && pid > 0 && pid < MAX_CORES) {
             uart_puts("\r\n[FAULT] PID ");
             uart_putc(pid + 48);
@@ -132,67 +124,69 @@ void handle_syscall(void) {
     }
 
     if (id == SYS_PUTC) {
-        arg1 = fifo_in;
-        arg2 = fifo_in;
+        arg1 = noc_rx_word();
+        arg2 = noc_rx_word();
         if (pid < MAX_CORES && proc_con_out[pid] != 0) {
             uart_putc(arg1);
         }
-        fifo_out = ERR_OK;
-        fifo_out = 0;
+        noc_tx_word(ERR_OK);
+        noc_tx_word(0);
         return;
     }
 
     if (id == SYS_GETC) {
-        arg1 = fifo_in;
-        arg2 = fifo_in;
+        arg1 = noc_rx_word();
+        arg2 = noc_rx_word();
         if (pid != fg_pid) {
-            fifo_out = ERR_EMPTY;
-            fifo_out = 0;
+            noc_tx_word(ERR_EMPTY);
+            noc_tx_word(0);
         } else {
             ch = fg_rx_pop();
             if (ch == 0xFFFF) {
-                fifo_out = ERR_EMPTY;
-                fifo_out = 0;
+                noc_tx_word(ERR_EMPTY);
+                noc_tx_word(0);
             } else {
-                fifo_out = ERR_OK;
-                fifo_out = ch;
+                noc_tx_word(ERR_OK);
+                noc_tx_word(ch);
             }
         }
         return;
     }
 
     if (id == SYS_KILL) {
-        arg1 = fifo_in;
-        arg2 = fifo_in;
-        fifo_out = proc_kill(arg1);
-        fifo_out = 0;
+        arg1 = noc_rx_word();
+        arg2 = noc_rx_word();
+        arg2 = proc_kill(arg1);
+        noc_dst_core = pid;
+        noc_tx_word(arg2);
+        noc_tx_word(0);
         return;
     }
 
     if (id == SYS_CLOSE) {
-        arg1 = fifo_in;
-        arg2 = fifo_in;
+        arg1 = noc_rx_word();
+        arg2 = noc_rx_word();
         fat32_close(arg1);
-        fifo_out = ERR_OK;
-        fifo_out = 0;
+        noc_tx_word(ERR_OK);
+        noc_tx_word(0);
         return;
     }
 
     if (id == SYS_WRITE_CON) {
-        extra = fifo_in;
-        wlen  = fifo_in;
+        extra = noc_rx_word();
+        wlen  = noc_rx_word();
         read_fifo_str(wlen);
         if (pid < MAX_CORES && proc_con_out[pid] != 0) {
             uart_puts(sys_buf);
         }
-        fifo_out = ERR_OK;
-        fifo_out = wlen;
+        noc_tx_word(ERR_OK);
+        noc_tx_word(wlen);
         return;
     }
 
     if (id == SYS_SPAWN) {
-        extra = fifo_in;
-        wlen  = fifo_in;
+        extra = noc_rx_word();
+        wlen  = noc_rx_word();
         read_fifo_str(wlen);
         // Split optional "PATH ARGS..." at first space
         i = 0;
@@ -222,20 +216,20 @@ void handle_syscall(void) {
         } else {
             arg2 = proc_spawn_from_file(pid, sys_buf, 0, 0, ch);
         }
-        fifo_sel = pid;
+        noc_dst_core = pid;
         if (arg2 == 0) {
-            fifo_out = ERR_IO;
-            fifo_out = 0;
+            noc_tx_word(ERR_IO);
+            noc_tx_word(0);
         } else {
-            fifo_out = ERR_OK;
-            fifo_out = arg2;
+            noc_tx_word(ERR_OK);
+            noc_tx_word(arg2);
         }
         return;
     }
 
     if (id == SYS_OPEN) {
-        extra = fifo_in;                // mode: 0 = read, 1 = write/create, 2 = append
-        wlen  = fifo_in;
+        extra = noc_rx_word();          // mode: 0 = read, 1 = write/create, 2 = append
+        wlen  = noc_rx_word();
         read_fifo_str(wlen);
         if (extra == 0) {
             fd = fat32_open(pid, sys_buf);
@@ -245,21 +239,21 @@ void handle_syscall(void) {
             fd = fat32_open_write(pid, sys_buf);
         }
         if (fd == 0xFFFF) {
-            fifo_out = ERR_IO;
-            fifo_out = 0;
+            noc_tx_word(ERR_IO);
+            noc_tx_word(0);
         } else {
-            fifo_out = ERR_OK;
-            fifo_out = fd;
+            noc_tx_word(ERR_OK);
+            noc_tx_word(fd);
         }
         return;
     }
 
     if (id == SYS_WRITE) {
-        extra = fifo_in;                // (byte_len << 4) | (fd & 0x0F)
-        wlen  = fifo_in;
+        extra = noc_rx_word();          // (byte_len << 4) | (fd & 0x0F)
+        wlen  = noc_rx_word();
         i = 0;
         while (i < wlen) {
-            arg1 = fifo_in;
+            arg1 = noc_rx_word();
             if (i < SYS_BUF_WORDS) {
                 sys_buf[i] = arg1;
             }
@@ -275,92 +269,92 @@ void handle_syscall(void) {
         }
         arg1 = fat32_write_bytes(fd, sys_buf, arg2);
         if (arg1 == 0 && arg2 > 0) {
-            fifo_out = ERR_IO;
-            fifo_out = 0;
+            noc_tx_word(ERR_IO);
+            noc_tx_word(0);
         } else {
-            fifo_out = ERR_OK;
-            fifo_out = arg1;
+            noc_tx_word(ERR_OK);
+            noc_tx_word(arg1);
         }
         return;
     }
 
     if (id == SYS_OPENDIR) {
-        extra = fifo_in;
-        wlen  = fifo_in;
+        extra = noc_rx_word();
+        wlen  = noc_rx_word();
         read_fifo_str(wlen);
         fd = fat32_opendir(pid, sys_buf);
         if (fd == 0xFFFF) {
-            fifo_out = ERR_IO;
-            fifo_out = 0;
+            noc_tx_word(ERR_IO);
+            noc_tx_word(0);
         } else {
-            fifo_out = ERR_OK;
-            fifo_out = fd;
+            noc_tx_word(ERR_OK);
+            noc_tx_word(fd);
         }
         return;
     }
 
     if (id == SYS_UNLINK) {
-        extra = fifo_in;
-        wlen  = fifo_in;
+        extra = noc_rx_word();
+        wlen  = noc_rx_word();
         read_fifo_str(wlen);
         arg2 = fat32_unlink(sys_buf);
         if (arg2 == 0) {
-            fifo_out = ERR_OK;
+            noc_tx_word(ERR_OK);
         } else {
-            fifo_out = ERR_IO;
+            noc_tx_word(ERR_IO);
         }
-        fifo_out = arg2;
+        noc_tx_word(arg2);
         return;
     }
 
     if (id == SYS_MKDIR) {
-        extra = fifo_in;
-        wlen  = fifo_in;
+        extra = noc_rx_word();
+        wlen  = noc_rx_word();
         read_fifo_str(wlen);
         arg2 = fat32_mkdir(sys_buf);
         if (arg2 == 0) {
-            fifo_out = ERR_OK;
+            noc_tx_word(ERR_OK);
         } else {
-            fifo_out = ERR_IO;
+            noc_tx_word(ERR_IO);
         }
-        fifo_out = arg2;
+        noc_tx_word(arg2);
         return;
     }
 
     if (id == SYS_RMDIR) {
-        extra = fifo_in;
-        wlen  = fifo_in;
+        extra = noc_rx_word();
+        wlen  = noc_rx_word();
         read_fifo_str(wlen);
         arg2 = fat32_rmdir(sys_buf);
         if (arg2 == 0) {
-            fifo_out = ERR_OK;
+            noc_tx_word(ERR_OK);
         } else {
-            fifo_out = ERR_IO;
+            noc_tx_word(ERR_IO);
         }
-        fifo_out = arg2;
+        noc_tx_word(arg2);
         return;
     }
 
     if (id == SYS_CHDIR) {
-        extra = fifo_in;
-        wlen  = fifo_in;
+        extra = noc_rx_word();
+        wlen  = noc_rx_word();
         read_fifo_str(wlen);
         arg2 = fat32_chdir_clus(sys_buf);
         if (arg2 == 0) {
             proc_save_cwd(pid);
-            fifo_out = ERR_OK;
+            noc_tx_word(ERR_OK);
         } else {
-            fifo_out = ERR_IO;
+            noc_tx_word(ERR_IO);
         }
-        fifo_out = arg2;
+        noc_tx_word(arg2);
         return;
     }
 
     if (id == SYS_RENAME) {
-        extra = fifo_in;
-        wlen  = fifo_in;
+        extra = noc_rx_word();
+        wlen  = noc_rx_word();
         read_fifo_str(wlen);
-        // Split "SRC DST" into sys_buf (SRC) and sh_arg-sized local dst_buf
+        // Split "SRC DST" into sys_buf (SRC) and upper half of sys_buf (DST)
         i = 0;
         arg1 = 0;
         while (i < ((SYS_BUF_WORDS << 1) - 2)) {
@@ -380,11 +374,10 @@ void handle_syscall(void) {
             i++;
         }
         if (arg1 == 0) {
-            fifo_out = ERR_IO;
-            fifo_out = 2;
+            noc_tx_word(ERR_IO);
+            noc_tx_word(2);
             return;
         }
-        // Copy DST to word-aligned second half of sys_buf (words 32..63)
         i = 0;
         while (i < 63) {
             ch = getbyte(sys_buf, arg1 + i);
@@ -397,51 +390,51 @@ void handle_syscall(void) {
         setbyte(&sys_buf[32], 63, 0);
         arg2 = fat32_rename(sys_buf, &sys_buf[32]);
         if (arg2 == 0) {
-            fifo_out = ERR_OK;
+            noc_tx_word(ERR_OK);
         } else {
-            fifo_out = ERR_IO;
+            noc_tx_word(ERR_IO);
         }
-        fifo_out = arg2;
+        noc_tx_word(arg2);
         return;
     }
 
     if (id == SYS_STAT_PATH) {
-        extra = fifo_in;
-        wlen  = fifo_in;
+        extra = noc_rx_word();
+        wlen  = noc_rx_word();
         read_fifo_str(wlen);
         if (pid >= MAX_CORES) {
-            fifo_out = ERR_IO;
-            fifo_out = 1;
+            noc_tx_word(ERR_IO);
+            noc_tx_word(1);
             return;
         }
         arg2 = fat32_stat(sys_buf, &stat_cache[pid]);
         if (arg2 == 0) {
-            fifo_out = ERR_OK;
-            fifo_out = stat_cache[pid].size_lo;
+            noc_tx_word(ERR_OK);
+            noc_tx_word(stat_cache[pid].size_lo);
         } else {
-            fifo_out = ERR_IO;
-            fifo_out = arg2;
+            noc_tx_word(ERR_IO);
+            noc_tx_word(arg2);
         }
         return;
     }
 
     if (id == SYS_READ) {
-        extra = fifo_in;                // fd
-        wlen  = fifo_in;                // max_words
+        extra = noc_rx_word();          // fd
+        wlen  = noc_rx_word();          // max_words
         if (wlen > 64) {
             wlen = 64;
         }
         arg1 = fat32_read_bytes(extra, sys_buf, wlen << 1);
         if (arg1 == 0) {
-            fifo_out = ERR_EOF;
-            fifo_out = 0;
+            noc_tx_word(ERR_EOF);
+            noc_tx_word(0);
         } else {
             arg2 = (arg1 + 1) >> 1;     // word count
-            fifo_out = ERR_OK;
-            fifo_out = arg2;
+            noc_tx_word(ERR_OK);
+            noc_tx_word(arg2);
             i = 0;
             while (i < arg2) {
-                fifo_out = sys_buf[i];
+                noc_tx_word(sys_buf[i]);
                 i++;
             }
         }
@@ -449,20 +442,20 @@ void handle_syscall(void) {
     }
 
     if (id == SYS_READDIR) {
-        extra = fifo_in;                // dir_fd
-        wlen  = fifo_in;                // max_words (11)
+        extra = noc_rx_word();          // dir_fd
+        wlen  = noc_rx_word();          // max_words (11)
         if (fat32_readdir(extra, &sys_ent) != 0) {
-            fifo_out = ERR_EOF;
-            fifo_out = 0;
+            noc_tx_word(ERR_EOF);
+            noc_tx_word(0);
         } else {
-            fifo_out = ERR_OK;
-            fifo_out = 11;
-            fifo_out = sys_ent.attr;
-            fifo_out = sys_ent.size_lo;
-            fifo_out = sys_ent.size_hi;
+            noc_tx_word(ERR_OK);
+            noc_tx_word(11);
+            noc_tx_word(sys_ent.attr);
+            noc_tx_word(sys_ent.size_lo);
+            noc_tx_word(sys_ent.size_hi);
             i = 0;
             while (i < 8) {
-                fifo_out = sys_ent.name[i];
+                noc_tx_word(sys_ent.name[i]);
                 i++;
             }
         }
@@ -470,19 +463,19 @@ void handle_syscall(void) {
     }
 
     if (id == SYS_PS) {
-        extra = fifo_in;                // pid index (0..MAX_CORES-1)
-        wlen  = fifo_in;                // max_words (10)
+        extra = noc_rx_word();          // pid index (0..MAX_CORES-1)
+        wlen  = noc_rx_word();          // max_words (10)
         if (extra >= MAX_CORES) {
-            fifo_out = ERR_EOF;
-            fifo_out = 0;
+            noc_tx_word(ERR_EOF);
+            noc_tx_word(0);
         } else {
-            fifo_out = ERR_OK;
-            fifo_out = 10;
-            fifo_out = procs[extra].state;
-            fifo_out = procs[extra].exit_code;
+            noc_tx_word(ERR_OK);
+            noc_tx_word(10);
+            noc_tx_word(procs[extra].state);
+            noc_tx_word(procs[extra].exit_code);
             i = 0;
             while (i < 8) {
-                fifo_out = procs[extra].name[i];
+                noc_tx_word(procs[extra].name[i]);
                 i++;
             }
         }
@@ -490,11 +483,11 @@ void handle_syscall(void) {
     }
 
     if (id == SYS_GETARGS) {
-        extra = fifo_in;
-        wlen  = fifo_in;                // max_words
+        extra = noc_rx_word();
+        wlen  = noc_rx_word();          // max_words
         if (pid >= MAX_CORES || wlen == 0) {
-            fifo_out = ERR_IO;
-            fifo_out = 0;
+            noc_tx_word(ERR_IO);
+            noc_tx_word(0);
             return;
         }
         if (wlen > PROC_ARG_WORDS) {
@@ -510,55 +503,55 @@ void handle_syscall(void) {
             }
             i++;
         }
-        fifo_out = ERR_OK;
-        fifo_out = i;
+        noc_tx_word(ERR_OK);
+        noc_tx_word(i);
         extra = 0;
         while (extra < i) {
             arg2 = proc_args[arg1 + extra];
             if ((extra + 1) == i && (arg2 & 0x00FF) != 0 && (arg2 >> 8) != 0) {
                 arg2 = arg2 & 0x00FF;   // Guarantee NUL termination on truncation
             }
-            fifo_out = arg2;
+            noc_tx_word(arg2);
             extra++;
         }
         return;
     }
 
     if (id == SYS_STAT_GET) {
-        extra = fifo_in;
-        wlen  = fifo_in;
+        extra = noc_rx_word();
+        wlen  = noc_rx_word();
         if (pid >= MAX_CORES) {
-            fifo_out = ERR_IO;
-            fifo_out = 0;
+            noc_tx_word(ERR_IO);
+            noc_tx_word(0);
             return;
         }
-        fifo_out = ERR_OK;
-        fifo_out = 11;
-        fifo_out = stat_cache[pid].attr;
-        fifo_out = stat_cache[pid].size_lo;
-        fifo_out = stat_cache[pid].size_hi;
+        noc_tx_word(ERR_OK);
+        noc_tx_word(11);
+        noc_tx_word(stat_cache[pid].attr);
+        noc_tx_word(stat_cache[pid].size_lo);
+        noc_tx_word(stat_cache[pid].size_hi);
         i = 0;
         while (i < 8) {
-            fifo_out = stat_cache[pid].name[i];
+            noc_tx_word(stat_cache[pid].name[i]);
             i++;
         }
         return;
     }
 
     if (id == SYS_GETCWD) {
-        extra = fifo_in;
-        wlen  = fifo_in;
+        extra = noc_rx_word();
+        wlen  = noc_rx_word();
         if (wlen == 0) {
-            fifo_out = ERR_IO;
-            fifo_out = 0;
+            noc_tx_word(ERR_IO);
+            noc_tx_word(0);
             return;
         }
         if (wlen > SYS_BUF_WORDS) {
             wlen = SYS_BUF_WORDS;
         }
         if (fat32_getcwd_path(sys_buf, wlen << 1) != 0) {
-            fifo_out = ERR_IO;
-            fifo_out = 0;
+            noc_tx_word(ERR_IO);
+            noc_tx_word(0);
             return;
         }
         i = 0;
@@ -570,11 +563,11 @@ void handle_syscall(void) {
             }
             i++;
         }
-        fifo_out = ERR_OK;
-        fifo_out = i;
+        noc_tx_word(ERR_OK);
+        noc_tx_word(i);
         extra = 0;
         while (extra < i) {
-            fifo_out = sys_buf[extra];
+            noc_tx_word(sys_buf[extra]);
             extra++;
         }
         return;
@@ -582,8 +575,39 @@ void handle_syscall(void) {
 
     // Unknown syscall: drain payload and return error
     drain_fifo(len);
-    fifo_out = ERR_UNKNOWN;
-    fifo_out = 0;
+    noc_tx_word(ERR_UNKNOWN);
+    noc_tx_word(0);
+}
+
+// Arbitrate next pending worker doorbell round-robin, send "GO" grant, and dispatch
+void noc_poll_syscalls(void) {
+    u16 tries = 0;
+    u16 pid   = 0;
+    u16 bit   = 0;
+
+    noc_drain_mbox();
+    if (noc_req_mask == 0) {
+        return;
+    }
+    while (tries < (MAX_CORES - 1)) {
+        pid = noc_rr_cursor;
+        noc_rr_cursor++;
+        if (noc_rr_cursor >= MAX_CORES) {
+            noc_rr_cursor = 1;
+        }
+        bit = 1 << pid;
+        if ((noc_req_mask & bit) != 0) {
+            noc_req_mask = noc_req_mask & (bit ^ 0xFFFF);
+            if (procs[pid].state != PROC_FREE) {
+                noc_dst_core = pid;
+                noc_tx_word(CMD_SYS_GRANT);
+                handle_syscall();
+                proc_use_cwd(0);
+            }
+            return;
+        }
+        tries++;
+    }
 }
 
 void main(void) {
@@ -599,11 +623,7 @@ void main(void) {
     shell_prompt();
 
     while (true) {
-        if (msg_pending != 0) {
-            msg_pending--;
-            handle_syscall();
-            proc_use_cwd(0);
-        }
+        noc_poll_syscalls();
         shell_poll();
         shell_script_step();
     }

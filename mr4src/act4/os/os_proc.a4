@@ -3,10 +3,15 @@
 // Core 0 Process Table, Console Ownership & Worker Core Control
 // ==============================================================================
 
-u16 fifo_in  @ 0x000A;
-u16 fifo_out @ 0x000B;
-u16 mailbox  @ 0x000C;
-u16 fifo_sel @ 0x0021;
+// Hardware Lean Ring NoC MMIO (0x0020 - 0x002A; matches NocRouterNi & mr4sim.py)
+u16 noc_tx_data   @ 0x0020;
+u16 noc_dst_core  @ 0x0021;
+u16 noc_rx_data   @ 0x0022;
+u16 noc_stat      @ 0x0023;
+u16 noc_mbox_send @ 0x0025;
+u16 noc_mbox_data @ 0x0026;
+u16 noc_mbox_src  @ 0x0027;
+u16 noc_info      @ 0x002A;
 
 const u16 MAX_CORES      = 4;       // Core 0 = OS, Cores 1..3 = Workers
 const u16 PROC_FREE      = 0;
@@ -14,9 +19,14 @@ const u16 PROC_LOAD      = 1;
 const u16 PROC_RUN       = 2;
 
 const u16 CMD_LOAD_MAGIC = 0x4C44;  // "LD" header expected by worker_stub.asm
+const u16 CMD_SYS_GRANT  = 0x474F;  // "GO" grant token allowing 1 worker syscall
+const u16 MBOX_KILL_CMD  = 0xDEAD;  // Priority doorbell -> worker Hardware Trap 14
 const u16 APP_LOAD_ADDR  = 0x0400;
 const u16 APP_MAX_WORDS  = 0xF600;  // Up to ~126 KB (fits below ASP = 0xFAFF)
-const u16 TRAP_KILL      = 14;      // TRAP_CORE_FAULT -> worker_stub reset
+
+const u16 NOC_STAT_RX_NE = 0x0001;
+const u16 NOC_STAT_TX_RDY = 0x0004;
+const u16 NOC_STAT_MBOX_V = 0x0010;
 
 const u16 FG_RX_CAP      = 16;      // Power-of-2 ring buffer for fg SYS_GETC
 const u16 FG_RX_MASK     = FG_RX_CAP - 1;
@@ -43,6 +53,49 @@ DirEntry stat_cache[MAX_CORES];     // Per-core SYS_STAT result cache
 u16 fg_pid = 0;                     // 0 = Core 0 shell owns UART RX, else worker PID
 u16 proc_last_words = 0;            // Word count of last streamed binary
 u16 proc_last_err   = 0;            // Last spawn error (SPAWN_*)
+u16 noc_req_mask    = 0;            // Bitmask (1 << pid) of pending worker doorbells
+u16 noc_rr_cursor   = 1;            // Round-robin worker arbitration cursor
+
+// Drain all pending hardware MBOX doorbells into noc_req_mask so Core 0's 1-entry
+// MBOX sink is always non-blocking (prevents ring head-of-line stalls).
+void noc_drain_mbox(void) {
+    u16 src = 0;
+    u16 mv  = 0;
+    while ((noc_stat & NOC_STAT_MBOX_V) != 0) {
+        src = noc_mbox_src;
+        mv  = noc_mbox_data;
+        if (src > 0 && src < MAX_CORES && procs[src].state != PROC_FREE) {
+            noc_req_mask = noc_req_mask | (1 << src);
+        }
+    }
+}
+
+// Blocking pop from Core 0's shared 16-word RX FIFO (keeps draining MBOX while waiting)
+u16 noc_rx_word(void) {
+    while (true) {
+        noc_drain_mbox();
+        if ((noc_stat & NOC_STAT_RX_NE) != 0) {
+            return noc_rx_data;
+        }
+    }
+}
+
+// Blocking push to noc_dst_core's RX FIFO (honors hardware tx_ready backpressure)
+void noc_tx_word(u16 w) {
+    while ((noc_stat & NOC_STAT_TX_RDY) == 0) {
+        noc_drain_mbox();
+    }
+    noc_tx_data = w;
+}
+
+// Blocking send of 1-word priority doorbell/MBOX to target core (triggers Trap 14)
+void noc_send_mbox(u16 dst, u16 val) {
+    noc_dst_core = dst;
+    while ((noc_stat & NOC_STAT_TX_RDY) == 0) {
+        noc_drain_mbox();
+    }
+    noc_mbox_send = val;
+}
 
 u16 fg_rx_buf[FG_RX_CAP];
 u16 fg_rx_head = 0;
@@ -254,15 +307,18 @@ u16 proc_mark_exited(u16 pid, u16 code) {
     return was_fg;
 }
 
-// Force-kill a running worker core via Mailbox Trap 14
+// Force-kill a running worker core via Hardware Lean Ring Doorbell (Trap 14)
 u16 proc_kill(u16 pid) {
+    u16 bit = 0;
     if (pid == 0 || pid >= MAX_CORES) {
         return 1;                   // ERR_INVALID_PID
     }
     if (procs[pid].state == PROC_FREE) {
         return 2;                   // ERR_NOT_RUNNING
     }
-    mailbox = (pid << 8) | TRAP_KILL;
+    bit = 1 << pid;
+    noc_req_mask = noc_req_mask & (bit ^ 0xFFFF);
+    noc_send_mbox(pid, MBOX_KILL_CMD);
     proc_con_out[pid] = 0;
     proc_args[pid * PROC_ARG_WORDS] = 0;
     proc_cwd_hi[pid] = root_clus_hi;
@@ -342,25 +398,25 @@ u16 proc_spawn_from_file(u16 parent_pid, u16 *path, u16 *arg_src, u16 arg_off, u
         proc_con_out[pid] = 0;
     }
 
-    // Select target worker core channel and stream Load Packet matching worker_stub.asm
-    fifo_sel = pid;
-    fifo_out = CMD_LOAD_MAGIC;
-    fifo_out = APP_LOAD_ADDR;
-    fifo_out = word_count;
-    fifo_out = APP_LOAD_ADDR;
+    // Select target worker core and stream Load Packet over Lean Ring with tx_ready flow control
+    noc_dst_core = pid;
+    noc_tx_word(CMD_LOAD_MAGIC);
+    noc_tx_word(APP_LOAD_ADDR);
+    noc_tx_word(word_count);
+    noc_tx_word(APP_LOAD_ADDR);
 
     while (sent < word_count) {
         if (fat32_read_next_sector(fd) != 0) {
             // Pad remaining words on unexpected EOF so worker loader stays framed
             while (sent < word_count) {
-                fifo_out = 0;
+                noc_tx_word(0);
                 sent++;
             }
             break;
         }
         w_idx = 0;
         while (w_idx < 256 && sent < word_count) {
-            fifo_out = sec_buf[w_idx];
+            noc_tx_word(sec_buf[w_idx]);
             w_idx++;
             sent++;
         }

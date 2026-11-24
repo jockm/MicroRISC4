@@ -476,7 +476,7 @@ void main(void) {
         }
       });
       Simulator.registerAction(22, () => rstNA.put(1));
-      Simulator.setMaxSimTime(25 + 6000 * 10);
+      Simulator.setMaxSimTime(25 + 2500 * 10);
       await Simulator.run();
 
       expect(String.fromCharCodes(txEnable), equals('HWOK\n'));
@@ -524,7 +524,7 @@ void main(void) {
         }
       });
       Simulator.registerAction(22, () => rstNB.put(1));
-      Simulator.setMaxSimTime(25 + 6000 * 10);
+      Simulator.setMaxSimTime(25 + 2500 * 10);
       await Simulator.run();
 
       final errOut = String.fromCharCodes(txDisable);

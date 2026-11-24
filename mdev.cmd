@@ -6,7 +6,8 @@ REM Git Bash and GnuWin32 are expected in their default locations; LLVM and Dart
 
 set "BASH_EXE=C:\Program Files\Git\bin\bash.exe"
 set "LLVM_BIN=C:\Program Files\LLVM\bin"
-set "GNUWIN_BIN=C:\Program Files (x86)\GnuWin32\bin"
+REM set "GNUWIN_BIN=C:\Program Files (x86)\GnuWin32\bin"
+set "MSYS2_BIN=C:\msys64\usr\bin" 
 set "DART_BIN="
 set "NODE_BIN="
 set "OSS_CAD_BIN=%USERPROFILE%\oss-cad-suite\bin"
@@ -34,9 +35,9 @@ if not defined LLVM_BIN (
     exit /b 1
 )
 
-if not exist "%GNUWIN_BIN%\." (
-    echo GnuWin32 tools directory not found: "%GNUWIN_BIN%"
-    exit /b 1
+if not exist "%MSYS2_BIN%\." (
+     echo MSYS2 tools directory not found: "%MSYS2_BIN%"
+     exit /b 1
 )
 
 if defined LOCALAPPDATA (
@@ -60,14 +61,14 @@ if not defined NODE_BIN if exist "%ProgramFiles%\nodejs\node.exe" if exist "%Pro
 )
 
 if defined DART_BIN (
-    set "PATH=%DART_BIN%;%LLVM_BIN%;%GNUWIN_BIN%;%PATH%"
+    set "PATH=%DART_BIN%;%LLVM_BIN%;%MSYS2_BIN%;%PATH%"
 ) else (
     where dart >nul 2>nul
     if errorlevel 1 (
         echo Dart SDK not found. Install it with: winget install --id=Google.DartSDK -e
         exit /b 1
     )
-    set "PATH=%LLVM_BIN%;%GNUWIN_BIN%;%PATH%"
+    set "PATH=%LLVM_BIN%;%MSYS2_BIN%;%PATH%"
 )
 
 if defined NODE_BIN set "PATH=%NODE_BIN%;%PATH%"

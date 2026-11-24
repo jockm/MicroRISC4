@@ -1,4 +1,4 @@
-# MiniRISC4 Standard Libraries
+# MicroRISC4 Standard Libraries
 
 - `common.inc`: Core macro library (stacks, UART, bitwise, register save/restore).
 - `M4R_LIB.asm`: 16-bit runtime arithmetic and comparisons (MULT, DIV, MOD, _CMP_*).

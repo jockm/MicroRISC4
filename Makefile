@@ -1,12 +1,12 @@
 # ==============================================================================
-# Makefile - MiniRISC4 Master Build, Simulation & ULX3S-85F FPGA Automation
+# Makefile - MicroRISC4 Master Build, Simulation & ULX3S-85F FPGA Automation
 # ==============================================================================
 
 SHELL          := /bin/bash
 DART           ?= dart
 PYTHON         ?= $(shell command -v python3 2>/dev/null || echo python)
 
-ROHD_DIR       := hdl/rohd
+ROHD_DIR       := hdl/mr4
 BUILD_DIR      := build
 LIB_DIR        := lib
 TOOLS_DIR      := tools
@@ -99,7 +99,7 @@ all: build test
 	@$(DOT_CLEAN_CMD)
 
 help:
-	@echo "MiniRISC4 Build, Test & ULX3S-85F Automation"
+	@echo "MicroRISC4 Build, Test & ULX3S-85F Automation"
 	@echo "============================================"
 	@echo "  make setup            - Fetch Dart dependencies for $(ROHD_DIR)"
 	@echo "  make analyze          - Run dart analyze on the ROHD HDL"
@@ -126,11 +126,11 @@ help:
 	@echo "  make install-hooks    - Install the project's git hooks (tools/git-hooks) into this clone"
 
 setup:
-	@echo "==> Fetching Dart dependencies for MiniRISC4 ROHD..."
+	@echo "==> Fetching Dart dependencies for MicroRISC4 ROHD..."
 	@cd $(ROHD_DIR) && $(DART) pub get
 
 analyze: setup
-	@echo "==> Analyzing MiniRISC4 ROHD..."
+	@echo "==> Analyzing MicroRISC4 ROHD..."
 	@cd $(ROHD_DIR) && $(DART) analyze
 
 # ------------------------------------------------------------------------------
@@ -175,7 +175,7 @@ test: test-rohd
 test-rohd: setup
 	@echo "==> Assembling monitor.asm for ROHD boot test..."
 	@$(MR4ASM) -I $(LIB_DIR) mr4src/asm/monitor.asm --hex -o $(ROHD_DIR)/system_image.hex
-	@echo "==> Running MiniRISC4 ROHD test suite..."
+	@echo "==> Running MicroRISC4 ROHD test suite..."
 	@cd $(ROHD_DIR) && $(DART) test
 	@$(DOT_CLEAN_CMD)
 
@@ -438,7 +438,7 @@ $(SD_SRC_DIR): $(OS_APP_PRGS)
 	cp $(XI_PRG) $(SD_SRC_DIR)/XI.PRG
 	cp $(FIBERS_PRG) $(SD_SRC_DIR)/FIBERS.PRG
 	cp $(MUL_PRG) $(SD_SRC_DIR)/MUL.PRG
-	printf "Hello from MiniRISC4 FAT32 SD card!\n" > $(SD_SRC_DIR)/README.TXT
+	printf "Hello from MicroRISC4 FAT32 SD card!\n" > $(SD_SRC_DIR)/README.TXT
 
 sd-img: $(SD_SRC_DIR)
 	python3 $(MKSDIMG) $(SD_SRC_DIR) -o $(SD_IMG) --size-mb $(SD_SIZE_MB) --spc $(SD_SPC)

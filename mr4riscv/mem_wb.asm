@@ -1,6 +1,6 @@
 ; ==============================================================================
 ; FILE: mr4riscv/mem_wb.asm
-; Architecture: MiniRISC4 Heterogeneous RV32IM Multi-Core Engine[cite: 2]
+; Architecture: MicroRISC4 Heterogeneous RV32IM Multi-Core Engine[cite: 2]
 ; Component: Core 3 - Memory Access (Loads/Stores), UART MMIO, and Writeback
 ; Target: Lattice ECP5 FPGA (ULX3S) / Verilog-2001 & Intel ROHD (Dart)[cite: 2]
 ;

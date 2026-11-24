@@ -1,20 +1,20 @@
-# Road to OpenROAD: ASIC Support for the MiniRISC4 HDL
+# Road to OpenROAD: ASIC Support for the MicroRISC4 HDL
 
-This document describes how to add an ASIC implementation flow for the MiniRISC4 soft CPU while preserving the existing ULX3S/ECP5 FPGA flow. It focuses on the hardware under `hdl/rohd/`; the existing `make ulx3s-bit` target produces an FPGA bitstream, not an ASIC layout.
+This document describes how to add an ASIC implementation flow for the MicroRISC4 soft CPU while preserving the existing ULX3S/ECP5 FPGA flow. It focuses on the hardware under `hdl/mr4/`; the existing `make ulx3s-bit` target produces an FPGA bitstream, not an ASIC layout.
 
 ## What the repository currently builds
 
-The current hardware generator, [`hdl/rohd/bin/generate.dart`](../hdl/rohd/bin/generate.dart), constructs `Ulx3sTop`. The root `Makefile` target `generate-ulx3s` generates SystemVerilog, and `ulx3s-bit` runs Yosys `synth_ecp5`, nextpnr, and bitstream packing.
+The current hardware generator, [`hdl/mr4/bin/generate.dart`](../hdl/mr4/bin/generate.dart), constructs `Ulx3sTop`. The root `Makefile` target `generate-ulx3s` generates SystemVerilog, and `ulx3s-bit` runs Yosys `synth_ecp5`, nextpnr, and bitstream packing.
 
-The reusable CPU is [`hdl/rohd/lib/cpu_core.dart`](../hdl/rohd/lib/cpu_core.dart). [`hdl/rohd/lib/ulx3s_top.dart`](../hdl/rohd/lib/ulx3s_top.dart) wraps it with board-specific clocking, pins, UART wiring, and optional SDRAM/cache and multi-core systems. The CPU's default local memory is 65,536 × 16 bits.
+The reusable CPU is [`hdl/mr4/lib/cpu_core.dart`](../hdl/mr4/lib/cpu_core.dart). [`hdl/mr4/lib/ulx3s_top.dart`](../hdl/mr4/lib/ulx3s_top.dart) wraps it with board-specific clocking, pins, UART wiring, and optional SDRAM/cache and multi-core systems. The CPU's default local memory is 65,536 × 16 bits.
 
 Memory and board dependencies that need deliberate ASIC treatment:
 
-* [`hdl/rohd/lib/tdp_bram.dart`](../hdl/rohd/lib/tdp_bram.dart) emits a two-cycle memory with FPGA-oriented banking and `ram_style` attributes. It optionally emits `$readmemh` initialization. The memory has a read port A and a read/write port B; preserve its latency and read/write collision behavior when replacing it.
-* [`hdl/rohd/lib/cache_controllers.dart`](../hdl/rohd/lib/cache_controllers.dart) describes `CacheDataBram` as an ASIC SRAM macro, but the current generated Verilog is an inferred array. It does not instantiate a foundry macro.
-* [`hdl/rohd/lib/noc_router.dart`](../hdl/rohd/lib/noc_router.dart) also infers a small RAM array with an FPGA `distributed` attribute.
-* [`hdl/rohd/lib/ecp5_pll.dart`](../hdl/rohd/lib/ecp5_pll.dart) emits an ECP5 `EHXPLLL` primitive. `Ulx3sTop` instantiates it and relies on its `locked` signal.
-* The optional SDRAM/cache path uses [`hdl/rohd/lib/cache_subsystem_top.dart`](../hdl/rohd/lib/cache_subsystem_top.dart) and [`hdl/rohd/lib/sdram_controller.dart`](../hdl/rohd/lib/sdram_controller.dart). The ULX3S top connects the external SDRAM pins and a bidirectional data bus; the I/O buffering and ECP5-specific I/O attributes need target-specific handling.
+* [`hdl/mr4/lib/tdp_bram.dart`](../hdl/mr4/lib/tdp_bram.dart) emits a two-cycle memory with FPGA-oriented banking and `ram_style` attributes. It optionally emits `$readmemh` initialization. The memory has a read port A and a read/write port B; preserve its latency and read/write collision behavior when replacing it.
+* [`hdl/mr4/lib/cache_controllers.dart`](../hdl/mr4/lib/cache_controllers.dart) describes `CacheDataBram` as an ASIC SRAM macro, but the current generated Verilog is an inferred array. It does not instantiate a foundry macro.
+* [`hdl/mr4/lib/noc_router.dart`](../hdl/mr4/lib/noc_router.dart) also infers a small RAM array with an FPGA `distributed` attribute.
+* [`hdl/mr4/lib/ecp5_pll.dart`](../hdl/mr4/lib/ecp5_pll.dart) emits an ECP5 `EHXPLLL` primitive. `Ulx3sTop` instantiates it and relies on its `locked` signal.
+* The optional SDRAM/cache path uses [`hdl/mr4/lib/cache_subsystem_top.dart`](../hdl/mr4/lib/cache_subsystem_top.dart) and [`hdl/mr4/lib/sdram_controller.dart`](../hdl/mr4/lib/sdram_controller.dart). The ULX3S top connects the external SDRAM pins and a bidirectional data bus; the I/O buffering and ECP5-specific I/O attributes need target-specific handling.
 
 ## Target architecture: share the CPU, split the tops and memories
 
@@ -33,7 +33,7 @@ Do not repurpose `make ulx3s-bit` or overwrite its generated files. Use separate
 
 ### 1. Add an ASIC top
 
-Create `hdl/rohd/lib/asic_top.dart`. It should instantiate `CpuCore` and define the actual chip interface, for example:
+Create `hdl/mr4/lib/asic_top.dart`. It should instantiate `CpuCore` and define the actual chip interface, for example:
 
 * A clock input and reset input.
 * UART pins or another boot/debug interface.

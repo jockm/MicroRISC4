@@ -1,4 +1,4 @@
-# MiniRISC4 Architecture Baseline, Current Status, Roadmap & LLM Technical Guide
+# MicroRISC4 Architecture Baseline, Current Status, Roadmap & LLM Technical Guide
 
 ---
 
@@ -72,13 +72,13 @@ make ulx3s-timing
 ```
 
 ### Key Tooling Dependencies & File Locations
-* **ROHD Hardware Definitions:** `hdl/rohd/lib/`
-  * `cpu_core.dart`: MiniRISC4 CPU core FSM, execution unit, vector dispatch.
+* **ROHD Hardware Definitions:** `hdl/mr4/lib/`
+  * `cpu_core.dart`: MicroRISC4 CPU core FSM, execution unit, vector dispatch.
   * `ulx3s_top.dart`: Top-level ECP5 wrapper, PLL, clocking, peripheral mapping.
   * `uart.dart` / `tdp_bram.dart` / `noc_router.dart`: Hardware sub-modules.
 * **Assembler & Toolchain:** `tools/`
-  * `act4c.py`: ACT4 compiler generating MiniRISC4 assembly.
-  * `mr4asm.py`: MiniRISC4 assembler producing memory hex images.
+  * `act4c.py`: ACT4 compiler generating MicroRISC4 assembly.
+  * `mr4asm.py`: MicroRISC4 assembler producing memory hex images.
 * **Assembly Sources:** `mr4src/asm/`
   * `monitor.asm`: System monitor application, vector table, banner, `puts`/`PUTC`.
 * **Generated Hardware Verilog:** `build/ulx3s/ulx3s_top_rohd.sv`
@@ -88,7 +88,7 @@ make ulx3s-timing
 ## 3. Architecture Vision & Target Baseline
 
 - [x] **Scalable Multi-Core / Heterogeneous Architecture (`nocCores = 3..4` -> up to 255 Cores):**
-  - Independent MiniRISC4 cores with localized `memWords` communicating over ring/mesh NoC (4-core `4×2K` + Lean Ring NoC + shared SDRAM hardware-verified on ULX3S-85F).
+  - Independent MicroRISC4 cores with localized `memWords` communicating over ring/mesh NoC (4-core `4×2K` + Lean Ring NoC + shared SDRAM hardware-verified on ULX3S-85F).
 - [x] **Internal Memory & Caches (`memWords`):**
   - Local SRAM (`2048` words per worker core) backed by I-Cache/D-Cache and ULX3S SDRAM controller rather than monolithic 64k BRAM per core.
 - [x] **True Pipelined Execution & High Clock Speed (`>100 MHz`):**
@@ -122,7 +122,7 @@ make ulx3s-timing
 
 ### Priority 1: Hardware UART TX Bring-Up — COMPLETE
 - [x] Verify `PUTC` macro execution and UART TX status register (`0x000F`) read polarity.
-- [x] Audit `txBusyLatch` and `txd_ready` signaling in `hdl/rohd/lib/ulx3s_top.dart`.
+- [x] Audit `txBusyLatch` and `txd_ready` signaling in `hdl/mr4/lib/ulx3s_top.dart`.
 - [x] Inspect generated `build/ulx3s/ulx3s_top_rohd.sv` for `serial_txd` signal connectivity.
 - [x] Confirm FTDI `ftdi_rxd` pin mapping (`L4`) in FPGA configuration.
 - [x] Validate character output on host terminal emulator at 3 Mbaud (and fix reset synchronizer/debounce + `DivideByN` + `monitor.asm` `c`/`g`/`print_hex16`).
@@ -139,8 +139,8 @@ make ulx3s-timing
 - [x] Wire worker `CpuCore`s (`1..N`) and `mboxTrapReq` cross-traps in `Ulx3sTop` (configurable via `Makefile` `ULX3S_NOC_CORES` & `generate.dart`; `ext_trap_ack` + `mbox_trap_inflight` handshake; live 3-CPU multi-hop IPC + Trap 14 round-trip verified in ROHD Dart & Icarus Verilog: **107.25 MHz** 1-core 65K, **106.15 MHz** 4-CPU `4×2K`, **102.06 MHz** 8-CPU `8×2K`).
 
 ### Priority 4: I/D Cache & SDRAM Controller Integration — COMPLETE
-- [x] Develop I-Cache and D-Cache controllers in ROHD (`hdl/rohd/lib/cache_controllers.dart`: BRAM-backed direct-mapped `ICache` with 1-cycle `flushAll`/single-line `invalValid` + write-back/write-allocate `DCache` with zero-buffer burst writeback; private non-overlapping 64K-word SDRAM partition `{coreId[7:0], addr[15:0]}` per core; verified in ROHD Dart & Icarus Verilog: **`125.98 MHz`**, `859 LUT4`, `336 FF`, `16 DPR16X4`, `2 DP16KD` for 512-word I-Cache + 512-word D-Cache pair).
-- [x] Interface cache controllers with external ULX3S SDRAM memory controller (`hdl/rohd/lib/sdram_controller.dart` hardened with JEDEC 8× init refresh, `BL=8` LMR `0x0023`, periodic `tREFI` auto-refresh, `tWR`/`tRP`/`tRCD`/`tRFC`, and ready/valid burst writes; `SdramBurstArbiter` + `SdramCacheCluster` in `hdl/rohd/lib/cache_subsystem_top.dart` with per-core D-write → I-invalidate coherency; verified ULX3S v2.0/v3.0 SDRAM pins added to `ulx3s_v20.lpf`; pin-level JEDEC SDRAM verified in ROHD Dart & Icarus Verilog: **`127.65 MHz`**, `1835 LUT4`, `791 FF`, `32 DPR16X4`, `4 DP16KD` for 2-core cluster).
+- [x] Develop I-Cache and D-Cache controllers in ROHD (`hdl/mr4/lib/cache_controllers.dart`: BRAM-backed direct-mapped `ICache` with 1-cycle `flushAll`/single-line `invalValid` + write-back/write-allocate `DCache` with zero-buffer burst writeback; private non-overlapping 64K-word SDRAM partition `{coreId[7:0], addr[15:0]}` per core; verified in ROHD Dart & Icarus Verilog: **`125.98 MHz`**, `859 LUT4`, `336 FF`, `16 DPR16X4`, `2 DP16KD` for 512-word I-Cache + 512-word D-Cache pair).
+- [x] Interface cache controllers with external ULX3S SDRAM memory controller (`hdl/mr4/lib/sdram_controller.dart` hardened with JEDEC 8× init refresh, `BL=8` LMR `0x0023`, periodic `tREFI` auto-refresh, `tWR`/`tRP`/`tRCD`/`tRFC`, and ready/valid burst writes; `SdramBurstArbiter` + `SdramCacheCluster` in `hdl/mr4/lib/cache_subsystem_top.dart` with per-core D-write → I-invalidate coherency; verified ULX3S v2.0/v3.0 SDRAM pins added to `ulx3s_v20.lpf`; pin-level JEDEC SDRAM verified in ROHD Dart & Icarus Verilog: **`127.65 MHz`**, `1835 LUT4`, `791 FF`, `32 DPR16X4`, `4 DP16KD` for 2-core cluster).
 - [x] Reduce local core BRAM size (`memWords = 2048`) while maintaining high-capacity backing storage (`cpu_core.dart` external I/D cache bus for `addr >= memWords` with `isExtPredec` off the `CCU2C` carry chain, `ulx3s_top.dart` `SdramCacheCluster` + bidirectional `TriStateBuffer` `sdram_d[15:0]` + hardware `ODDRX1F` 180° `sdram_clk`, `sdram_controller.dart` `PosedgeIobReg16` (`16/16 IOLOGIC`) true JEDEC `CL=2` DQ capture + 120 µs JEDEC init wait, `DCache` I-miss snoop-clean for transparent self-modifying code, `Makefile` `ULX3S_SDRAM_CACHE=1` auto-defaulting `ULX3S_MEM_WORDS=2048`; verified in ROHD Dart, Icarus Verilog, and **bit-perfect on ULX3S-85F silicon** across all 16 DQ pins, 8-word burst alignment, stack eviction, and multi-row addressing: **`108.83 MHz`** 1-core `4 DP16KD / 2008 LUT4 / 844 FF / 16 DPR16X4 / 17 IOLOGIC`, **`93.29 MHz`** 4-core + NoC + SDRAM `16 DP16KD / 8781 LUT4 / 3232 FF / 80 DPR16X4 / 17 IOLOGIC`, **`107.25 MHz`** default 65K BRAM baseline).
 
 ### Priority 5: Full System Verification — COMPLETE

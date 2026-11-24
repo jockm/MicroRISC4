@@ -1,9 +1,9 @@
 ; ==============================================================================
 ; FILE: mr4src/asm/monitor.asm
-; Architecture: MiniRISC4 16-Bit Word-Addressed Processor
+; Architecture: MicroRISC4 16-Bit Word-Addressed Processor
 ; Target Hardware: Lattice ECP5 FPGA (ULX3S) / Verilog Core
 ; Description:
-;   Interactive Serial Memory Monitor for the MiniRISC4 Architecture.
+;   Interactive Serial Memory Monitor for the MicroRISC4 Architecture.
 ;
 ; Commands:
 ;   e [<addr>]       - Examine 8 words starting at <addr> (or next 8 words if omitted)
@@ -642,7 +642,7 @@ parse_hex:
 .align                          ; Guarantees word boundary for Slot 0 packing
 
 msg_banner:
-    .asciz "\r\n============================\r\n  MiniRISC4 ASM Monitor\r\n  Commands:\r\n    e <addr>      (Examine)\r\n    c <addr> <val>(Change)\r\n    g <addr>      (Go / Run)\r\n============================\r\n"
+    .asciz "\r\n============================\r\n  MicroRISC4 ASM Monitor\r\n  Commands:\r\n    e <addr>      (Examine)\r\n    c <addr> <val>(Change)\r\n    g <addr>      (Go / Run)\r\n============================\r\n"
 
 msg_prompt:
     .asciz "> "

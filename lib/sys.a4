@@ -1,6 +1,6 @@
 // ==============================================================================
 // FILE: lib/sys.a4
-// MiniRISC4 OS User-Space Syscall Client Library
+// MicroRISC4 OS User-Space Syscall Client Library
 // Matches worker_stub.asm 3-class Trap 1 ABI
 // ==============================================================================
 

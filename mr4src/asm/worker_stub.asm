@@ -1,6 +1,6 @@
 ; ==============================================================================
 ; FILE: mr4src/asm/worker_stub.asm
-; Architecture: MiniRISC4 Worker Core Resident Stub (0x0100 - 0x03FF)
+; Architecture: MicroRISC4 Worker Core Resident Stub (0x0100 - 0x03FF)
 ; Transport   : Unified Hardware Lean Ring NoC (MMIO 0x0020 - 0x002A) + Trap 14
 ;
 ; Memory Map:
@@ -18,7 +18,7 @@
 .include "common.inc"
 
 ; ------------------------------------------------------------------------------
-; Hardware Lean Ring NoC MMIO Registers (matches hdl/rohd/lib/noc_router.dart)
+; Hardware Lean Ring NoC MMIO Registers (matches hdl/mr4/lib/noc_router.dart)
 ; ------------------------------------------------------------------------------
 .define NOC_TX_DATA         0x0020  ; W: push payload word to NOC_DST_CORE
 .define NOC_DST_CORE        0x0021  ; R/W: direct destination core ID

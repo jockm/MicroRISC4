@@ -1,4 +1,4 @@
-# MiniRISC4 Track C.1: CPI & Critical-Path Profiling Baseline
+# MicroRISC4 Track C.1: CPI & Critical-Path Profiling Baseline
 
 > **Date:** 2026-11-24 · **Hardware Baseline:** Track A.2 (`b427dce`, 4-Core SDRAM @ `96 MHz` / `100.79 MHz` $F_{\max}$)
 > **Profiler Tool:** `python3 tools/mr4sim.py <bin> --profile [--max-steps N]` (`ExecutionProfiler` in `tools/mr4sim.py`)
@@ -7,7 +7,7 @@
 
 ## 1. Executive Summary
 
-Before refactoring `CpuCore` into a 4-stage in-order pipeline (`IF → ID/RF → EX → WB` in Track C.3), Track C.1 quantified **both** the dynamic software CPI bottlenecks across real MiniRISC4 workloads and the physical critical paths in Yosys/ECP5 synthesis:
+Before refactoring `CpuCore` into a 4-stage in-order pipeline (`IF → ID/RF → EX → WB` in Track C.3), Track C.1 quantified **both** the dynamic software CPI bottlenecks across real MicroRISC4 workloads and the physical critical paths in Yosys/ECP5 synthesis:
 
 1. **Software CPI (`1.61 – 2.13` today → `1.15 – 1.40` pipelined):**
    - **#1 single cycle sink (`12.5% – 22.0%` of all cycles):** `PUSH8` (`20% – 47%` of dynamic slots!) pays a `+1` cycle `_stFetchLatch` bubble on every single 8-bit immediate push (4 cycles per 16-bit constant/address). Eliminating `PUSH8` bubbles alone cuts cycles by **13–22%**!

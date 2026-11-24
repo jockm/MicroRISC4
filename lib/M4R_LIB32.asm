@@ -1,7 +1,7 @@
 ; ==============================================================================
 ; FILE: M4R_LIB32.asm
 ; Description:
-;   Standard 32-bit Math, Logic, Shift, and Relational Library for MiniRISC4.
+;   Standard 32-bit Math, Logic, Shift, and Relational Library for MicroRISC4.
 ;   Operates via the Argument Stack (pointer at RAM address 0x0005) and Return
 ;   Stack (pointer at RAM address 0x0004).
 ;

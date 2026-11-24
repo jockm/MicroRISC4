@@ -1,7 +1,7 @@
 # MuL Tutorial and Reference
 
 MuL (pronounced **“Mule”**) is a small, structured scripting language for the
-MiniRISC4 operating system. Its interpreter is inspired by
+MicroRISC4 operating system. Its interpreter is inspired by
 [Picol](https://github.com/antirez/picol) by Salvatore Sanfilippo; MuL credits
 Picol in its [source header](../mr4src/act4/apps/mul.a4). MuL adds commands for
 working with the OS console, processes, and filesystem.
@@ -78,7 +78,7 @@ Use `set` to assign a value to a variable. Values are text; `$name` inserts a
 variable's value into a command argument.
 
 ```text
-set name "MiniRISC4"
+set name "MicroRISC4"
 puts "Hello, $name!"
 ```
 

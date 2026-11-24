@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# mbuild - MiniRISC4 Unified Build & Driver Script
+# mbuild - MicroRISC4 Unified Build & Driver Script
 # ==============================================================================
 set -euo pipefail
 
@@ -37,7 +37,7 @@ print_usage() {
     cat << "HELP_TEXT"
 Usage: mbuild [options] <source-file> [source-files...]
 
-A unified build driver for MiniRISC4 assembly (.asm) and ACT4 (.a4) programs.
+A unified build driver for MicroRISC4 assembly (.asm) and ACT4 (.a4) programs.
 
 Positional Arguments:
   source-file            One or more source files (.a4 and/or .asm)

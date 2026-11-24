@@ -1,6 +1,6 @@
 ; ==============================================================================
 ; FILE: mr4riscv/riscv_common.inc
-; Architecture: MiniRISC4 Heterogeneous Multi-Core RISC-V (RV32I/M) Engine[cite: 2, 10]
+; Architecture: MicroRISC4 Heterogeneous Multi-Core RISC-V (RV32I/M) Engine[cite: 2, 10]
 ; Target: Lattice ECP5 FPGA (ULX3S) / Verilog-2001 & Intel ROHD (Dart)[cite: 2, 11]
 ; Description:
 ;   Common architectural definitions, core role IDs, inter-core messaging

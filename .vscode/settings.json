@@ -1,6 +1,6 @@
 {
   "dart.projectSearchPaths": [
-    "hdl/rohd"
+    "hdl/mr4"
   ],
   "dart.analysisExcludedFolders": [
     "hdl/verilog"

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 act4c.py - Self-contained compiler for the ACT4 systems programming language
-targeting the MiniRISC4 16-bit word-addressed processor architecture.
+targeting the MicroRISC4 16-bit word-addressed processor architecture.
 """
 
 import sys
@@ -966,8 +966,8 @@ class CodeGen:
                     self.trap_bindings[node.trap_vector] = node.name
 
         self.emit_raw("; ==============================================================================")
-        self.emit_raw("; Compiled by ACT4 MiniRISC4 Compiler (act4c)")
-        self.emit_raw("; Target: MiniRISC4 16-bit Architecture")
+        self.emit_raw("; Compiled by ACT4 MicroRISC4 Compiler (act4c)")
+        self.emit_raw("; Target: MicroRISC4 16-bit Architecture")
         self.emit_raw("; ==============================================================================")
         self.emit_raw('.include "common.inc"')
         self.emit_raw("")
@@ -2244,7 +2244,7 @@ class CodeGen:
 # ==============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="ACT4 Compiler for MiniRISC4 Architecture (act4c)")
+    parser = argparse.ArgumentParser(description="ACT4 Compiler for MicroRISC4 Architecture (act4c)")
     parser.add_argument("input", help="ACT4 source file (.a4)")
     parser.add_argument("-o", "--output", default=None, help="Output assembly file (.asm)")
     parser.add_argument("--org", type=lambda x: int(x, 0), default=0x0200,

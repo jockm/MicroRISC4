@@ -1,9 +1,9 @@
 ; ==============================================================================
 ; FILE: lib/M4R_LIB.asm
-; Architecture: MiniRISC4 16-Bit Word-Addressed Processor
+; Architecture: MicroRISC4 16-Bit Word-Addressed Processor
 ; Target Hardware: Lattice ECP5 FPGA (ULX3S) / Verilog Core
 ; Description:
-;   Standard Math & Relational Runtime Subroutine Library for MiniRISC4.
+;   Standard Math & Relational Runtime Subroutine Library for MicroRISC4.
 ;   Provides 16-bit unsigned multiplication (MULT), restoring integer division (DIV),
 ;   modulo/remainder (MOD), and unsigned relational comparisons (_CMP_*).
 ;
@@ -266,7 +266,7 @@ MOD:
 ; SECTION 5: Unsigned Relational Comparisons (_CMP_LT, _CMP_LE, _CMP_GT, _CMP_GE)
 ; Description:
 ;   Evaluates 16-bit unsigned inequalities across the entire 0x0000-0xFFFF range.
-;   Because MiniRISC4 only supports JMP.M (sign bit is 1) and JMP.Z (zero) on
+;   Because MicroRISC4 only supports JMP.M (sign bit is 1) and JMP.Z (zero) on
 ;   register contents, unsigned comparison must differentiate between numbers
 ;   with differing MSBs (where bit 15 represents the 0x8000 boundary) and numbers
 ;   with identical MSBs (where standard subtraction gives the correct magnitude).

@@ -25,14 +25,14 @@
       {
         "label": "ROHD: Fetch Dependencies (pub get)",
         "type": "shell",
-        "options": { "cwd": "${workspaceFolder}/hdl/rohd" },
+        "options": { "cwd": "${workspaceFolder}/hdl/mr4" },
         "command": "dart pub get",
         "problemMatcher": []
       },
       {
         "label": "ROHD: Generate SystemVerilog",
         "type": "shell",
-        "options": { "cwd": "${workspaceFolder}/hdl/rohd" },
+        "options": { "cwd": "${workspaceFolder}/hdl/mr4" },
         "command": "dart run bin/generate.dart",
         "group": "build",
         "problemMatcher": []

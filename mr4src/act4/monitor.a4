@@ -1,7 +1,7 @@
 // ==============================================================================
 // File: mr4src/act4/monitor.a4
 // Description:
-//   Interactive Serial Memory Monitor for MiniRISC4 written in ACT4.
+//   Interactive Serial Memory Monitor for MicroRISC4 written in ACT4.
 //   Commands:
 //     e [<addr>]       - Examine 8 consecutive words (continues if <addr> omitted)
 //     c <addr> <val>   - Change word at <addr> to <val>
@@ -225,7 +225,7 @@ void main(void) {
     u16 cmd = 0;
 
     puts("\r\n============================\r\n");
-    puts("  MiniRISC4 ACT4 Monitor    \r\n");
+    puts("  MicroRISC4 ACT4 Monitor    \r\n");
     puts("  Commands:                 \r\n");
     puts("    e [<addr>]    (Examine) \r\n");
     puts("    c <addr> <val>(Change)  \r\n");

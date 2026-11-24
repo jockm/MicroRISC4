@@ -1,4 +1,4 @@
-# MiniRISC4 Operating System (`mr4os`) Guide
+# MicroRISC4 Operating System (`mr4os`) Guide
 
 **Architecture, Design Theory, User Experience, and Developer API Reference**
 
@@ -39,9 +39,9 @@
 
 ## 1. Introduction & Design Philosophy
 
-The **MiniRISC4 Operating System (`mr4os`)** is a lightweight, multi-core microkernel-style OS written in **ACT4** (the native C-like language for the 16-bit MiniRISC4 architecture) paired with a compact 16-bit assembly worker stub (`worker_stub.asm`).
+The **MicroRISC4 Operating System (`mr4os`)** is a lightweight, multi-core microkernel-style OS written in **ACT4** (the native C-like language for the 16-bit MicroRISC4 architecture) paired with a compact 16-bit assembly worker stub (`worker_stub.asm`).
 
-Rather than forcing preemptive time-slicing, virtual memory, and an MMU onto a compact 16-bit FPGA soft-core, `mr4os` embraces the MiniRISC4 hardware's multi-core design through a **one-core-per-program** model:
+Rather than forcing preemptive time-slicing, virtual memory, and an MMU onto a compact 16-bit FPGA soft-core, `mr4os` embraces the MicroRISC4 hardware's multi-core design through a **one-core-per-program** model:
 
 - **Core 0 (OS Kernel & Shell):** Owns all physical I/O peripherals (UART console and SPI SD card), mounts the FAT32 filesystem, manages the process table, routes console input/output, and serves syscalls from worker cores.
 - **Cores 1..N (Worker Cores):** Each worker core has its own completely private 64K-word (128 KB) RAM and runs a tiny resident stub (`0x0100–0x03FF`). When a program is launched, Core 0 streams its binary directly into an idle worker core's RAM at `0x0400` and lets it run at full hardware speed with zero context-switch overhead.
@@ -75,7 +75,7 @@ The wire protocol encodes core IDs in an 8-bit field (`0..255`), allowing `mr4os
 
 ### 2.2 Memory Maps (Core 0 & Worker Cores)
 
-MiniRISC4 is **word-addressed** (16 bits per address; `0x0000`–`0xFFFF` = 65,536 words = 128 KB per core).
+MicroRISC4 is **word-addressed** (16 bits per address; `0x0000`–`0xFFFF` = 65,536 words = 128 KB per core).
 
 #### Shared Hardware / MMIO Low Page (`0x0000–0x002F`)
 
@@ -242,7 +242,7 @@ make os-test
 On boot, Core 0 initializes the process table, mounts the SD card, and displays the prompt:
 
 ```text
-MiniRISC4 OS v0.1 (Core 0)
+MicroRISC4 OS v0.1 (Core 0)
 FAT32 mounted OK
 mr4>
 ```
@@ -378,7 +378,7 @@ Userland apps are standard ACT4 programs placed under `mr4src/act4/apps/` (or an
 Worker applications **must** be compiled for load origin `0x0400` without the Core 0 boot preamble, and assembled with `--sparsebin` so the output `.prg` binary starts directly at word `0x0400`:
 
 ```bash
-# 1. Compile ACT4 -> MiniRISC4 assembly (origin 0x0400, no boot preamble)
+# 1. Compile ACT4 -> MicroRISC4 assembly (origin 0x0400, no boot preamble)
 bin/compile mr4src/act4/apps/myapp.a4 -o build/os/myapp.asm \
     -I mr4src/act4/os -I lib --org 0x0400 --nopreamble
 
@@ -393,7 +393,7 @@ python3 tools/mksdimage.py build/sd_root -o /tmp/mr4_sd.img --size-mb 16 --spc 1
 
 #### ACT4 Packed-String Convention
 
-Because MiniRISC4 is word-addressed (16 bits per word), strings are **packed 2 bytes per 16-bit word** in little-endian byte order (low byte = even index, high byte = odd index), NUL-terminated. Always access individual characters via ACT4's built-in `getbyte(buf, byte_idx)` and `setbyte(buf, byte_idx, ch)` intrinsics rather than indexing `buf[i]` directly.
+Because MicroRISC4 is word-addressed (16 bits per word), strings are **packed 2 bytes per 16-bit word** in little-endian byte order (low byte = even index, high byte = odd index), NUL-terminated. Always access individual characters via ACT4's built-in `getbyte(buf, byte_idx)` and `setbyte(buf, byte_idx, ch)` intrinsics rather than indexing `buf[i]` directly.
 
 ---
 
@@ -705,7 +705,7 @@ void main(void) {
     term_clear();
     term_cursor_hide();
     term_color(TERM_BRIGHT_CYAN, TERM_BLUE);
-    term_puts_at(1, 1, " MiniRISC4 Terminal Demo (Arrows=Move, ESC/q=Quit) ");
+    term_puts_at(1, 1, " MicroRISC4 Terminal Demo (Arrows=Move, ESC/q=Quit) ");
     term_reset();
 
     while (true) {
@@ -775,9 +775,9 @@ void main(void) {
 
 ## Related Documentation
 
-- [MiniRISC4 ISA Specification](minirisc4_spec.md)
-- [MiniRISC4 Memory Map & Software Conventions](minirisc4_memory_map_software_conventions.md)
-- [MiniRISC4 Multi-Core Subsystem Configuration Guide](minirisc4_multi_core_subsystem_configuration_guide.md)
+- [MicroRISC4 ISA Specification](microrisc4_spec.md)
+- [MicroRISC4 Memory Map & Software Conventions](microrisc4_memory_map_software_conventions.md)
+- [MicroRISC4 Multi-Core Subsystem Configuration Guide](microrisc4_multi_core_subsystem_configuration_guide.md)
 - [ACT4 Language & Compiler Reference Manual](act4_language_compiler_reference_manual.md)
-- [MiniRISC4 Assembler Reference Manual](minirisc4_assembler_reference_manual.md)
-- [MiniRISC4 OS Development Roadmap](RoadmapOS.md)
+- [MicroRISC4 Assembler Reference Manual](microrisc4_assembler_reference_manual.md)
+- [MicroRISC4 OS Development Roadmap](RoadmapOS.md)

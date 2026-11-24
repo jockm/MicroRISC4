@@ -5,15 +5,15 @@
       "name": "ROHD: Run Tests",
       "type": "dart",
       "request": "launch",
-      "cwd": "hdl/rohd",
-      "program": "hdl/rohd/test/cpu_test.dart"
+      "cwd": "hdl/mr4",
+      "program": "hdl/mr4/test/cpu_test.dart"
     },
     {
       "name": "ROHD: Generate SystemVerilog",
       "type": "dart",
       "request": "launch",
-      "cwd": "hdl/rohd",
-      "program": "hdl/rohd/bin/generate.dart"
+      "cwd": "hdl/mr4",
+      "program": "hdl/mr4/bin/generate.dart"
     }
   ]
 }

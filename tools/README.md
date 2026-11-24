@@ -1,6 +1,6 @@
-# MiniRISC4 Software Toolchain
+# MicroRISC4 Software Toolchain
 
-This directory contains the assembler, simulator, and high-level language compiler for the MiniRISC4 architecture.
+This directory contains the assembler, simulator, and high-level language compiler for the MicroRISC4 architecture.
 
 ---
 

@@ -1,7 +1,7 @@
 import math
 #!/usr/bin/env python3
 """
-tools/mr4sim.py - Instruction-level simulator for the MiniRISC4 architecture.
+tools/mr4sim.py - Instruction-level simulator for the MicroRISC4 architecture.
 
 Features:
   - 16-bit word-addressed memory space (64K words: 0x0000 - 0xFFFF).
@@ -64,7 +64,7 @@ CAP_SDRAM_CACHE  = 1 << 9
 CAP_PIPELINED    = 1 << 10
 TRAP_BASE       = 0x0100
 
-# MiniRISC4 Primary Opcodes (Bits [7:4] / [15:12])
+# MicroRISC4 Primary Opcodes (Bits [7:4] / [15:12])
 OP_LD_REG       = 0x0
 OP_LD_IMM4      = 0x1
 OP_LD_PEEK      = 0x2
@@ -338,7 +338,7 @@ class CoreNetworkInterface:
 
 
 class LeanNocNI:
-    """Exact software mirror of hardware NocRouterNi (hdl/rohd/lib/noc_router.dart).
+    """Exact software mirror of hardware NocRouterNi (hdl/mr4/lib/noc_router.dart).
 
     Models the direct-addressed Lean Elastic Ring (`0x0020`-`0x002A`):
     - Shared finite RX FIFO (default 16 words)
@@ -349,7 +349,7 @@ class LeanNocNI:
     - `NOC_INFO` (`0x002A`) = `(fifo_depth << 8) | num_cores`
     """
     def __init__(self, core_id: int, num_cores: int, fifo_depth: int = 16,
-                 fabric: "LeanNocFabric | None" = None, sim: "MiniRISC4Sim | None" = None):
+                 fabric: "LeanNocFabric | None" = None, sim: "MicroRISC4Sim | None" = None):
         self.core_id = core_id
         self.num_cores = num_cores
         self.fifo_depth = fifo_depth
@@ -446,7 +446,7 @@ class LeanNocNI:
 
 class LeanNocFabric:
     """Connects N LeanNocNI instances with exact finite-FIFO & MBOX backpressure."""
-    def __init__(self, sims: list["MiniRISC4Sim"], fifo_depth: int = 16):
+    def __init__(self, sims: list["MicroRISC4Sim"], fifo_depth: int = 16):
         max_cid = max((s.core_id for s in sims), default=0)
         self.num_cores = max(len(sims), max_cid + 1)
         self.fifo_depth = fifo_depth
@@ -509,7 +509,7 @@ class NocCluster:
             self.cols = num_cores
             self.rows = 1
 
-        self.cores: list[MiniRISC4Sim] = []
+        self.cores: list[MicroRISC4Sim] = []
         self.nis: list[CoreNetworkInterface] = []
         # Registered link pipeline stage (1 hop per cluster tick)
         self._in_flight: list[NocPacket] = []
@@ -520,7 +520,7 @@ class NocCluster:
         for cid in range(num_cores):
             ni = CoreNetworkInterface(cid, num_ch=num_ch, fifo_depth=fifo_depth, num_cores=num_cores)
             use_cache = (sdram_cache is not None) and (cache_core_id is None or cid == cache_core_id)
-            sim = MiniRISC4Sim(
+            sim = MicroRISC4Sim(
                 core_id=cid,
                 noc_ni=ni,
                 mem_words=mem_words,
@@ -834,7 +834,7 @@ class ExecutionProfiler:
             "pipe_1cyc_sram_ipc_gain": cpi_cur / cpi_p1 if cpi_p1 else 1.0,
         }
 
-    def format_report(self, title: str = "MiniRISC4 Execution Profile") -> str:
+    def format_report(self, title: str = "MicroRISC4 Execution Profile") -> str:
         s = self.summary()
         n = max(1, s["total_insts"])
         c = s["counts"]
@@ -854,7 +854,7 @@ class ExecutionProfiler:
         return "\n".join(lines)
 
 
-class MiniRISC4Sim:
+class MicroRISC4Sim:
     def __init__(self, trace: bool = False, core_id: int = 0, noc_ni: "CoreNetworkInterface | None" = None, mem_words: int = MEM_WORDS, sdram_cache: "SdramCacheSubsystem | None" = None, cache_base_addr: int | None = None, cache_fetch: bool = False, profile: bool = False):
         assert 1 <= mem_words <= MEM_WORDS, "Per-core memory capped at 64K words (128K bytes)"
         self.mem_words = mem_words
@@ -1380,7 +1380,7 @@ class MiniRISC4Sim:
 
     def interactive_cli(self):
         """Interactive debugger command loop ((m4db))."""
-        print(f"\n--- MiniRISC4 Debugger (m4db) ---")
+        print(f"\n--- MicroRISC4 Debugger (m4db) ---")
         print(f"PC: 0x{self.pc:04X} (Slot {self.slot}), Cycles: {self.cycles}")
 
         while True:
@@ -1600,18 +1600,18 @@ Control:
 """)
 
 
-def connect_os_workers(os_sim: MiniRISC4Sim, worker_sims: list[MiniRISC4Sim], fifo_depth: int = 16) -> LeanNocFabric:
+def connect_os_workers(os_sim: MicroRISC4Sim, worker_sims: list[MicroRISC4Sim], fifo_depth: int = 16) -> LeanNocFabric:
     """Link Core 0 (OS) and Worker Cores 1..N via the unified Hardware Lean Ring (0x0020-0x002A)."""
     return LeanNocFabric([os_sim, *worker_sims], fifo_depth=fifo_depth)
 
 
-def connect_os_worker(os_sim: MiniRISC4Sim, worker_sim: MiniRISC4Sim, fifo_depth: int = 16) -> LeanNocFabric:
+def connect_os_worker(os_sim: MicroRISC4Sim, worker_sim: MicroRISC4Sim, fifo_depth: int = 16) -> LeanNocFabric:
     """Link Core 0 (OS) and a single Worker Core via the unified Hardware Lean Ring (0x0020-0x002A)."""
     return connect_os_workers(os_sim, [worker_sim], fifo_depth=fifo_depth)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MiniRISC4 Instruction-Level Python Simulator (mr4sim)")
+    parser = argparse.ArgumentParser(description="MicroRISC4 Instruction-Level Python Simulator (mr4sim)")
     parser.add_argument("binary", help="Path to binary file (.bin)")
     parser.add_argument("--memwords", type=lambda x: int(x, 0), default=65536, help="Physical memory capacity in words (default: 65536)")
     parser.add_argument("--core-id", type=lambda x: int(x, 0), default=0, help="Hardware Core ID (default: 0)")
@@ -1637,7 +1637,7 @@ def main():
         print(f"Error: Binary file '{args.binary}' not found.", file=sys.stderr)
         sys.exit(1)
 
-    sim = MiniRISC4Sim(trace=args.trace, core_id=args.core_id, profile=args.profile)
+    sim = MicroRISC4Sim(trace=args.trace, core_id=args.core_id, profile=args.profile)
     sim.enable_cpuid = not args.disable_cpuid
     sim.enable_uart = not args.disable_uart
     sim.enable_math = args.enable_math
@@ -1654,14 +1654,14 @@ def main():
     else:
         sim.pc = 0x0100
 
-    worker_sims: list[MiniRISC4Sim] = []
+    worker_sims: list[MicroRISC4Sim] = []
     if args.worker:
         if not os.path.exists(args.worker):
             print(f"Error: Worker binary '{args.worker}' not found.", file=sys.stderr)
             sys.exit(1)
         num_workers = max(1, min(3, args.workers))
         for cid in range(1, num_workers + 1):
-            ws = MiniRISC4Sim(trace=False, core_id=cid)
+            ws = MicroRISC4Sim(trace=False, core_id=cid)
             ws.trap_base = args.trapbase & ADDR_MASK
             ws.load_binary(args.worker, offset=0)
             ws.pc = 0x0100

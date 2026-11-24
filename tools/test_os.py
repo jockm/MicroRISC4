@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-tools/test_os.py - Automated regression test suite for the MiniRISC4
+tools/test_os.py - Automated regression test suite for the MicroRISC4
 ACT4 compiler, runtime library, FAT32 filesystem, Trap ISRs, and
 Core 0 + Worker Core 1 userland execution.
 
@@ -74,7 +74,7 @@ def compile_and_assemble(
     return lst_path
 
 
-def attach_uart_and_watch(sim: mr4sim.MiniRISC4Sim):
+def attach_uart_and_watch(sim: mr4sim.MicroRISC4Sim):
     """Capture UART TX output and watch for illegal writes to low memory 0x0000..0x0009."""
     uart_out: list[str] = []
     bad_writes: list[tuple[int, int, int, int]] = []
@@ -217,7 +217,7 @@ void main(void) {
         a4.write_text(src, encoding="utf-8")
         compile_and_assemble(a4, out_bin)
 
-        sim = mr4sim.MiniRISC4Sim(core_id=0)
+        sim = mr4sim.MicroRISC4Sim(core_id=0)
         sim.load_binary(str(out_bin))
         sim.pc = 0x0100
         uart_out, bad_writes = attach_uart_and_watch(sim)
@@ -320,7 +320,7 @@ void main(void) {
         a4.write_text(src, encoding="utf-8")
         compile_and_assemble(a4, out_bin)
 
-        sim = mr4sim.MiniRISC4Sim(core_id=0)
+        sim = mr4sim.MicroRISC4Sim(core_id=0)
         sim.load_binary(str(out_bin))
         sim.pc = 0x0100
         uart_out, bad_writes = attach_uart_and_watch(sim)
@@ -365,7 +365,7 @@ def test_os_shell_fs(args):
             ls_clus = clus
     assert readme_clus is not None and ls_clus is not None
 
-    sim = mr4sim.MiniRISC4Sim(core_id=0)
+    sim = mr4sim.MicroRISC4Sim(core_id=0)
     sim.sd_card = mr4sim.SpiSdCard(img_bytes)
     sim.load_binary(str(OS_BUILD / "os_main.bin"))
     sim.load_symbols(str(OS_BUILD / "os_main.lst"))
@@ -389,7 +389,7 @@ def test_os_shell_fs(args):
         "help",
         "ps",
         "ls",
-        "echo Hello MiniRISC4 world",
+        "echo Hello MicroRISC4 world",
         "clear",
         "stat",
         "stat README.TXT",
@@ -399,7 +399,7 @@ def test_os_shell_fs(args):
         "cat readme.txt",
         "cat NOFILE.TXT",
         "write",
-        "write note.txt Hello MiniRISC4!",
+        "write note.txt Hello MicroRISC4!",
         "cat NOTE.TXT",
         "write NOTE.TXT Updated line",
         "cat note.txt",
@@ -420,16 +420,16 @@ def test_os_shell_fs(args):
         "FAT32 mounted OK",
         "0    RUN    os_kernel",
         "LS.PRG",
-        "Hello MiniRISC4 world",
+        "Hello MicroRISC4 world",
         "\x1b[2J\x1b[H",
         "Usage: stat <file>",
-        "README.TXT  size=36 bytes  attr=0x0020",
+        "README.TXT  size=37 bytes  attr=0x0020",
         "Usage: cat <file>",
-        "Hello from MiniRISC4 FAT32 SD card!",
+        "Hello from MicroRISC4 FAT32 SD card!",
         "File not found: NOFILE.TXT",
         "Usage: write <file> <text>",
         "Wrote note.txt",
-        "Hello MiniRISC4!",
+        "Hello MicroRISC4!",
         "Wrote NOTE.TXT",
         "Updated line",
         "Usage: rm <file>",
@@ -454,8 +454,8 @@ def test_os_shell_fs(args):
 # Test 4: Lean Ring MBOX Doorbell (Trap 14 ERET) -> GO Grant -> SYS_PUTC -> Shell
 # ------------------------------------------------------------------------------
 def test_os_async_trap1(args):
-    sim = mr4sim.MiniRISC4Sim(core_id=0)
-    peer = mr4sim.MiniRISC4Sim(core_id=1)
+    sim = mr4sim.MicroRISC4Sim(core_id=0)
+    peer = mr4sim.MicroRISC4Sim(core_id=1)
     peer.halted = True  # Synthetic peer NI only
     fabric = mr4sim.connect_os_worker(sim, peer)
 
@@ -593,7 +593,7 @@ void main(void) {{
         shutil.copy(OS_BUILD / "cat.prg", sd_root / "CAT.PRG")
         shutil.copy(wr_bin, sd_root / "WRTEST.PRG")
         shutil.copy(big_bin, sd_root / "BIGAPP.PRG")
-        (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
+        (sd_root / "README.TXT").write_text("Hello from MicroRISC4 FAT32 SD card!\n", encoding="utf-8")
         sd_img = p / "mc_test.img"
         subprocess.run(
             [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
@@ -603,14 +603,14 @@ void main(void) {{
             stderr=subprocess.PIPE,
         )
 
-        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim = mr4sim.MicroRISC4Sim(core_id=0)
         os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
         os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
         os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
         os_sim.pc = 0x0100
         uart_out, bad_writes = attach_uart_and_watch(os_sim)
 
-        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim = mr4sim.MicroRISC4Sim(core_id=1)
         worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
         worker_sim.pc = 0x0100
         worker_sim._poll_stdin = lambda: None
@@ -635,7 +635,7 @@ void main(void) {{
 
         seg_ls = run_app("! LS.PRG", "README.TXT")
         seg_ps = run_app("!PS.PRG", "1    RUN    PS.PRG")
-        seg_cat = run_app("! CAT.PRG", "Hello from MiniRISC4 FAT32 SD card!")
+        seg_cat = run_app("! CAT.PRG", "Hello from MicroRISC4 FAT32 SD card!")
         seg_wr = run_app("! WRTEST.PRG", "READBACK:Userland write OK!")
         seg_cat_arg = run_app("! CAT.PRG APP.TXT", "Userland write OK!")
         seg_cat_nospace = run_app("!CAT.PRG app.txt", "Userland write OK!")
@@ -650,7 +650,7 @@ void main(void) {{
 
         assert "CAT.PRG" in seg_ls and "PS.PRG" in seg_ls and "WRTEST.PRG" in seg_ls
         assert "0    RUN    os_kernel" in seg_ps and "1    RUN    PS.PRG" in seg_ps
-        assert "Hello from MiniRISC4 FAT32 SD card!" in seg_cat
+        assert "Hello from MicroRISC4 FAT32 SD card!" in seg_cat
         assert "READBACK:Userland write OK!" in seg_wr
         assert "".join(uart_out).count("Userland write OK!") >= 2
 
@@ -745,14 +745,14 @@ def test_os_mul(_args):
             stderr=subprocess.PIPE,
         )
 
-        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim = mr4sim.MicroRISC4Sim(core_id=0)
         os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
         os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
         os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
         os_sim.pc = 0x0100
         uart_out, bad_writes = attach_uart_and_watch(os_sim)
 
-        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim = mr4sim.MicroRISC4Sim(core_id=1)
         worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
         worker_sim.pc = 0x0100
         worker_sim._poll_stdin = lambda: None
@@ -853,7 +853,7 @@ void main(void) {
         sd_root.mkdir()
         shutil.copy(OS_BUILD / "cat.prg", sd_root / "CAT.PRG")
         shutil.copy(sp_bin, sd_root / "SPAWN.PRG")
-        (sd_root / "NOTE.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
+        (sd_root / "NOTE.TXT").write_text("Hello from MicroRISC4 FAT32 SD card!\n", encoding="utf-8")
         sd_img = p / "spawn_test.img"
         subprocess.run(
             [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
@@ -863,7 +863,7 @@ void main(void) {
             stderr=subprocess.PIPE,
         )
 
-        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim = mr4sim.MicroRISC4Sim(core_id=0)
         os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
         os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
         os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
@@ -872,7 +872,7 @@ void main(void) {
 
         workers = []
         for cid in (1, 2, 3):
-            ws = mr4sim.MiniRISC4Sim(core_id=cid)
+            ws = mr4sim.MicroRISC4Sim(core_id=cid)
             ws.load_binary(str(BUILD_DIR / "worker_stub.bin"))
             ws.pc = 0x0100
             ws._poll_stdin = lambda: None
@@ -910,7 +910,7 @@ void main(void) {
             seg_now = "".join(uart_out[start:])
             if "SPAWNED:2\r\n" not in seg_now:
                 return False
-            return "Hello from MiniRISC4 FAT32 SD card!" in seg_now.replace("SPAWNED:2\r\n", "")
+            return "Hello from MicroRISC4 FAT32 SD card!" in seg_now.replace("SPAWNED:2\r\n", "")
 
         done = step_all(12000000, both_finished)
         seg = "".join(uart_out[start:])
@@ -962,7 +962,7 @@ void main(void) {
         sd_root.mkdir()
         shutil.copy(OS_BUILD / "cat.prg", sd_root / "CAT.PRG")
         shutil.copy(spin_bin, sd_root / "SPIN.PRG")
-        (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
+        (sd_root / "README.TXT").write_text("Hello from MicroRISC4 FAT32 SD card!\n", encoding="utf-8")
         sd_img = p / "kill_test.img"
         subprocess.run(
             [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
@@ -972,7 +972,7 @@ void main(void) {
             stderr=subprocess.PIPE,
         )
 
-        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim = mr4sim.MicroRISC4Sim(core_id=0)
         os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
         os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
         os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
@@ -981,7 +981,7 @@ void main(void) {
 
         workers = []
         for cid in (1, 2, 3):
-            ws = mr4sim.MiniRISC4Sim(core_id=cid)
+            ws = mr4sim.MicroRISC4Sim(core_id=cid)
             ws.load_binary(str(BUILD_DIR / "worker_stub.bin"))
             ws.pc = 0x0100
             ws._poll_stdin = lambda: None
@@ -1053,7 +1053,7 @@ void main(void) {
         procs_addr = os_sim.sym_to_addr["_procs"]
         pid1_state = procs_addr + 10
         out_cat = send_cmd("! CAT.PRG\r", max_steps=12000000)
-        assert "Hello from MiniRISC4 FAT32 SD card!" in out_cat, (
+        assert "Hello from MicroRISC4 FAT32 SD card!" in out_cat, (
             f"Worker 1 failed to run CAT.PRG after Trap 14 kill: {out_cat!r}"
         )
         assert os_sim.mem[pid1_state] == 0 and os_sim.mem[pid1_state + 1] == 0
@@ -1212,7 +1212,7 @@ void main(void) {
         sd_root = p / "sd_root"
         sd_root.mkdir()
         shutil.copy(st_bin, sd_root / "STRESS.PRG")
-        (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
+        (sd_root / "README.TXT").write_text("Hello from MicroRISC4 FAT32 SD card!\n", encoding="utf-8")
         sd_img = p / "stress_test.img"
         subprocess.run(
             [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
@@ -1237,14 +1237,14 @@ void main(void) {
 
         init_used_f1 = count_used_clusters(init_img, fat1_off)
 
-        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim = mr4sim.MicroRISC4Sim(core_id=0)
         os_sim.sd_card = mr4sim.SpiSdCard(init_img)
         os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
         os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
         os_sim.pc = 0x0100
         uart_out, bad_writes = attach_uart_and_watch(os_sim)
 
-        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim = mr4sim.MicroRISC4Sim(core_id=1)
         worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
         worker_sim.pc = 0x0100
         worker_sim._poll_stdin = lambda: None
@@ -1291,14 +1291,14 @@ void main(void) {
 # Test 10: Cooperative fibers (lib/fiber.a4 + FIBERS.PRG) on a single worker core
 # ------------------------------------------------------------------------------
 def test_os_cooperative_fibers(args):
-    os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+    os_sim = mr4sim.MicroRISC4Sim(core_id=0)
     os_sim.sd_card = mr4sim.SpiSdCard(Path(args.sd_image).read_bytes())
     os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
     os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
     os_sim.pc = 0x0100
     uart_out, bad_writes = attach_uart_and_watch(os_sim)
 
-    worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+    worker_sim = mr4sim.MicroRISC4Sim(core_id=1)
     worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
     worker_sim.pc = 0x0100
     worker_sim._poll_stdin = lambda: None
@@ -1461,7 +1461,7 @@ void main(void) {
         cwd_bin = sd_root / "CWDAPP.PRG"
         cwd_a4.write_text(cwdapp_src, encoding="utf-8")
         compile_and_assemble(cwd_a4, cwd_bin, org=0x0400, nopreamble=True, sparsebin=True)
-        (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
+        (sd_root / "README.TXT").write_text("Hello from MicroRISC4 FAT32 SD card!\n", encoding="utf-8")
         sd_img = p / "subdir_test.img"
         subprocess.run(
             [sys.executable, str(TOOLS_DIR / "mksdimage.py"), str(sd_root),
@@ -1471,14 +1471,14 @@ void main(void) {
             stderr=subprocess.PIPE,
         )
 
-        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim = mr4sim.MicroRISC4Sim(core_id=0)
         os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
         os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
         os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
         os_sim.pc = 0x0100
         uart_out, bad_writes = attach_uart_and_watch(os_sim)
 
-        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim = mr4sim.MicroRISC4Sim(core_id=1)
         worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
         worker_sim.pc = 0x0100
         worker_sim._poll_stdin = lambda: None
@@ -1514,7 +1514,7 @@ void main(void) {
         send_cmd("cd sub\r")
         assert "\r\n/DOCS/SUB\r\n" in send_cmd("pwd\r")
         assert "hello nested" in send_cmd("cat ../note.txt\r")
-        assert "Hello from MiniRISC4 FAT32 SD card!" in send_cmd("cat /README.TXT\r")
+        assert "Hello from MicroRISC4 FAT32 SD card!" in send_cmd("cat /README.TXT\r")
         assert "Wrote deep.txt" in send_cmd("write deep.txt deep ok\r")
         assert "NOTE.TXT" in send_cmd("ls /docs\r")
 
@@ -1658,7 +1658,7 @@ void main(void) {
             stderr=subprocess.PIPE,
         )
 
-        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim = mr4sim.MicroRISC4Sim(core_id=0)
         os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
         os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
         os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
@@ -1667,7 +1667,7 @@ void main(void) {
 
         workers = []
         for cid in (1, 2, 3):
-            ws = mr4sim.MiniRISC4Sim(core_id=cid)
+            ws = mr4sim.MicroRISC4Sim(core_id=cid)
             ws.load_binary(str(BUILD_DIR / "worker_stub.bin"))
             ws.pc = 0x0100
             ws._poll_stdin = lambda: None
@@ -1817,7 +1817,7 @@ void main(void) {
         sd_root = p / "sd_root"
         sd_root.mkdir()
         shutil.copy(OS_BUILD / "cat.prg", sd_root / "CAT.PRG")
-        (sd_root / "README.TXT").write_text("Hello from MiniRISC4 FAT32 SD card!\n", encoding="utf-8")
+        (sd_root / "README.TXT").write_text("Hello from MicroRISC4 FAT32 SD card!\n", encoding="utf-8")
 
         for name, src in (("ALIGNBAD", align_bad_src), ("TRAPBAD", trap5_bad_src)):
             a4 = p / f"{name.lower()}.a4"
@@ -1834,14 +1834,14 @@ void main(void) {
             stderr=subprocess.PIPE,
         )
 
-        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim = mr4sim.MicroRISC4Sim(core_id=0)
         os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
         os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
         os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
         os_sim.pc = 0x0100
         uart_out, bad_writes = attach_uart_and_watch(os_sim)
 
-        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim = mr4sim.MicroRISC4Sim(core_id=1)
         worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
         worker_sim.pc = 0x0100
         worker_sim._poll_stdin = lambda: None
@@ -1883,7 +1883,7 @@ void main(void) {
 
         # 3. Worker Core 1 cleanly runs CAT.PRG after both crashes
         out_cat = send_cmd("! CAT.PRG\r")
-        assert "Hello from MiniRISC4 FAT32 SD card!" in out_cat
+        assert "Hello from MicroRISC4 FAT32 SD card!" in out_cat
         assert os_sim.mem[pid1_state] == 0 and os_sim.mem[pid1_state + 1] == 0
         send_cmd("ps\r")
 
@@ -1980,14 +1980,14 @@ void main(void) {
             stderr=subprocess.PIPE,
         )
 
-        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim = mr4sim.MicroRISC4Sim(core_id=0)
         os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
         os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
         os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
         os_sim.pc = 0x0100
         uart_out, bad_writes = attach_uart_and_watch(os_sim)
 
-        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim = mr4sim.MicroRISC4Sim(core_id=1)
         worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
         worker_sim.pc = 0x0100
         worker_sim._poll_stdin = lambda: None
@@ -2051,14 +2051,14 @@ void main(void) {
 # Test 15: Explicit !/run PATH lookup (no implicit launch) & 4-entry arrow history
 # ------------------------------------------------------------------------------
 def test_os_path_and_history(args):
-    os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+    os_sim = mr4sim.MicroRISC4Sim(core_id=0)
     os_sim.sd_card = mr4sim.SpiSdCard(Path(args.sd_image).read_bytes())
     os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
     os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
     os_sim.pc = 0x0100
     uart_out, bad_writes = attach_uart_and_watch(os_sim)
 
-    worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+    worker_sim = mr4sim.MicroRISC4Sim(core_id=1)
     worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
     worker_sim.pc = 0x0100
     worker_sim._poll_stdin = lambda: None
@@ -2202,14 +2202,14 @@ void main(void) {
             stderr=subprocess.PIPE,
         )
 
-        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim = mr4sim.MicroRISC4Sim(core_id=0)
         os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
         os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
         os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
         os_sim.pc = 0x0100
         uart_out, bad_writes = attach_uart_and_watch(os_sim)
 
-        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim = mr4sim.MicroRISC4Sim(core_id=1)
         worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
         worker_sim.pc = 0x0100
         worker_sim._poll_stdin = lambda: None
@@ -2334,14 +2334,14 @@ void main(void) {
             stderr=subprocess.PIPE,
         )
 
-        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim = mr4sim.MicroRISC4Sim(core_id=0)
         os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
         os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
         os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
         os_sim.pc = 0x0100
         uart_out, bad_writes = attach_uart_and_watch(os_sim)
 
-        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim = mr4sim.MicroRISC4Sim(core_id=1)
         worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
         worker_sim.pc = 0x0100
         worker_sim._poll_stdin = lambda: None
@@ -2547,7 +2547,7 @@ void main(void) {
         compile_and_assemble(a4, hw_bin, hw_math=True)
 
         # 1a. Software baseline (M4R_LIB.asm)
-        sim_sw = mr4sim.MiniRISC4Sim(core_id=0)
+        sim_sw = mr4sim.MicroRISC4Sim(core_id=0)
         sim_sw.load_binary(str(sw_bin))
         sim_sw.pc = 0x0100
         uart_sw, bad_sw = attach_uart_and_watch(sim_sw)
@@ -2562,7 +2562,7 @@ void main(void) {
         assert sim_sw.mem[0x0005] == 0xFAFF
 
         # 1b. Hardware Math Accelerator (--hw-math + --enable-math)
-        sim_hw = mr4sim.MiniRISC4Sim(core_id=0)
+        sim_hw = mr4sim.MicroRISC4Sim(core_id=0)
         sim_hw.enable_math = True
         sim_hw.load_binary(str(hw_bin))
         sim_hw.pc = 0x0100
@@ -2581,7 +2581,7 @@ void main(void) {
         assert speedup >= 2.0, f"Expected >=2.0x speedup, got {speedup:.2f}x (sw={sw_cycles}, hw={hw_cycles})"
 
         # 2. Startup CPU_CAPS guard when hardware math accelerator is ABSENT
-        sim_nohw = mr4sim.MiniRISC4Sim(core_id=0)
+        sim_nohw = mr4sim.MicroRISC4Sim(core_id=0)
         sim_nohw.enable_math = False
         sim_nohw.load_binary(str(hw_bin))
         sim_nohw.pc = 0x0100
@@ -2624,14 +2624,14 @@ void main(void) {
             stderr=subprocess.PIPE,
         )
 
-        os_sim = mr4sim.MiniRISC4Sim(core_id=0)
+        os_sim = mr4sim.MicroRISC4Sim(core_id=0)
         os_sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
         os_sim.load_binary(str(OS_BUILD / "os_main.bin"))
         os_sim.load_symbols(str(OS_BUILD / "os_main.lst"))
         os_sim.pc = 0x0100
         os_uart, os_bad = attach_uart_and_watch(os_sim)
 
-        worker_sim = mr4sim.MiniRISC4Sim(core_id=1)
+        worker_sim = mr4sim.MicroRISC4Sim(core_id=1)
         worker_sim.enable_math = False
         worker_sim.enable_uart = False
         worker_sim.load_binary(str(BUILD_DIR / "worker_stub.bin"))
@@ -2680,7 +2680,7 @@ TESTS = [
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="MiniRISC4 OS & Toolchain Regression Suite")
+    parser = argparse.ArgumentParser(description="MicroRISC4 OS & Toolchain Regression Suite")
     parser.add_argument("--sd-image", default="/tmp/mr4_sd.img", help="Path to FAT32 SD image")
     parser.add_argument("--filter", default=None, help="Only run tests whose name contains this substring")
     args = parser.parse_args()
@@ -2708,7 +2708,7 @@ def main() -> int:
             failed += 1
 
     total_dt = time.monotonic() - t_start
-    print(f"\nMiniRISC4 OS Suite: {passed} passed, {failed} failed ({total_dt:.2f}s)")
+    print(f"\nMicroRISC4 OS Suite: {passed} passed, {failed} failed ({total_dt:.2f}s)")
     return 0 if failed == 0 else 1
 
 

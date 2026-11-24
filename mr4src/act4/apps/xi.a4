@@ -1,6 +1,6 @@
 // ==============================================================================
 // FILE: mr4src/act4/apps/xi.a4
-// Small vi-like text editor for MiniRISC4 / mr4os
+// Small vi-like text editor for MicroRISC4 / mr4os
 // ==============================================================================
 
 import "sys.a4";

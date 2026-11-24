@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-mksdimg.py - Build a FAT32 SD card image from a host directory for MiniRISC4.
+mksdimg.py - Build a FAT32 SD card image from a host directory for MicroRISC4.
 
 Usage:
     python3 tools/mksdimg.py <source_dir> -o <output.img> [--size-mb 16] [--spc 1]

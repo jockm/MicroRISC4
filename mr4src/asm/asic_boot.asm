@@ -1,6 +1,6 @@
 ; ==============================================================================
 ; FILE: mr4src/asm/asic_boot.asm
-; Architecture: MiniRISC4 ASIC Cold-Start Boot ROM (0x0100 - 0x02FF, <= 512w)
+; Architecture: MicroRISC4 ASIC Cold-Start Boot ROM (0x0100 - 0x02FF, <= 512w)
 ;
 ; Designed for synthesizable AsicBootRom overlaid over uninitialized on-chip
 ; SRAM (works on >= 1024-word SRAM; stacks at 0x03FF / 0x03BF, scratch at 0x0300).

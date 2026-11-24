@@ -1,10 +1,10 @@
-# MiniRISC4 OS Integration Notes
+# MicroRISC4 OS Integration Notes
 
-Unzip this archive at the root of your MiniRISC4 repository to place all new files in their target directories.
+Unzip this archive at the root of your MicroRISC4 repository to place all new files in their target directories.
 
 ## Files Included
-- `hdl/rohd/lib/spi_master.dart` — SPI Mode 0 Master peripheral (MMIO `0x0018`–`0x001A`)
-- `hdl/rohd/test/spi_master_test.dart` — ROHD loopback unit test
+- `hdl/mr4/lib/spi_master.dart` — SPI Mode 0 Master peripheral (MMIO `0x0018`–`0x001A`)
+- `hdl/mr4/test/spi_master_test.dart` — ROHD loopback unit test
 - `mr4src/asm/worker_stub.asm` — Worker Core Resident Stub (`0x0100`–`0x03FF`)
 - `mr4src/act4/os/os_main.a4` — Core 0 kernel entry, Trap 1 ISR, syscall dispatcher
 - `mr4src/act4/os/os_uart.a4` — UART I/O and packed string helpers

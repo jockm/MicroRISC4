@@ -4,7 +4,7 @@
 
 ## 1. Language Overview
 
-**ACT4** is a minimalist, high-performance systems programming language designed specifically for the 16-bit word-addressed MiniRISC4 processor architecture. Modeled after Clinton Parker's *Action!* language for the 8-bit 6502, ACT4 combines a clean C-family syntax with the raw execution speed, static variable allocation, and zero-overhead calling model of *Action!*.
+**ACT4** is a minimalist, high-performance systems programming language designed specifically for the 16-bit word-addressed MicroRISC4 processor architecture. Modeled after Clinton Parker's *Action!* language for the 8-bit 6502, ACT4 combines a clean C-family syntax with the raw execution speed, static variable allocation, and zero-overhead calling model of *Action!*.
 
 ### Architectural Fundamentals
 - **Word-Addressed Architecture**: Memory addresses correspond strictly to 16-bit words (64K words total, `0x0000` to `0xFFFF`). All pointers, offsets, and Program Counter values increment in word units.
@@ -89,7 +89,7 @@ Arguments passed to function pointers are transferred through standardized globa
 
 ## 3. Memory Map & Execution Model
 
-Compiled ACT4 binaries follow the unified MiniRISC4 memory architecture:
+Compiled ACT4 binaries follow the unified MicroRISC4 memory architecture:
 
 | Address Range | Size | Description |
 | :---: | :---: | :--- |
@@ -214,7 +214,7 @@ trap(vector, data_byte);
 
 ## 6. Strings & Byte Operations
 
-MiniRISC4 words hold two 8-bit bytes (little-endian: low byte in bits `[7:0]`, high byte in bits `[15:8]`).
+MicroRISC4 words hold two 8-bit bytes (little-endian: low byte in bits `[7:0]`, high byte in bits `[15:8]`).
 
 - **String Literals**: String constants (`"Hello\r\n"`) are emitted into the data segment as packed `.asciz` sequences.
 - **`getbyte(base, index)`**: Retrieves the 8-bit unsigned byte at byte index `index` from word array/pointer `base`.
@@ -235,12 +235,12 @@ void print_str(u16 *str) {
 
 ---
 
-## 7. Writing Efficient Code on MiniRISC4
+## 7. Writing Efficient Code on MicroRISC4
 
-Because MiniRISC4 is an ultra-minimalist architecture lacking a hardware division unit, hardware multiplier, and condition code flags, writing high-performance code in ACT4 requires understanding its low-level cost model.
+Because MicroRISC4 is an ultra-minimalist architecture lacking a hardware division unit, hardware multiplier, and condition code flags, writing high-performance code in ACT4 requires understanding its low-level cost model.
 
 ### 7.1 Relational Comparisons Cost Model
-MiniRISC4 branches strictly via `JMP.Z` (zero) and `JMP.M` (sign bit is 1). It does not have dedicated greater-than or less-than condition flags.
+MicroRISC4 branches strictly via `JMP.Z` (zero) and `JMP.M` (sign bit is 1). It does not have dedicated greater-than or less-than condition flags.
 
 1. **Tests for Zero (`== 0` and `!= 0`) are Single Instructions**:
    Testing against zero requires no arithmetic. The compiler loads the operand and jumps directly:
@@ -338,7 +338,7 @@ python3 tools/act4c.py [options] <input.a4>
 
 ### Build Pipeline Example
 ```bash
-# 1. Compile ACT4 to MiniRISC4 Assembly
+# 1. Compile ACT4 to MicroRISC4 Assembly
 python3 tools/act4c.py -I lib mr4src/act4/monitor.a4 -o build/monitor.asm
 
 # 2. Assemble to Verilog Hex Image and Listing

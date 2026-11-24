@@ -1,14 +1,14 @@
-# MiniRISC4 Operating System: Project Roadmap & Developer Directives
+# MicroRISC4 Operating System: Project Roadmap & Developer Directives
 
 ## 1. Executive Summary & Project Vision
 
-The **MiniRISC4 Operating System** is a lightweight 16-bit multitasking operating system designed for the custom MiniRISC4 processor architecture. The ecosystem comprises:
+The **MicroRISC4 Operating System** is a lightweight 16-bit multitasking operating system designed for the custom MicroRISC4 processor architecture. The ecosystem comprises:
 - **Compiler & Toolchain (`tools/act4c.py`, `tools/mr4asm.py`):** The ACT4 language compiler, assembler, and binary toolchain.
 - **Simulator (`mr4sim.py`):** Cycle-accurate simulator for execution, debugging, memory inspection, and I/O tracing.
 - **Core OS Kernel (`mr4src/act4/os/`):** Process table management, scheduler, trap handlers, memory buffers, and FAT32 filesystem stack.
 - **Userland Applications (`mr4src/act4/apps/`):** Shell, file system utilities (`ls`, `cat`), and user space binaries executing via system call interface.
 
-The ultimate objective of this project is a fully functional, stable operating system environment capable of booting on the MiniRISC4 hardware/simulator, mounting a FAT32 storage volume, running an interactive shell, managing process lifecycle (context switching, scheduling, multitasking, IPC), and executing userland programs.
+The ultimate objective of this project is a fully functional, stable operating system environment capable of booting on the MicroRISC4 hardware/simulator, mounting a FAT32 storage volume, running an interactive shell, managing process lifecycle (context switching, scheduling, multitasking, IPC), and executing userland programs.
 
 ---
 
@@ -21,7 +21,7 @@ The ultimate objective of this project is a fully functional, stable operating s
 +-------------------------------------------------------------------+
                                   | Syscall Interface (SVC / TRAP)
 +-------------------------------------------------------------------+
-|                        MiniRISC4 OS Kernel                        |
+|                        MicroRISC4 OS Kernel                        |
 |  +--------------------+  +------------------+  +---------------+  |
 |  | Process Scheduler  |  | Memory & Buffers |  | Syscall Engine|  |
 |  | (ProcEntry, PCBs)  |  | (_sys_buf, Heap) |  | (sys_ent)     |  |
@@ -33,7 +33,7 @@ The ultimate objective of this project is a fully functional, stable operating s
 +-------------------------------------------------------------------+
                                   | Hardware Abstraction / Assembly
 +-------------------------------------------------------------------+
-|                       MiniRISC4 Simulator / HW                    |
+|                       MicroRISC4 Simulator / HW                    |
 |                (Registers R0-R15, Memory, Serial, SD)             |
 +-------------------------------------------------------------------+
 ```
@@ -78,7 +78,7 @@ The ultimate objective of this project is a fully functional, stable operating s
 
 ---
 
-## 4. Operational Directives for the Assistant (MiniRISC4 Persona)
+## 4. Operational Directives for the Assistant (MicroRISC4 Persona)
 
 To ensure consistent progress, high-quality code modification, and rapid bug resolution, adhere to the following developer directives:
 
@@ -100,8 +100,8 @@ To ensure consistent progress, high-quality code modification, and rapid bug res
 - **Context Verification:** If context is missing, truncated, or ambiguous, explicitly inspect or request the relevant code section before proposing modifications.
 
 ### 3. Architecture & Code Generation Rules
-- **16-Bit Word Orientation:** Maintain awareness of MiniRISC4 16-bit word alignment and pointer addressing rules.
-- **Calling Convention:** Ensure function parameters, return values, and register saving conform strictly to the MiniRISC4 ABI.
+- **16-Bit Word Orientation:** Maintain awareness of MicroRISC4 16-bit word alignment and pointer addressing rules.
+- **Calling Convention:** Ensure function parameters, return values, and register saving conform strictly to the MicroRISC4 ABI.
 - **Data Allocation:** Verify that array sizes declared in ACT4 map directly to allocated `.word` buffers in generated assembly.
 
 ### 4. Verification Routine

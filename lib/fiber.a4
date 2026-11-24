@@ -1,6 +1,6 @@
 // ==============================================================================
 // FILE: lib/fiber.a4
-// Lightweight Cooperative Fiber (Coroutine) Scheduler for MiniRISC4
+// Lightweight Cooperative Fiber (Coroutine) Scheduler for MicroRISC4
 //
 // Design:
 //   - Fiber 0 is the caller's main context (uses default hardware RSP/ASP).

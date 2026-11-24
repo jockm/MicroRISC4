@@ -20,11 +20,11 @@ show_help() {
     cat <<EOF
 Usage: $PROG_NAME [OPTIONS] <source_file.asm>
 
-Assembles a MiniRISC4 source file, automatically placing the resulting binary
+Assembles a MicroRISC4 source file, automatically placing the resulting binary
 and listing (.lst) into a 'build' directory adjacent to the source file.
 
 Positional Arguments:
-  <source_file.asm>     Path to the MiniRISC4 assembly file to assemble
+  <source_file.asm>     Path to the MicroRISC4 assembly file to assemble
 
 Supported mr4asm.py Options:
   -I, -i <dir>          Add directory to search path for .include files

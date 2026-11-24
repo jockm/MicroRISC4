@@ -1,6 +1,6 @@
 ; ==============================================================================
 ; FILE: mr4riscv/decode.asm
-; Architecture: MiniRISC4 Heterogeneous RV32IM Pipeline
+; Architecture: MicroRISC4 Heterogeneous RV32IM Pipeline
 ; Component: Core 1 - Instruction Decode, Register File, and Issue Stage
 ; Target: Lattice ECP5 FPGA (ULX3S) / Verilog-2001 & Intel ROHD (Dart)
 ; Description:

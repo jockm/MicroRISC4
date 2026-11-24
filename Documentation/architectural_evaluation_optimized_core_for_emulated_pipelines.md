@@ -2,26 +2,26 @@
 
 ## 1. Executive Summary
 
-The `mr4riscv` subproject explores decomposing a standard 32-bit RISC-V (RV32IM) CPU pipeline into firmware-driven worker cores. The current ROHD `Mr4RiscvTop` instantiates five MiniRISC4 cores but does not connect their data or trap interfaces, so it is not yet a functioning communicating pipeline. The low-memory FIFO behavior described in earlier documentation is also not implemented by `CpuCore`.
+The `mr4riscv` subproject explores decomposing a standard 32-bit RISC-V (RV32IM) CPU pipeline into firmware-driven worker cores. The current ROHD `Mr4RiscvTop` instantiates five MicroRISC4 cores but does not connect their data or trap interfaces, so it is not yet a functioning communicating pipeline. The low-memory FIFO behavior described in earlier documentation is also not implemented by `CpuCore`.
 
-While this decoupled architecture offers extreme post-synthesis flexibility—allowing pipeline behaviors, hazard resolution, caching policies, and instruction extensions to be modified purely in assembly—the 16-bit MiniRISC4 processing element imposes severe performance penalties when emulating a 32-bit target ISA. 
+While this decoupled architecture offers extreme post-synthesis flexibility—allowing pipeline behaviors, hazard resolution, caching policies, and instruction extensions to be modified purely in assembly—the 16-bit MicroRISC4 processing element imposes severe performance penalties when emulating a 32-bit target ISA. 
 
-This document evaluates the microarchitectural bottlenecks observed in MiniRISC4 and details the architectural requirements for an optimal processing element custom-tailored for firmware-defined hardware emulation.
+This document evaluates the microarchitectural bottlenecks observed in MicroRISC4 and details the architectural requirements for an optimal processing element custom-tailored for firmware-defined hardware emulation.
 
 ---
 
-## 2. Microarchitectural Bottlenecks in MiniRISC4
+## 2. Microarchitectural Bottlenecks in MicroRISC4
 
 Empirical analysis of the `mr4riscv` stage firmware (`fetch.asm`, `decode.asm`, `execute.asm`, `mem_wb.asm`) reveals three primary sources of overhead:
 
 ### 2.1 16-Bit Word-Addressed Datapath Mismatch
-Because MiniRISC4 is natively 16-bit word-addressed, every 32-bit RISC-V state component requires paired registers or memory words:
+Because MicroRISC4 is natively 16-bit word-addressed, every 32-bit RISC-V state component requires paired registers or memory words:
 * **Register File Overhead**: Storing 32 architectural registers ($x0$–$x31$) requires 64 words of Block RAM and paired reads/writes for every operand.
 * **Arithmetic Chaining**: Basic 32-bit operations (`ADD`, `SUB`, `AND`, `OR`, `XOR`) require double-word operations, carry/borrow detection sequences, and multiple branches to resolve overflow into the high word.
 * **Byte/Word Translation**: Mapping 32-bit byte addresses to 16-bit word-addressed memory requires continuous shifting (`addr >> 1`), bit-0 testing, and byte-swapping macros (`BYTE_GET_LO`, `BYTE_GET_HI`).
 
 ### 2.2 Lack of Single-Cycle Bitfield Manipulation
-The RISC-V encoding relies on scattered bitfields (`opcode`, `rd`, `funct3`, `rs1`, `rs2`, `funct7`, and immediate formats `I`, `S`, `B`, `U`, `J`). Because MiniRISC4 only supports single-bit shifts (`SHIFT.R`, `SHIFT.L`):
+The RISC-V encoding relies on scattered bitfields (`opcode`, `rd`, `funct3`, `rs1`, `rs2`, `funct7`, and immediate formats `I`, `S`, `B`, `U`, `J`). Because MicroRISC4 only supports single-bit shifts (`SHIFT.R`, `SHIFT.L`):
 * Extracting a 5-bit register specifier or 3-bit `funct3` requires 4 to 12 consecutive shift instructions followed by a mask.
 * Immediate unpacking and sign-extension require dozens of cycles per instruction in `decode.asm`.
 * As a result, the instruction decode stage requires **~25 to 35 clock cycles** per RV32 instruction, forming the critical throughput bottleneck of the pipeline.
@@ -86,7 +86,7 @@ To maximize throughput while retaining the software flexibility of a multi-core 
 
 ## 4. Quantitative Performance Comparison
 
-| Metric | Monolithic Verilog Core (e.g. VexRiscv) | Multi-Core on MiniRISC4 (`mr4riscv`) | Multi-Core on Optimized Emulation Core |
+| Metric | Monolithic Verilog Core (e.g. VexRiscv) | Multi-Core on MicroRISC4 (`mr4riscv`) | Multi-Core on Optimized Emulation Core |
 | :--- | :--- | :--- | :--- |
 | **Datapath Width** | 32-bit | 16-bit | 32-bit |
 | **Decode Latency (Cycles / Inst)** | 1 cycle (Hardware logic) | 25 – 35 cycles (Shift/mask software loop) | 3 – 5 cycles (BEXTR + Jump Table) |
@@ -108,4 +108,4 @@ Architectures utilizing similar concepts include:
 
 ## 6. Conclusion
 
-The "firmware-as-pipeline" paradigm pioneered in `mr4riscv` represents a compelling middle ground between fixed ASIC/RTL hardware and traditional software interpreters. While MiniRISC4 proves the viability of the multi-core decoupling concept, transitioning to a processing element with a **native 32-bit datapath**, **single-cycle bitfield extract/insert**, and **channel-mapped register I/O** would improve system throughput by approximately **7× to 10×**, bringing firmware-emulated execution within practical range of native hardware cores.
+The "firmware-as-pipeline" paradigm pioneered in `mr4riscv` represents a compelling middle ground between fixed ASIC/RTL hardware and traditional software interpreters. While MicroRISC4 proves the viability of the multi-core decoupling concept, transitioning to a processing element with a **native 32-bit datapath**, **single-cycle bitfield extract/insert**, and **channel-mapped register I/O** would improve system throughput by approximately **7× to 10×**, bringing firmware-emulated execution within practical range of native hardware cores.

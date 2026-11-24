@@ -1,6 +1,6 @@
 ; ==============================================================================
 ; FILE: mr4riscv/execute.asm
-; Architecture: MiniRISC4 Heterogeneous RV32IM Pipeline
+; Architecture: MicroRISC4 Heterogeneous RV32IM Pipeline
 ; Component: Core 2 - Execution, ALU, Branch, and Math Accelerator Stage
 ; Target: Lattice ECP5 FPGA (ULX3S) / Verilog-2001 & Intel ROHD (Dart)
 ; ==============================================================================

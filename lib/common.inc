@@ -73,7 +73,7 @@
 
 ; ==============================================================================
 ; FILE: lib/common.inc
-; Architecture: MiniRISC4 16-Bit Word-Addressed Processor
+; Architecture: MicroRISC4 16-Bit Word-Addressed Processor
 ; Target Hardware: Lattice ECP5 FPGA (ULX3S) / Verilog Core
 ; Description:
 ;   Standard Architectural Macro Definitions and System Abstractions.

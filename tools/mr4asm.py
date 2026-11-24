@@ -2,10 +2,10 @@
 """
 ================================================================================
 FILE: tools/mr4asm.py
-Architecture: MiniRISC4 16-Bit Word-Addressed Processor
+Architecture: MicroRISC4 16-Bit Word-Addressed Processor
 Target Hardware: Lattice ECP5 FPGA (ULX3S) / Verilog Core
 Description:
-  Two-pass macro assembler for the MiniRISC4 architecture.
+  Two-pass macro assembler for the MicroRISC4 architecture.
 
 Features:
   - 16-Bit Word Addressing: Memory space 0x0000 to 0xFFFF (64K words / 128 KB).
@@ -898,7 +898,7 @@ def write_listing(filename: str, assembler: Assembler):
 
     lines_output = []
     lines_output.append("; =============================================================================")
-    lines_output.append("; MiniRISC4 Assembler Listing")
+    lines_output.append("; MicroRISC4 Assembler Listing")
     lines_output.append("; ADDR    SOURCE LINE                                ; [HEX]")
     lines_output.append("; =============================================================================")
 
@@ -969,7 +969,7 @@ def write_binary(filename: str, memory: Dict[int, int], mode: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="MiniRISC4 Macro Assembler (tools/mr4asm.py)",
+        description="MicroRISC4 Macro Assembler (tools/mr4asm.py)",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("inputs", nargs="+", help="Source assembly file(s) (.asm, .inc)")

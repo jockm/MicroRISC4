@@ -342,12 +342,12 @@ MuL uses bounded static storage:
 
 | Resource | Limit |
 | --- | ---: |
-| Script or interactive input buffer | 4094 bytes |
+| Script or interactive input buffer | 8192 bytes |
 | Lines per script | 128 |
 | Bytes per line | 127 |
-| Tokens per command | 12 |
+| Tokens per command | 20 |
 | Bytes per token | 127 |
-| Variables | 16 |
+| Variables | 500 |
 | Characters per variable name | 23 |
 | Bytes per variable value | 127 |
 | Nested `if`/`while` blocks | 16 |
@@ -361,7 +361,11 @@ immediately.
 
 ## Implementation Notes
 
-MuL is a small Picol-inspired interpreter, not a full Picol port. In particular,
+Mul is not a big advanced language, it is small, relatively primative, and hopefully a placeholder
+before something better comes along. It is inspired by the TCL inspired language Picol by Salvatore Sanfilippo (https://github.com/antirez/picol), and released under the BSD-2-Clause license. As is
+the MuL interpreter.
+
+That being said it is not a full port of Picol. In particular,
 it uses `end` for blocks and does not implement user-defined procedures or
 command substitution. The interpreter is implemented as an ACT4 userland
 program and packaged as `MUL.PRG`.

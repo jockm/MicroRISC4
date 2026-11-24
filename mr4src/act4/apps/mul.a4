@@ -6,28 +6,37 @@
 
 import "sys.a4";
 
-const u16 MUL_SOURCE_BYTES = 4096;
-const u16 MUL_MAX_LINES = 128;
-const u16 MUL_LINE_BYTES = 128;
-const u16 MUL_MAX_TOKENS = 12;
-const u16 MUL_TOKEN_BYTES = 128;
-const u16 MUL_MAX_VARS = 16;
-const u16 MUL_NAME_BYTES = 24;
-const u16 MUL_VALUE_BYTES = 128;
-const u16 MUL_MAX_BLOCKS = 16;
-const u16 MUL_MAX_LOOPS = 8;
+const u16 MUL_SOURCE_BYTES = 8192; // Maximum script/source buffer size, in bytes. (WAS: 4096)
+const u16 MUL_MAX_LINES = 128; // Maximum number of lines in one source or interactive script.
+const u16 MUL_LINE_BYTES = 128; // Maximum size of the current line, in bytes.
+const u16 MUL_MAX_TOKENS = 20; // Maximum number of tokens in one command. (WAS: 12)
+const u16 MUL_TOKEN_BYTES = 128; // Maximum size of one command token, in bytes.
+const u16 MUL_MAX_VARS = 500; // Maximum number of named scalar variables. (WAS: 16)
+const u16 MUL_NAME_BYTES = 24; // Maximum variable-name size, in bytes.
+const u16 MUL_VALUE_BYTES = 128; // Maximum variable-value size, in bytes.
+const u16 MUL_MAX_BLOCKS = 16; // Maximum combined if/while block nesting depth.
+const u16 MUL_MAX_LOOPS = 8; // Maximum active while-loop nesting depth.
+const u16 MUL_READ_BYTES = 128; // File-read transfer buffer size, in bytes.
+const u16 MUL_ARG_BYTES = 64; // Startup argument buffer size, in bytes.
+const u16 MUL_CWD_BYTES = 64; // Current-directory path buffer size, in bytes.
+const u16 MUL_WRITE_BYTES = 128; // File-write transfer buffer size, in bytes.
+const u16 MUL_EXPR_STACK_ENTRIES = 16; // Expression value/operator stack depth.
+const u16 MUL_NUMBER_DIGITS = 5; // Maximum digits needed to format an unsigned decimal number.
+const u16 MUL_VAR_NAMES_WORDS = MUL_MAX_VARS * (MUL_NAME_BYTES >> 1); // Packed variable-name array size, in words.
+const u16 MUL_VAR_VALUES_WORDS = MUL_MAX_VARS * (MUL_VALUE_BYTES >> 1); // Packed variable-value array size, in words.
+const u16 MUL_TOKEN_DATA_WORDS = MUL_MAX_TOKENS * (MUL_TOKEN_BYTES >> 1); // Packed token array size, in words.
 
 u16 mul_source[MUL_SOURCE_BYTES >> 1];
-u16 mul_read_buf[64];
+u16 mul_read_buf[MUL_READ_BYTES >> 1];
 u16 mul_line[MUL_LINE_BYTES >> 1];
-u16 mul_args[32];
-u16 mul_argv_raw[32];
-u16 mul_cwd[32];
-u16 mul_write_buf[64];
+u16 mul_args[MUL_ARG_BYTES >> 1];
+u16 mul_argv_raw[MUL_ARG_BYTES >> 1];
+u16 mul_cwd[MUL_CWD_BYTES >> 1];
+u16 mul_write_buf[MUL_WRITE_BYTES >> 1];
 u16 mul_var_used[MUL_MAX_VARS];
-u16 mul_var_names[MUL_MAX_VARS * (MUL_NAME_BYTES >> 1)];
-u16 mul_var_values[MUL_MAX_VARS * (MUL_VALUE_BYTES >> 1)];
-u16 mul_token_data[MUL_MAX_TOKENS * MUL_TOKEN_BYTES >> 1];
+u16 mul_var_names[MUL_VAR_NAMES_WORDS];
+u16 mul_var_values[MUL_VAR_VALUES_WORDS];
+u16 mul_token_data[MUL_TOKEN_DATA_WORDS];
 u16 mul_token_len[MUL_MAX_TOKENS];
 u16 mul_line_start[MUL_MAX_LINES];
 u16 mul_line_len[MUL_MAX_LINES];
@@ -38,12 +47,12 @@ u16 mul_block_stack[MUL_MAX_BLOCKS];
 u16 mul_block_stack_kind[MUL_MAX_BLOCKS];
 u16 mul_loop_open[MUL_MAX_LOOPS];
 u16 mul_loop_end[MUL_MAX_LOOPS];
-u16 mul_expr_values[16];
-u16 mul_expr_ops[16];
+u16 mul_expr_values[MUL_EXPR_STACK_ENTRIES];
+u16 mul_expr_ops[MUL_EXPR_STACK_ENTRIES];
 u16 mul_expr_buf[MUL_TOKEN_BYTES >> 1];
 u16 mul_name_tmp[MUL_NAME_BYTES >> 1];
 u16 mul_value_tmp[MUL_VALUE_BYTES >> 1];
-u16 mul_number_digits[5];
+u16 mul_number_digits[MUL_NUMBER_DIGITS];
 DirEntry mul_entry;
 ProcEntry mul_proc;
 

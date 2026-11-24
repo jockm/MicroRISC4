@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-REM This script is used to set up the environment for building and testing Particle on Windows.
+REM This script is used to set up the environment for building and testing MicroRISC4 on Windows.
 REM Git Bash and GnuWin32 are expected in their default locations; LLVM and Dart can be found via WinGet.
 
 set "BASH_EXE=C:\Program Files\Git\bin\bash.exe"

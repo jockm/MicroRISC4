@@ -161,6 +161,17 @@ not need to clone or compile OpenROAD natively.
    docker pull openroad/orfs:latest
    ```
 
+   > **Windows OpenSSH note:** If you connect to your Windows machine over SSH
+   > and `docker pull` / `docker run` fails with
+   > `A specified logon session does not exist`, Windows Credential Manager is
+   > unavailable in non-interactive SSH sessions. Disable the Windows credential
+   > helper for Docker Hub in `%USERPROFILE%\.docker\config.json` (public images
+   > pull anonymously):
+   >
+   > ```bat
+   > python -c "import json, os; p=os.path.expanduser('~/.docker/config.json'); d=json.load(open(p)); d.pop('credsStore', None); d['credHelpers']={'https://index.docker.io/v1/': ''}; json.dump(d, open(p,'w'), indent=2)"
+   > ```
+
 ### macOS
 
 Choose either **Docker Desktop** (GUI) or **Colima** (lightweight open-source

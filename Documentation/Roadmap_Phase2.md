@@ -118,9 +118,12 @@ Before writing RTL or compiler code, Phase 2 targets the **four measured bottlen
   - Added `make generate-asic` and `make asic-check` to `Makefile` (enforcing zero `EHXPLLL`/`ODDRX1F`/`ram_style`/`syn_useioff`/`$readmemh` + Yosys `read_verilog -sv -DSYNTHESIS; hierarchy -check -top mr4_asic_top; proc; opt; check -assert; stat`).
   - Fixed `CpuCore.rxPop` gating for 1-cycle ASIC SRAM (`memReadLatency == 1`) caught by Verilator UART echo verification.
   - Verified **42/42 `make test-rohd` PASS** (including `asic_top_test.dart`), **`make asic-check` PASS** (`0` errors, `1 × mr4_sram_dp_2048x16` macro preserved, zero SRAM flop explosion), and **Verilator `mr4_asic_top` cold-boot simulation PASS** (`MR4 ASIC v0.1 OK`, SRAM + Math self-test + live UART echo `!Z`, `0` errors).
-- [ ] **D.3 ORFS Configuration, Full SDC Constraints & Public-PDK Dry Run**
-  - Create `asic/mr4/config.mk` and complete `asic/mr4/constraint.sdc` (clock period, uncertainty, I/O delays, loads — zero unconstrained paths).
-  - Run an end-to-end OpenROAD-flow-scripts RTL-to-GDS dry run on a public reference PDK (e.g., ASAP7 / Nangate45 / Sky130) for a single-core `mr4_asic_top` and record area, power, setup/hold slack, and maximum clock frequency.
+- [x] **D.3 ORFS Configuration, Full SDC Constraints & Public-PDK Dry Run**
+  - Created `asic/mr4/config.mk` (`nangate45` default + `asap7`/`sky130hd`/`ihp-sg13g2` tuning, `SYNTH_MEMORY_MAX_BITS=16384` for standalone flop-RAM dry runs, and foundry `MR4_SRAM_LEFS`/`LIBS`/`GDS` macro hooks), complete `asic/mr4/constraint.sdc` (separated `-setup`/`-hold` clock uncertainty, clock transition, min/max I/O delays, input transition, and output loads — zero unconstrained paths), cross-platform Docker-first `make asic-flow` (`openroad/orfs:latest`), and adapted root `GettingStarted.md` with Windows/macOS/Linux Docker + ORFS setup.
+  - Verified **end-to-end OpenROAD-flow-scripts RTL-to-GDSII on Nangate45** (`mr4_asic_top`, 1024w standalone flop RAM + 512w `AsicBootRom` + 4-stage `CpuCore` + `Uart`, `100 MHz` target) — **`6_final.gds` (64 MB)**, `Global output passed lec test`, **`0` flow errors**, **`0` unconstrained paths**:
+    - **Timing & $F_{\max}$:** **`309.0 MHz`** achieved $F_{\max}$ (`WNS = 0.00 ns`, `TNS = 0.00 ns`, **worst setup slack `+6.76 ns` MET**, **worst hold slack `+0.032 ns` MET**, `0` setup/hold/slew/fanout violations).
+    - **Area:** **`139,351 µm²`** (`0.139 mm²` stdcell area, `64,208` stdcells at `40.6%` utilization; `0.349 mm²` die area, ~94% of which is the standalone 1024×16 flop RAM that collapses to one hard macro with foundry SRAM).
+    - **Power & PDN (100 MHz, 1.10 V):** **`18.03 mW`** total (`11.92 mW` internal, `3.67 mW` switching, `2.44 mW` leakage); **0.08% VDD (`0.92 mV`) / 0.05% VSS (`0.52 mV`)** worst-case IR drop (100% connected).
 - [ ] **D.4 Hierarchical Multi-Core Tile Macro (`Mr4Tile`) for Flat-Frequency ASIC Scaling**
   - Harden a single reusable `Mr4Tile` (`CpuCore` + SRAM + I/D Cache + `NocRouterNi`) and verify a 4-tile / 8-tile tiled chip floorplan in ORFS with flat $F_{\max}$ across core counts.
 

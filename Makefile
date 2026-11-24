@@ -101,7 +101,7 @@ SIM_PROGRAM    ?= $(BUILD_DIR)/monitor.bin
         test test-rohd sim debug \
         generate generate-ulx3s ulx3s-bit ulx3s-mr4os ulx3s-timing ulx3s-prog ulx3s-flash ulx3s-term \
         generate-asic asic-check asic-flow \
-        generate-asic-tile asic-tile-check asic-tile-flow asic-quad-flow \
+        generate-asic-tile asic-tile-check asic-tile-flow asic-quad-flow asic-clean \
         dot-clean clean
 
 # ------------------------------------------------------------------------------
@@ -142,6 +142,7 @@ help:
 	@echo "  make asic-tile-check  - Run Yosys structural preflight on mr4_tile and hierarchical mr4_quad_top"
 	@echo "  make asic-tile-flow   - Harden 1x mr4_tile macro & export LEF/LIB/GDS abstracts via ORFS Docker"
 	@echo "  make asic-quad-flow   - Assemble 4-tile mr4_quad_top chip from hardened mr4_tile macro via ORFS Docker"
+	@echo "  make asic-clean       - Clean cached ORFS outputs (ASIC_PLATFORM=nangate45|asap7|all, optional ASIC_DESIGN=...)"
 	@echo "  make dot-clean        - Remove macOS ._ metadata files (where dot_clean exists)"
 	@echo "  make clean            - Remove $(BUILD_DIR)/ and generated SV/bitstream artifacts"
 	@echo "  make install-hooks    - Install the project's git hooks (tools/git-hooks) into this clone"
@@ -461,6 +462,13 @@ asic-quad-flow:
 	@if [ ! -f "$(ASIC_TILE_BLD)/$(ASIC_QUAD_TOP).sv" ]; then \
 		"$(MAKE)" generate-asic-tile; \
 	fi
+	@TILE_LEF="$(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/mr4_tile/base/mr4_tile.lef"; \
+	QUAD_FP="$(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/$(ASIC_QUAD_TOP)/base/2_1_floorplan.odb"; \
+	if [ -f "$$QUAD_FP" ] && [ "$$TILE_LEF" -nt "$$QUAD_FP" ]; then \
+		echo "==> Hardened mr4_tile.lef is newer than $(ASIC_QUAD_TOP) floorplan; clearing stale $(ASIC_QUAD_TOP) stages..."; \
+		rm -rf "$(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/$(ASIC_QUAD_TOP)" \
+		       "$(ASIC_BLD)/orfs/objects/$(ASIC_PLATFORM)/$(ASIC_QUAD_TOP)"; \
+	fi
 	@if [ "$(ORFS_USE_DOCKER)" = "1" ]; then \
 		command -v docker >/dev/null 2>&1 || { \
 			echo "[FAIL] docker not found in PATH. See GettingStarted.md for Docker + ORFS setup."; exit 1; \
@@ -482,6 +490,31 @@ asic-quad-flow:
 		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4_quad/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" $(ORFS_TARGET)'; \
 	fi
 	@echo "==> Hierarchical 4-tile $(ASIC_QUAD_TOP) GDSII ready under: $(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/$(ASIC_QUAD_TOP)/base/"
+	@$(DOT_CLEAN_CMD)
+
+# Clean cached ORFS outputs so config.mk / PDN / routing-layer edits rebuild cleanly.
+# Examples:
+#   make asic-clean                                   # cleans nangate45 only
+#   make asic-clean ASIC_DESIGN=mr4_tile              # cleans nangate45/mr4_tile only
+#   make asic-clean ASIC_PLATFORM=asap7               # cleans asap7 only
+#   make asic-clean ASIC_PLATFORM=all                 # cleans all ORFS platforms
+asic-clean:
+	@if [ "$(ASIC_PLATFORM)" = "all" ]; then \
+		echo "==> Removing all cached ORFS outputs ($(ASIC_BLD)/orfs)..."; \
+		rm -rf "$(ASIC_BLD)/orfs"; \
+	elif [ -n "$(ASIC_DESIGN)" ]; then \
+		echo "==> Removing cached ORFS outputs for $(ASIC_PLATFORM)/$(ASIC_DESIGN)..."; \
+		rm -rf "$(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/$(ASIC_DESIGN)" \
+		       "$(ASIC_BLD)/orfs/objects/$(ASIC_PLATFORM)/$(ASIC_DESIGN)" \
+		       "$(ASIC_BLD)/orfs/logs/$(ASIC_PLATFORM)/$(ASIC_DESIGN)" \
+		       "$(ASIC_BLD)/orfs/reports/$(ASIC_PLATFORM)/$(ASIC_DESIGN)"; \
+	else \
+		echo "==> Removing cached ORFS outputs for platform $(ASIC_PLATFORM)..."; \
+		rm -rf "$(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)" \
+		       "$(ASIC_BLD)/orfs/objects/$(ASIC_PLATFORM)" \
+		       "$(ASIC_BLD)/orfs/logs/$(ASIC_PLATFORM)" \
+		       "$(ASIC_BLD)/orfs/reports/$(ASIC_PLATFORM)"; \
+	fi
 	@$(DOT_CLEAN_CMD)
 
 # ------------------------------------------------------------------------------

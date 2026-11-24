@@ -87,14 +87,14 @@ make ulx3s-timing
 
 ## 3. Architecture Vision & Target Baseline
 
-- [ ] **Scalable Multi-Core / Heterogeneous Architecture (`nocCores = 3..4` -> up to 255 Cores):**
-  - Independent MiniRISC4 cores with localized `memWords` communicating over ring/mesh NoC.
+- [x] **Scalable Multi-Core / Heterogeneous Architecture (`nocCores = 3..4` -> up to 255 Cores):**
+  - Independent MiniRISC4 cores with localized `memWords` communicating over ring/mesh NoC (4-core `4×2K` + Lean Ring NoC + shared SDRAM hardware-verified on ULX3S-85F).
 - [x] **Internal Memory & Caches (`memWords`):**
   - Local SRAM (`2048` words per worker core) backed by I-Cache/D-Cache and ULX3S SDRAM controller rather than monolithic 64k BRAM per core.
 - [x] **True Pipelined Execution & High Clock Speed (`>100 MHz`):**
   - Eliminate multi-cycle BRAM read mux bottlenecks to allow `nextpnr` to pass timing above 100 MHz.
-- [ ] **Verified End-to-End I/O on Hardware:**
-  - Robust 3 Mbaud bidirectional UART, cross-traps, and hardware debugging capabilities.
+- [x] **Verified End-to-End I/O on Hardware:**
+  - Robust 3 Mbaud bidirectional UART, hardware Trap 14 cross-traps, Lean Ring multi-word FIFOs, and concurrent 4-core ULX3S SDRAM partitions verified on ULX3S-85F silicon.
 
 ---
 
@@ -113,7 +113,7 @@ make ulx3s-timing
 - [x] 2K local BRAM + BRAM I/D Cache + ULX3S SDRAM backing storage (`ULX3S_SDRAM_CACHE=1`, `ULX3S_MEM_WORDS=2048`) with transparent per-core 64K-word non-overlapping SDRAM partitions `{coreId[7:0], addr[15:0]}`, `ODDRX1F` 180° `sdram_clk` + `PosedgeIobReg16` (`16/16 IOLOGIC`) true JEDEC `CL=2` DQ capture + 120 µs JEDEC init wait, and hardware D-write → I-invalidate + I-miss snoop-clean coherency — **hardware-verified bit-perfect on ULX3S-85F** (all 16 DQ pins, 8-word burst alignment, stack eviction, multi-row addressing): **108.83 MHz** (`4 DP16KD` vs `64 DP16KD` — 16× BRAM reduction, `2008 LUT4`, `844 FF`, `16 DPR16X4`, `17 IOLOGIC`) for 1-core; **93.29 MHz** (`16 DP16KD`, `8781 LUT4`, `3232 FF`, `80 DPR16X4`, `17 IOLOGIC`) for 4-core + NoC + shared SDRAM.
 
 ### In Progress / Pending Verification
-- [ ] Hardware multi-core IPC cross-trap validation and long-duration ULX3S-85F stress testing (Priority 5, Items 2–3).
+- [ ] Long-duration ULX3S-85F hardware stress testing (Priority 5, Item 3).
 
 ---
 
@@ -144,5 +144,5 @@ make ulx3s-timing
 
 ### Priority 5: Full System Verification
 - [x] Run full software regression suite: `make apps` (PASS), `make test-rohd` (29/29 PASS), `make os-test` (16/16 PASS; `os_mul` temporarily disabled pending compiler BSS zero-trimming, `MUL.PRG`/`XI.PRG` retained in SD image).
-- [ ] Validate multi-core inter-processor communication (IPC) via cross-traps on hardware.
+- [x] Validate multi-core inter-processor communication (IPC) via cross-traps on hardware (`mr4src/asm/ipc_hw_master.asm` + `mr4src/asm/ipc_hw_worker.asm` on `ULX3S_NOC_CORES=4 ULX3S_SDRAM_CACHE=1`: **100% PASS on ULX3S-85F silicon** — `NOC_INFO=1004`, 7/7 hardware Trap 14 doorbells, 8-word RX FIFO bursts with ADD checksums `8FDC`/`17DC`/`9FDC`, full `0->1->2->3->0` ring relay `0003 C066`, and concurrent 4-core private SDRAM isolation `CAFE`/`1111`/`2222`/`3333` at **`91.42 MHz`**, `8404 LUT4`, `3232 FF`, `80 DPR16X4`, `16 DP16KD`, `17 IOLOGIC`).
 - [ ] Perform long-duration stress testing on ULX3S-85F board.

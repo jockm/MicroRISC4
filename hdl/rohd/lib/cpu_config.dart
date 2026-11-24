@@ -19,6 +19,7 @@ class CpuConfig {
   final bool enableNoc;
   final bool enableSdramCache;
   final bool isPipelined;
+  final int memReadLatency;
   final int cpuVersionMajor;
   final int cpuVersionMinor;
   final int cpuCaps2;
@@ -42,7 +43,8 @@ class CpuConfig {
     this.enableSpi = false,
     this.enableNoc = false,
     this.enableSdramCache = false,
-    this.isPipelined = false,
+    this.isPipelined = true,
+    this.memReadLatency = 2,
     this.cpuVersionMajor = MiniRISC4Constants.cpuVersionMajor,
     this.cpuVersionMinor = MiniRISC4Constants.cpuVersionMinor,
     this.cpuCaps2 = 0,

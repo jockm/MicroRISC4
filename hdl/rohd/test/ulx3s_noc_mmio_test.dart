@@ -475,7 +475,8 @@ void main() {
                 MiniRISC4Constants.capCpuid |
                 MiniRISC4Constants.capUart |
                 MiniRISC4Constants.capCrossTraps |
-                MiniRISC4Constants.capEpcEret,
+                MiniRISC4Constants.capEpcEret |
+                MiniRISC4Constants.capPipelined,
           ),
         );
         expect(top.cpu.ram.mem[0x0322], equals(0x0000));

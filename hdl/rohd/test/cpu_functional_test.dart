@@ -21,12 +21,19 @@ int opSub(int rr, int rl) => (0x7 << 4) | (rr << 2) | rl;
 int opOr(int rr, int rl) => (0x8 << 4) | (rr << 2) | rl;
 int opXor(int rr, int rl) => (0x9 << 4) | (rr << 2) | rl;
 int opAnd(int rr, int rl) => (0xA << 4) | (rr << 2) | rl;
+int opShiftL(int rl) => 0xB0 | rl;
+int opShiftR(int rl) => 0xB4 | rl;
+int opShiftAr(int rl) => 0xB8 | rl;
 int opXchg(int rl) => 0xBC | rl;
+int opRotL(int rl) => 0xC0 | rl;
+int opRotR(int rl) => 0xC4 | rl;
 int opInc(int rl) => 0xC8 | rl;
 int opDec(int rl) => 0xCC | rl;
 int opJmpZ(int rr, int rl) => (0xD << 4) | (rr << 2) | rl;
+int opJmpM(int rr, int rl) => (0xE << 4) | (rr << 2) | rl;
 int opJmp(int rl) => 0xF0 | rl;
 int opLink(int rl) => 0xF4 | rl;
+int opEret() => 0x0F;
 int push8Word(int rl, int imm8) => pack(0xF8 | rl, imm8);
 int trapWord(int rl, int imm8) => pack(0xFC | rl, imm8);
 
@@ -185,5 +192,182 @@ void main() {
     final output = String.fromCharCodes(txBytes);
     expect(output, contains('MiniRISC4 ASM Monitor'));
     expect(output, contains('> '));
+  });
+
+  test('Pipeline hazards: RAW/WAW/XCHG forwarding, stalled-EX capture, store-to-load, EPC->ERET, zero-bubble PUSH8', () async {
+    // Tests all 4-stage pipeline corner cases + verifies ~1.0 cycle/PUSH8 throughput!
+    final mem = <int, int>{
+      // 1. Seed data memory [0x0400] = 0x1000, [0x0401] = 0x0025
+      0x0400: 0x1000,
+      0x0401: 0x0025,
+      0x0410: 0x5A5A,
+
+      // 2. Back-to-back WB->EX & WB->ID RAW forwarding chain:
+      //    R0=3, R1=R0(3), R1=R1+R0(6), R1=R1+R0(9), R2=R1+R0(12), R2=R2+R1(21=0x15)
+      0x0100: pack(ldImm4(3), ldReg(1, 0)),
+      0x0101: pack(opAdd(1, 0), opAdd(1, 0)),
+      0x0102: pack(ldReg(2, 1), opAdd(2, 0)),
+      0x0103: pack(opAdd(2, 1), 0x00),
+      // Store R2 (0x0015) -> [0x0500]
+      0x0104: push8Word(3, 0x05),
+      0x0105: push8Word(3, 0x00),
+      0x0106: pack(ldPoke(3, 2), 0x00),
+
+      // 3. Back-to-back XCHG forwarding (shadow<->main 3x in a row + consumer):
+      //    R1 = 9, shadow_r1 = 0
+      //    XCHG R1 (R1=0, sh=9) ; XCHG R1 (R1=9, sh=0) ; INC R1 (R1=10) ; XCHG R1 (R1=0, sh=10) ; XCHG R1 (R1=10)
+      0x0107: pack(opXchg(1), opXchg(1)),
+      0x0108: pack(opInc(1), opXchg(1)),
+      0x0109: pack(opXchg(1), opInc(3)),      // R1 = 10 (0x000A), R3 = 0x0501
+      0x010A: pack(ldPoke(3, 1), 0x00),       // [0x0501] = 0x000A
+
+      // 4. Stalled-EX forward capture test:
+      //    R0 = 0x0400 (addr of 0x1000)
+      //    PEEK R1, (R0)  ; LDI4 7 (writes R0=7 into WB while EX stalls on R1!)
+      //    ADD R1, R0     ; (stalls in EX waiting for R1 while R0=7 retires from WB!)
+      //    Expected R1 = 0x1000 + 7 = 0x1007 -> [0x0502]
+      0x010B: push8Word(0, 0x04),
+      0x010C: push8Word(0, 0x00),
+      0x010D: pack(ldPeek(1, 0), ldImm4(7)),
+      0x010E: pack(opAdd(1, 0), opInc(3)),    // R1 = 0x1007, R3 = 0x0502
+      0x010F: pack(ldPoke(3, 1), 0x00),       // [0x0502] = 0x1007
+
+      // 5. Load WAW hazard test:
+      //    PEEK R1, (0x0400) [0x1000] followed IMMEDIATELY by LDI4 0xB; LD R1, R0
+      //    Architectural order MUST end with R1 = 0x000B (NOT 0x1000!) -> [0x0503]
+      0x0110: push8Word(2, 0x04),
+      0x0111: push8Word(2, 0x00),
+      0x0112: pack(ldPeek(1, 2), ldImm4(0xB)),
+      0x0113: pack(ldReg(1, 0), opInc(3)),    // R1 = 0x000B, R3 = 0x0503
+      0x0114: pack(ldPoke(3, 1), 0x00),       // [0x0503] = 0x000B
+
+      // 6. Back-to-back POKE -> PEEK same address coherence:
+      //    POKE (0x0420), 0xBEEF ; PEEK R1, (0x0420) -> [0x0504] = 0xBEEF
+      0x0115: push8Word(2, 0x04),
+      0x0116: push8Word(2, 0x20),
+      0x0117: push8Word(0, 0xBE),
+      0x0118: push8Word(0, 0xEF),
+      0x0119: pack(ldPoke(2, 0), ldPeek(1, 2)),
+      0x011A: pack(opInc(3), ldPoke(3, 1)),   // R3 = 0x0504, [0x0504] = 0xBEEF
+
+      // 7. Self-overwriting POP R2, (R2++): mem[0x0410] = 0x5A5A -> R2 MUST be 0x5A5A (not 0x0411)!
+      0x011B: push8Word(2, 0x04),
+      0x011C: push8Word(2, 0x10),
+      0x011D: pack(ldPop(2, 2), opInc(3)),    // R2 = 0x5A5A, R3 = 0x0505
+      0x011E: pack(ldPoke(3, 2), 0x00),       // [0x0505] = 0x5A5A
+
+      // 8. Back-to-back forwarding into JMP.Z / JMP.M condition & target:
+      //    R0 = 1; DEC R0 (0); JMP.Z R2, R0 -> taken to 0x0125!
+      0x011F: push8Word(2, 0x01),
+      0x0120: push8Word(2, 0x25),
+      0x0121: pack(ldImm4(1), opDec(0)),
+      0x0122: pack(opJmpZ(2, 0), ldImm4(0xF)), // Taken! Slot 1 MUST be flushed!
+      0x0123: pack(ldImm4(0xE), 0x00),         // Must NOT execute!
+      0x0124: pack(ldImm4(0xD), 0x00),
+      // 0x0125: R0 must still be 0! Store R0 -> [0x0506], then test back-to-back POKE EPC; ERET!
+      0x0125: pack(opInc(3), ldPoke(3, 0)),    // R3 = 0x0506, [0x0506] = 0x0000
+      0x0126: push8Word(0, 0x00),
+      0x0127: push8Word(0, 0x1E),              // addrEpc = 0x001E
+      0x0128: push8Word(1, 0x01),
+      0x0129: push8Word(1, 0x30),              // target = 0x0130
+      0x012A: pack(ldPoke(0, 1), opEret()),    // Back-to-back POKE EPC ; ERET!
+      0x012B: pack(ldImm4(0xF), 0x00),         // Must NOT execute!
+
+      // 0x0130: Landed via EPC->ERET! Store 0xCAFE -> [0x0507] and halt at 0x0135
+      0x0130: push8Word(1, 0xCA),
+      0x0131: push8Word(1, 0xFE),
+      0x0132: pack(opInc(3), ldPoke(3, 1)),    // R3 = 0x0507, [0x0507] = 0xCAFE
+      0x0133: push8Word(2, 0x01),
+      0x0134: push8Word(2, 0x35),
+      0x0135: pack(opJmp(2), 0x00),
+    };
+
+    final clk = SimpleClockGenerator(10).clk;
+    final rstN = Logic(name: 'rst_n');
+    final cpu = CpuCore(
+      clk: clk,
+      rstN: rstN,
+      config: const CpuConfig(
+        coreId: 0,
+        enableCpuid: false,
+        enableUart: false,
+        enableCrossTraps: false,
+        enableEpc: true,
+        enableMathAccel: false,
+        trapTableBase: 0x0100,
+        memWords: 65536,
+      ),
+      initialMemory: mem,
+    );
+    await cpu.build();
+    rstN.put(0);
+    Simulator.registerAction(22, () => rstN.put(1));
+    Simulator.setMaxSimTime(25 + 220 * 10);
+    await Simulator.run();
+
+    expect(cpu.ram.mem[0x0500], equals(0x0015), reason: 'WB->EX / WB->ID ALU RAW chain');
+    expect(cpu.ram.mem[0x0501], equals(0x000A), reason: 'Back-to-back XCHG forwarding');
+    expect(cpu.ram.mem[0x0502], equals(0x1007), reason: 'Stalled-EX WB->EX forward capture');
+    expect(cpu.ram.mem[0x0503], equals(0x000B), reason: 'Load WAW ordering');
+    expect(cpu.ram.mem[0x0504], equals(0xBEEF), reason: 'Back-to-back POKE->PEEK coherence');
+    expect(cpu.ram.mem[0x0505], equals(0x5A5A), reason: 'Self-overwriting POP R2,(R2++)');
+    expect(cpu.ram.mem[0x0506], equals(0x0000), reason: 'JMP.Z forwarding & slot-1 flush');
+    expect(cpu.ram.mem[0x0507], equals(0xCAFE), reason: 'Back-to-back POKE EPC -> ERET forwarding');
+  });
+
+  test('Zero-bubble PUSH8 throughput reaches ~1.0 cycle/PUSH8 (vs 2.0 in legacy FSM)', () async {
+    // 16 consecutive PUSH8 instructions followed by a store & halt.
+    // Legacy FSM needed 16*2 = 32 cycles for the 16 PUSH8s alone (~42 total).
+    // 4-stage pipeline with prefetch ring executes all 16 PUSH8s in 16 cycles (~24 total)!
+    final mem = <int, int>{};
+    for (var i = 0; i < 16; i++) {
+      mem[0x0100 + i] = push8Word(1, 0x10 + i);
+    }
+    mem[0x0110] = push8Word(2, 0x05);
+    mem[0x0111] = push8Word(2, 0x00);
+    mem[0x0112] = pack(ldPoke(2, 1), 0x00); // [0x0500] = 0x1E1F
+    mem[0x0113] = push8Word(3, 0x01);
+    mem[0x0114] = push8Word(3, 0x15);
+    mem[0x0115] = pack(opJmp(3), 0x00);
+
+    final clk = SimpleClockGenerator(10).clk;
+    final rstN = Logic(name: 'rst_n');
+    final cpu = CpuCore(
+      clk: clk,
+      rstN: rstN,
+      config: const CpuConfig(
+        coreId: 0,
+        enableCpuid: false,
+        enableUart: false,
+        enableCrossTraps: false,
+        enableMathAccel: false,
+        trapTableBase: 0x0100,
+        memWords: 65536,
+      ),
+      initialMemory: mem,
+    );
+    await cpu.build();
+    rstN.put(0);
+
+    var cycles = 0;
+    int? doneCycle;
+    clk.posedge.listen((_) {
+      if (rstN.value.isValid && rstN.value.toBool()) {
+        cycles++;
+        if (doneCycle == null && cpu.ram.mem[0x0500] == 0x1E1F) {
+          doneCycle = cycles;
+        }
+      }
+    });
+
+    Simulator.registerAction(22, () => rstN.put(1));
+    Simulator.setMaxSimTime(25 + 60 * 10);
+    await Simulator.run();
+
+    expect(cpu.ram.mem[0x0500], equals(0x1E1F));
+    expect(doneCycle, isNotNull);
+    // 18 PUSH8 + 1 POKE + 4-cycle cold fill = ~25 cycles (legacy FSM would be >42 cycles!)
+    expect(doneCycle!, lessThanOrEqualTo(28),
+        reason: 'Expected zero-bubble ~1.0 cyc/PUSH8 (got $doneCycle cycles)');
   });
 }

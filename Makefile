@@ -101,6 +101,8 @@ TINY_UART_DIVISOR      ?= 432
 TINY_PLATFORM          ?= $(if $(filter command line,$(origin ASIC_PLATFORM)),$(ASIC_PLATFORM),sky130hd)
 
 YOSYS          ?= yosys
+IVERILOG       ?= iverilog
+VVP            ?= vvp
 NEXTPNR_ECP5   ?= nextpnr-ecp5
 ECPPACK        ?= ecppack
 OPENFPGALOADER ?= openFPGALoader
@@ -117,7 +119,7 @@ SIM_PROGRAM    ?= $(BUILD_DIR)/monitor.bin
         generate generate-ulx3s ulx3s-bit ulx3s-mr4os ulx3s-timing ulx3s-prog ulx3s-flash ulx3s-term \
         generate-asic asic-check asic-flow \
         generate-asic-tile asic-tile-check asic-tile-flow asic-quad-flow \
-        generate-tiny tiny-check tiny-flow asic-clean \
+        generate-tiny tiny-check tiny-sim tiny-flow tiny-gls asic-clean \
         dot-clean clean
 
 # ------------------------------------------------------------------------------
@@ -160,7 +162,9 @@ help:
 	@echo "  make asic-quad-flow   - Assemble 4-tile mr4_quad_top chip from hardened mr4_tile macro via ORFS Docker"
 	@echo "  make generate-tiny    - Assemble tiny_boot.asm & generate Tiny Tapeout tt_um_mr4.sv (Track E.1)"
 	@echo "  make tiny-check       - Run Yosys structural & synth preflight on build/asic_tiny/tt_um_mr4.sv"
+	@echo "  make tiny-sim         - Run 4-state Icarus Verilog RTL sim of tt_um_mr4 + QSPI PSRAM + UART"
 	@echo "  make tiny-flow        - Run ORFS RTL-to-GDS for 2x2 Tiny Tapeout tile (TINY_PLATFORM=sky130hd|ihp-sg13g2)"
+	@echo "  make tiny-gls         - Run post-route Gate-Level Simulation (GLS) on routed 6_final.v netlist"
 	@echo "  make asic-clean       - Clean cached ORFS outputs (ASIC_PLATFORM=nangate45|asap7|all, optional ASIC_DESIGN=...)"
 	@echo "  make dot-clean        - Remove macOS ._ metadata files (where dot_clean exists)"
 	@echo "  make clean            - Remove $(BUILD_DIR)/ and generated SV/bitstream artifacts"
@@ -566,6 +570,56 @@ tiny-flow: generate-tiny
 		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4_tiny/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(TINY_PLATFORM)" $(ORFS_EXTRA_ARGS) $(ORFS_TARGET)'; \
 	fi
 	@echo "==> Tiny Tapeout $(TINY_TOP) GDSII ready under: $(ASIC_BLD)/orfs/results/$(TINY_PLATFORM)/$(TINY_TOP)/base/"
+	@$(DOT_CLEAN_CMD)
+
+# 4-state Icarus Verilog RTL simulation of tt_um_mr4 (cold boot, UART loader -> QSPI PSRAM -> execute)
+tiny-sim: generate-tiny
+	@echo "==> Assembling Tiny Tapeout test payload (asic/mr4_tiny/tiny_payload.asm)..."
+	@$(MR4ASM) -I $(LIB_DIR) asic/mr4_tiny/tiny_payload.asm --hex -o "$(TINY_BLD)/tiny_payload.hex"
+	@echo "==> Compiling 4-state RTL testbench with $(IVERILOG)..."
+	@$(IVERILOG) -g2012 -DSYNTHESIS -Ptb_tt_um_mr4.UART_DIV=$(TINY_UART_DIVISOR) \
+		-o "$(TINY_BLD)/tb_tt_um_mr4_rtl.vvp" \
+		asic/mr4_tiny/tb_tt_um_mr4.sv "$(TINY_SV)"
+	@echo "==> Running 4-state RTL simulation ($(VVP))..."
+	@$(VVP) "$(TINY_BLD)/tb_tt_um_mr4_rtl.vvp" "+PAYLOAD_HEX=$(TINY_BLD)/tiny_payload.hex"
+	@$(DOT_CLEAN_CMD)
+
+# Post-Route Gate-Level Simulation (GLS) of routed ORFS 6_final.v netlist
+# Usage:
+#   make tiny-gls TINY_PLATFORM=sky130hd
+#   make tiny-gls TINY_PLATFORM=ihp-sg13g2
+#   (Optionally pass GLS_STDCELL_V="path/to/primitives.v path/to/sky130_fd_sc_hd.v" if running outside Docker)
+tiny-gls:
+	@NETLIST="$(ASIC_BLD)/orfs/results/$(TINY_PLATFORM)/$(TINY_TOP)/base/6_final.v"; \
+	if [ ! -f "$$NETLIST" ]; then \
+		echo "[FAIL] Routed netlist not found: $$NETLIST. Run 'make tiny-flow TINY_PLATFORM=$(TINY_PLATFORM)' first."; exit 1; \
+	fi
+	@mkdir -p "$(TINY_BLD)"
+	@$(MR4ASM) -I $(LIB_DIR) asic/mr4_tiny/tiny_payload.asm --hex -o "$(TINY_BLD)/tiny_payload.hex"
+	@if [ -n "$(GLS_STDCELL_V)" ]; then \
+		echo "==> Compiling post-route GLS netlist ($(TINY_PLATFORM)) with host $(IVERILOG)..."; \
+		$(IVERILOG) -g2012 -DFUNCTIONAL -DUNIT_DELAY=#0 -Ptb_tt_um_mr4.UART_DIV=$(TINY_UART_DIVISOR) \
+			-o "$(TINY_BLD)/tb_tt_um_mr4_gls_$(TINY_PLATFORM).vvp" \
+			asic/mr4_tiny/tb_tt_um_mr4.sv \
+			"$(ASIC_BLD)/orfs/results/$(TINY_PLATFORM)/$(TINY_TOP)/base/6_final.v" \
+			$(GLS_STDCELL_V) && \
+		$(VVP) "$(TINY_BLD)/tb_tt_um_mr4_gls_$(TINY_PLATFORM).vvp" "+PAYLOAD_HEX=$(TINY_BLD)/tiny_payload.hex"; \
+	else \
+		echo "==> Running post-route GLS ($(TINY_PLATFORM)) via ORFS Docker / PDK stdcell models..."; \
+		HOST_ROOT="$(CURDIR)"; \
+		if command -v cygpath >/dev/null 2>&1; then HOST_ROOT="$$(cygpath -w "$(CURDIR)")"; fi; \
+		MSYS_NO_PATHCONV=1 docker run --rm -v "$$HOST_ROOT:/work/mr4" "$(ORFS_DOCKER_IMAGE)" \
+			bash -c 'set -e; \
+			  PLAT="$(TINY_PLATFORM)"; \
+			  NETLIST="/work/mr4/build/asic/orfs/results/$$PLAT/tt_um_mr4/base/6_final.v"; \
+			  CELLS=$$(find /OpenROAD-flow-scripts/flow/platforms/$$PLAT -type f \( -name "*stdcell*.v" -o -name "*sc_hd*.v" -o -name "primitives.v" \) 2>/dev/null | sort); \
+			  if [ -z "$$CELLS" ]; then echo "[INFO] No .v behavioral stdcell models bundled in ORFS for $$PLAT; pass GLS_STDCELL_V=..."; exit 2; fi; \
+			  echo "Using PDK models: $$CELLS"; \
+			  iverilog -g2012 -DFUNCTIONAL -DUNIT_DELAY=#0 -Ptb_tt_um_mr4.UART_DIV=$(TINY_UART_DIVISOR) \
+			    -o /work/mr4/build/asic_tiny/tb_tt_um_mr4_gls_$$PLAT.vvp \
+			    /work/mr4/asic/mr4_tiny/tb_tt_um_mr4.sv "$$NETLIST" $$CELLS && \
+			  vvp /work/mr4/build/asic_tiny/tb_tt_um_mr4_gls_$$PLAT.vvp +PAYLOAD_HEX=/work/mr4/build/asic_tiny/tiny_payload.hex'; \
+	fi
 	@$(DOT_CLEAN_CMD)
 
 # Clean cached ORFS outputs so config.mk / PDN / routing-layer edits rebuild cleanly.

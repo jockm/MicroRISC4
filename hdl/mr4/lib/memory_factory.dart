@@ -427,6 +427,7 @@ class AsicBootRom extends Module with SystemVerilog {
   final int dataWidth;
   final int addrWidth;
   final int readLatency;
+  final bool enablePortB;
   final Uint16List romData;
 
   AsicBootRom({
@@ -438,6 +439,7 @@ class AsicBootRom extends Module with SystemVerilog {
     required List<int> words,
     this.readLatency = 1,
     this.dataWidth = 16,
+    this.enablePortB = true,
     super.name = 'asic_boot_rom',
   })  : romWords = words.isEmpty ? 2 : words.length,
         addrWidth = (words.length <= 1) ? 1 : (words.length - 1).bitLength,
@@ -464,9 +466,11 @@ class AsicBootRom extends Module with SystemVerilog {
 
     void refreshReads() {
       final a = portAAddr.value.isValid ? portAAddr.value.toInt() : 0;
-      final b = portBAddr.value.isValid ? portBAddr.value.toInt() : 0;
       aComb.put(a < romData.length ? romData[a] : 0);
-      bComb.put(b < romData.length ? romData[b] : 0);
+      if (enablePortB) {
+        final b = portBAddr.value.isValid ? portBAddr.value.toInt() : 0;
+        bComb.put(b < romData.length ? romData[b] : 0);
+      }
     }
 
     aComb.put(0);
@@ -477,19 +481,23 @@ class AsicBootRom extends Module with SystemVerilog {
     portBRdata.put(0);
 
     portAAddr.changed.listen((_) => refreshReads());
-    portBAddr.changed.listen((_) => refreshReads());
+    if (enablePortB) {
+      portBAddr.changed.listen((_) => refreshReads());
+    } else {
+      portBRdata <= Const(0, width: dataWidth);
+    }
 
     if (readLatency == 1) {
       Sequential(clk, [
         If(portAEn, then: [portARdata < aComb]),
-        If(portBEn, then: [portBRdata < bComb]),
+        if (enablePortB) If(portBEn, then: [portBRdata < bComb]),
       ]);
     } else {
       Sequential(clk, [
         If(portAEn, then: [aRaw < aComb]),
         portARdata < aRaw,
-        If(portBEn, then: [bRaw < bComb]),
-        portBRdata < bRaw,
+        if (enablePortB) If(portBEn, then: [bRaw < bComb]),
+        if (enablePortB) portBRdata < bRaw,
       ]);
     }
   }
@@ -507,7 +515,44 @@ class AsicBootRom extends Module with SystemVerilog {
       final hexAddr = i.toRadixString(16);
       final hexVal = w.toRadixString(16).padLeft(4, '0');
       aCases.writeln("      $addrWidth'h$hexAddr: a_comb = $dataWidth'h$hexVal;");
-      bCases.writeln("      $addrWidth'h$hexAddr: b_comb = $dataWidth'h$hexVal;");
+      if (enablePortB) {
+        bCases.writeln("      $addrWidth'h$hexAddr: b_comb = $dataWidth'h$hexVal;");
+      }
+    }
+
+    if (!enablePortB) {
+      final seqBlockA = readLatency == 1
+          ? '''
+  always_ff @(posedge clk) begin
+    if (port_a_en) port_a_rdata <= a_comb;
+  end'''
+          : '''
+  logic [${dataWidth - 1}:0] a_raw;
+  always_ff @(posedge clk) begin
+    if (port_a_en) a_raw <= a_comb;
+    port_a_rdata <= a_raw;
+  end''';
+      return '''
+module $definitionType (
+  input  logic clk,
+  input  logic [${addrWidth - 1}:0] port_a_addr,
+  input  logic port_a_en,
+  output logic [${dataWidth - 1}:0] port_a_rdata,
+  input  logic [${addrWidth - 1}:0] port_b_addr,
+  input  logic port_b_en,
+  output logic [${dataWidth - 1}:0] port_b_rdata
+);
+  logic [${dataWidth - 1}:0] a_comb;
+  always_comb begin
+    a_comb = $dataWidth'h0000;
+    case (port_a_addr)
+${aCases.toString()}      default: a_comb = $dataWidth'h0000;
+    endcase
+  end
+$seqBlockA
+  assign port_b_rdata = $dataWidth'h0000;
+endmodule
+''';
     }
 
     final seqBlock = readLatency == 1
@@ -567,7 +612,7 @@ class DualPortRamWithBootRom extends Module implements DualPortMemory {
   final int bootRomBase;
   final int bootRomWords;
   final int readLatency;
-  late final AsicDualPortSram sram;
+  late final Uint16List _mem;
   late final AsicBootRom bootRom;
 
   DualPortRamWithBootRom({
@@ -585,6 +630,7 @@ class DualPortRamWithBootRom extends Module implements DualPortMemory {
     this.readLatency = 1,
     int dataWidth = 16,
     bool useMacroBlackbox = true,
+    bool bootRomPortBRead = true,
     String? macroName,
     Map<int, int>? initialMemory,
     super.name = 'asic_ram_with_bootrom',
@@ -628,10 +674,7 @@ class DualPortRamWithBootRom extends Module implements DualPortMemory {
 
     final isCompactSram = this.sramDepth < depth;
     final sramEndConst = Const(this.sramDepth, width: addrWidth);
-    final inSramA = isCompactSram ? portAAddr.lt(sramEndConst) : Const(1);
     final inSramB = isCompactSram ? portBAddr.lt(sramEndConst) : Const(1);
-    final sramAddrA =
-        isCompactSram ? portAAddr.slice(sramAddrWidth - 1, 0) : portAAddr;
     final sramAddrB =
         isCompactSram ? portBAddr.slice(sramAddrWidth - 1, 0) : portBAddr;
 
@@ -640,16 +683,47 @@ class DualPortRamWithBootRom extends Module implements DualPortMemory {
       portAAddr: romOffA,
       portAEn: portAEn & inRomA,
       portBAddr: romOffB,
-      portBEn: portBEn & (~portBWe) & inRomB,
+      portBEn: bootRomPortBRead ? (portBEn & (~portBWe) & inRomB) : Const(0),
       words: romWords,
       readLatency: readLatency,
       dataWidth: dataWidth,
+      enablePortB: bootRomPortBRead,
       name: '${name}_rom',
     );
 
-    // Mask writes into the Boot ROM address window (and out-of-range addresses
-    // when compact scratchpad sramDepth < depth); SRAM serves [0, sramDepth).
-    sram = AsicDualPortSram(
+    // Ultra-compact Tiny Tapeout scratchpad mode: Port B-only single-port flop RAM
+    // (code never executes from scratchpad 0x0000..sramDepth-1; Port A serves Boot ROM).
+    if (isCompactSram && !useMacroBlackbox && readLatency == 1) {
+      final spSram = AsicSinglePortFlopRam(
+        clk: clk,
+        addr: sramAddrB,
+        wdata: portBWdata,
+        we: portBWe & (~inRomB) & inSramB,
+        en: portBEn & (~inRomB) & inSramB,
+        depth: this.sramDepth,
+        dataWidth: dataWidth,
+        name: '${name}_sram',
+      );
+      _mem = spSram.mem;
+      portARdataOut <= bootRom.portARdata;
+      if (bootRomPortBRead) {
+        final selBQ1 = Logic(name: 'rom_sel_b_q1');
+        Sequential(clk, [
+          If(portBEn & (~portBWe), then: [selBQ1 < inRomB]),
+        ]);
+        portBRdataOut <= mux(selBQ1, bootRom.portBRdata, spSram.rdata);
+      } else {
+        portBRdataOut <= spSram.rdata;
+      }
+      return;
+    }
+
+    final inSramA = isCompactSram ? portAAddr.lt(sramEndConst) : Const(1);
+    final sramAddrA =
+        isCompactSram ? portAAddr.slice(sramAddrWidth - 1, 0) : portAAddr;
+
+    // Mask writes into the Boot ROM address window; SRAM serves all other addresses
+    final sram = AsicDualPortSram(
       clk: clk,
       portAAddr: sramAddrA,
       portAEn: portAEn & (~inRomA) & inSramA,
@@ -665,6 +739,7 @@ class DualPortRamWithBootRom extends Module implements DualPortMemory {
       initialMemory: initialMemory,
       name: '${name}_sram',
     );
+    _mem = sram.mem;
 
     // Align ROM-select (and optional compact SRAM valid) mux with readLatency
     final selAQ1 = Logic(name: 'rom_sel_a_q1');
@@ -732,7 +807,7 @@ class DualPortRamWithBootRom extends Module implements DualPortMemory {
   }
 
   @override
-  Uint16List get mem => sram.mem;
+  Uint16List get mem => _mem;
 
   @override
   Logic get portARdata => output('port_a_rdata');
@@ -1100,6 +1175,7 @@ class MemoryFactory {
     Map<int, int>? initialMemory,
     int bootRomBase = 0x0100,
     List<int>? bootRomWords,
+    bool bootRomPortBRead = true,
     int? sramDepth,
     String? sramMacroName,
     String name = 'tdp_bram',
@@ -1148,6 +1224,7 @@ class MemoryFactory {
         readLatency: readLatency,
         dataWidth: dataWidth,
         useMacroBlackbox: useMacro,
+        bootRomPortBRead: bootRomPortBRead,
         macroName: sramMacroName,
         initialMemory: initialMemory,
         name: name,

@@ -51,6 +51,7 @@ class QspiMemController extends Module {
     required Logic dcReqWdata,
     required Logic qspiSdIn,
     Logic? useFlash,
+    bool compactCache = false,
     super.name = 'qspi_mem_controller',
   }) {
     clk = addInput('clk', clk);
@@ -99,11 +100,14 @@ class QspiMemController extends Module {
     final addrShiftQ = Logic(name: 'addr_shift_q', width: 24);
     final rxWordQ = Logic(name: 'rx_word_q', width: 16);
 
-    // 1-line (4-word / 64-bit) coherent Instruction Prefetch Cache
+    // 1-line coherent Instruction Prefetch Cache (4-word default, or 2-word compact)
+    final icWordsCount = compactCache ? 2 : 4;
+    final icOffBits = compactCache ? 1 : 2;
+    final icTagWidth = 16 - icOffBits;
     final icLineValidQ = Logic(name: 'ic_line_valid_q');
-    final icLineTagQ = Logic(name: 'ic_line_tag_q', width: 14);
+    final icLineTagQ = Logic(name: 'ic_line_tag_q', width: icTagWidth);
     final icWordsQ = List.generate(
-      4,
+      icWordsCount,
       (i) => Logic(name: 'ic_word_${i}_q', width: 16),
     );
 
@@ -118,18 +122,23 @@ class QspiMemController extends Module {
     final isAddr = stQ.eq(Const(_stAddr, width: 3));
     final isWrite = stQ.eq(Const(_stWrite, width: 3));
 
-    // Coherent 4-word I-cache hit detection
-    final icTagMatch = icLineValidQ & icAddr.slice(15, 2).eq(icLineTagQ);
-    final icHitWord = mux(
-      icAddr[1],
-      mux(icAddr[0], icWordsQ[3], icWordsQ[2]),
-      mux(icAddr[0], icWordsQ[1], icWordsQ[0]),
-    );
-    final reqIcLineWord = mux(
-      reqAddrQ[1],
-      mux(reqAddrQ[0], icWordsQ[3], icWordsQ[2]),
-      mux(reqAddrQ[0], icWordsQ[1], icWordsQ[0]),
-    );
+    // Coherent I-cache hit detection
+    final icTagMatch =
+        icLineValidQ & icAddr.slice(15, icOffBits).eq(icLineTagQ);
+    final icHitWord = compactCache
+        ? mux(icAddr[0], icWordsQ[1], icWordsQ[0])
+        : mux(
+            icAddr[1],
+            mux(icAddr[0], icWordsQ[3], icWordsQ[2]),
+            mux(icAddr[0], icWordsQ[1], icWordsQ[0]),
+          );
+    final reqIcLineWord = compactCache
+        ? mux(reqAddrQ[0], icWordsQ[1], icWordsQ[0])
+        : mux(
+            reqAddrQ[1],
+            mux(reqAddrQ[0], icWordsQ[3], icWordsQ[2]),
+            mux(reqAddrQ[0], icWordsQ[1], icWordsQ[0]),
+          );
 
     // DC has priority over IC in ST_IDLE to avoid EX-vs-IF deadlock
     final acceptDc = isIdle & dcValid;
@@ -186,7 +195,9 @@ class QspiMemController extends Module {
     // - IC 4-word burst: 15..0 -> wordIdx = 3 - cntQ[3:2] (0, 1, 2, 3), nibSel = cntQ[1:0]
     //   nibSel == 3 -> word[7:4], == 2 -> word[3:0], == 1 -> word[15:12], == 0 -> word[11:8]
     final nibSel = cntQ.slice(1, 0);
-    final burstWordIdx = Const(3, width: 2) - cntQ.slice(3, 2);
+    final burstWordIdx = compactCache
+        ? ~cntQ[2]
+        : (Const(3, width: 2) - cntQ.slice(3, 2));
     final completedWord = [
       rxWordQ.slice(15, 12),
       sdIn,
@@ -194,7 +205,7 @@ class QspiMemController extends Module {
     ].swizzle();
 
     final dcWriteHitsIcTag =
-        dcWe & icLineValidQ & dcAddr.slice(15, 2).eq(icLineTagQ);
+        dcWe & icLineValidQ & dcAddr.slice(15, icOffBits).eq(icLineTagQ);
 
     Sequential(clk, reset: reset, resetValues: {
       stQ: _stIdle,
@@ -262,7 +273,8 @@ class QspiMemController extends Module {
                 activeIsFlashQ < flashSel,
                 cmdShiftQ < Const(cmdQuadRead, width: 8),
                 addrShiftQ < wordToByteAddr24(
-                  [icAddr.slice(15, 2), Const(0, width: 2)].swizzle(),
+                  [icAddr.slice(15, icOffBits), Const(0, width: icOffBits)]
+                      .swizzle(),
                 ),
                 cntQ < Const(7, width: 4),
                 csActiveQ < 1,
@@ -324,7 +336,7 @@ class QspiMemController extends Module {
             If(cntQ.eq(Const(0, width: 4)), then: [
               cntQ < mux(
                 activeIsIcQ,
-                Const(15, width: 4), // 4 words = 16 nibbles
+                Const(compactCache ? 7 : 15, width: 4), // 2w=8 nibs or 4w=16 nibs
                 Const(3, width: 4), // 1 word = 4 nibbles
               ),
               stQ < Const(_stRead, width: 3),
@@ -357,12 +369,19 @@ class QspiMemController extends Module {
               CaseItem(Const(0, width: 2), [
                 rxWordQ < completedWord,
                 If(activeIsIcQ, then: [
-                  Case(burstWordIdx, [
-                    for (var wi = 0; wi < 4; wi++)
-                      CaseItem(Const(wi, width: 2), [
-                        icWordsQ[wi] < completedWord,
-                      ]),
-                  ]),
+                  if (compactCache)
+                    If(burstWordIdx, then: [
+                      icWordsQ[1] < completedWord,
+                    ], orElse: [
+                      icWordsQ[0] < completedWord,
+                    ])
+                  else
+                    Case(burstWordIdx, [
+                      for (var wi = 0; wi < 4; wi++)
+                        CaseItem(Const(wi, width: 2), [
+                          icWordsQ[wi] < completedWord,
+                        ]),
+                    ]),
                 ]),
               ]),
             ]),
@@ -370,7 +389,7 @@ class QspiMemController extends Module {
               csActiveQ < 0,
               If(activeIsIcQ, then: [
                 icLineValidQ < 1,
-                icLineTagQ < reqAddrQ.slice(15, 2),
+                icLineTagQ < reqAddrQ.slice(15, icOffBits),
               ]),
               stQ < Const(_stFinish, width: 3),
             ], orElse: [

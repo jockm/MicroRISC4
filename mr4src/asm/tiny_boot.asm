@@ -61,23 +61,32 @@ _autoboot:
     INC     R0
     JMP     R0
 
-    ; 3. Emit boot banner "MR4 TT\r\n" over UART
+    ; 3. Emit boot banner "MR4 TT\r\n" inline (zero Port B ROM reads -> single-port Boot ROM!)
 _banner:
-    LOAD16  R2, _str_banner
-_banner_loop:
-    LD      R3, (R2++)
-    BYTE_GET_LO R1, R3
-    LOAD16  R0, _cmd_loop
-    JMP.Z   R0, R1
+    PUSH8   R1, 0x4D                ; 'M'
     LOAD16  R0, _putc
     LINK    R0, R0
-    BYTE_GET_HI R1, R3
-    LOAD16  R0, _cmd_loop
-    JMP.Z   R0, R1
+    PUSH8   R1, 0x52                ; 'R'
     LOAD16  R0, _putc
     LINK    R0, R0
-    LOAD16  R0, _banner_loop
-    JMP     R0
+    PUSH8   R1, 0x34                ; '4'
+    LOAD16  R0, _putc
+    LINK    R0, R0
+    PUSH8   R1, 0x20                ; ' '
+    LOAD16  R0, _putc
+    LINK    R0, R0
+    PUSH8   R1, 0x54                ; 'T'
+    LOAD16  R0, _putc
+    LINK    R0, R0
+    PUSH8   R1, 0x54                ; 'T'
+    LOAD16  R0, _putc
+    LINK    R0, R0
+    PUSH8   R1, 0x0D                ; '\r'
+    LOAD16  R0, _putc
+    LINK    R0, R0
+    PUSH8   R1, 0x0A                ; '\n'
+    LOAD16  R0, _putc
+    LINK    R0, R0
 
     ; 4. Compact Binary UART Loader Command Dispatch Loop
 _cmd_loop:
@@ -227,9 +236,6 @@ _get16:
     LD      R0, SCRATCH_RET
     LD      R0, (R0)
     JMP     R0
-
-_str_banner:
-    .asciz "MR4 TT\r\n"
 
 ; ==============================================================================
 ; Trap 15: Alignment / Fault Halt Vector (0x01F0)

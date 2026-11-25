@@ -13,7 +13,7 @@ void main(List<String> args) async {
   var outDir = '../../build/asic_tiny';
   var bootRomBase = 0x0100;
   var bootRomWords = 256;
-  var localRamWords = 16;
+  var localRamWords = 8;
   var clkFreqMhz = 50;
   int? uartDivisor;
 

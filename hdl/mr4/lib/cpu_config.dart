@@ -36,6 +36,8 @@ class CpuConfig {
   final int trapTableBase;
   final int memWords;
   final int? localRamWords;
+  final int iqAddrWidth;
+  final bool bootRomPortBRead;
 
   const CpuConfig({
     this.coreId = 0,
@@ -67,6 +69,8 @@ class CpuConfig {
     this.trapTableBase = 0x0100,
     this.memWords = 65536,
     this.localRamWords,
+    this.iqAddrWidth = 3,
+    this.bootRomPortBRead = true,
   });
 
   int get addrWidth => (memWords - 1).bitLength;

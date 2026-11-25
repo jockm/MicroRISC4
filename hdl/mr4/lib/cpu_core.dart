@@ -301,6 +301,7 @@ class CpuCore extends Module {
       initialMemory: initialMemory,
       bootRomBase: config.bootRomBase,
       bootRomWords: config.bootRomWords,
+      bootRomPortBRead: config.bootRomPortBRead,
       sramDepth: config.localRamWords,
       sramMacroName: config.sramMacroName,
       name: '${name}_ram',
@@ -376,10 +377,16 @@ class CpuCore extends Module {
     // =========================================================================
     // Pipeline State Registers (IF, ID/EX, WB, and Parallel MEM Unit)
     // =========================================================================
-    // Stage 1 (IF): 8-entry distributed RAM prefetch queue (4x DPR16X4) + pure-FF FWFT head
-    final iqWrPtrQ = Logic(name: 'iq_wr_ptr_q', width: 3);
-    final iqRdPtrQ = Logic(name: 'iq_rd_ptr_q', width: 3);
-    final iqCntQ = Logic(name: 'iq_cnt_q', width: 4);
+    // Stage 1 (IF): Parameterized 4- or 8-entry prefetch queue + pure-FF FWFT head
+    assert(config.iqAddrWidth == 2 || config.iqAddrWidth == 3,
+        'iqAddrWidth must be 2 (4-entry) or 3 (8-entry)');
+    assert(config.iqAddrWidth == 3 || config.memReadLatency == 1,
+        'iqAddrWidth == 2 requires memReadLatency == 1');
+    final iqAw = config.iqAddrWidth;
+    final iqCw = iqAw + 1;
+    final iqWrPtrQ = Logic(name: 'iq_wr_ptr_q', width: iqAw);
+    final iqRdPtrQ = Logic(name: 'iq_rd_ptr_q', width: iqAw);
+    final iqCntQ = Logic(name: 'iq_cnt_q', width: iqCw);
     final idValidQ = Logic(name: 'id_valid_q');
     final idWordQ = Logic(name: 'id_word_q', width: 16);
     final paV1Q = Logic(name: 'pa_v1_q');
@@ -656,10 +663,12 @@ class CpuCore extends Module {
     // =========================================================================
     // Stage 1 (IF) & Stage 2 (ID/RF): 8-Entry Prefetch Queue + Pure-FF FWFT Head
     // =========================================================================
-    final iqEmpty = iqCntQ.eq(Const(0, width: 4));
+    final iqEmpty = iqCntQ.eq(Const(0, width: iqCw));
     final iqNotEmpty = ~iqEmpty;
-    // Issue whenever iqCntQ < 4 (<= 3 + up to 3 in-flight + 1 new = 7 <= 8!)
-    final iqHasRoom = (~iqCntQ[2]) & (~iqCntQ[3]);
+    // Issue whenever iqCntQ < (depth/2):
+    //   depth=8 -> < 4 (<=3 + up to 3 in-flight + 1 new = 7 <= 8)
+    //   depth=4 (latency=1) -> < 2 (<=1 + up to 2 in-flight + 1 new = 4 <= 4)
+    final iqHasRoom = (~iqCntQ[iqAw - 1]) & (~iqCntQ[iqAw]);
 
     // Note: If(flush, ...) directly clears iqCntQ/iqWrPtrQ/iqRdPtrQ/idValidQ,
     // so paRespValid/icRespPush/idAdvance/iqPop do NOT need ~flush in their cones!
@@ -684,7 +693,7 @@ class CpuCore extends Module {
       wdata: ifPushData,
       we: iqPushSig,
       raddr: iqRdPtrQ,
-      addrWidth: 3,
+      addrWidth: iqAw,
       dataWidth: 16,
       name: '${name}_iq_ram',
     );
@@ -865,9 +874,9 @@ class CpuCore extends Module {
       portAEn: Const(0, width: 1),
       paV1Q: Const(0, width: 1),
       if (config.memReadLatency == 2) paV2Q: Const(0, width: 1),
-      iqWrPtrQ: Const(0, width: 3),
-      iqRdPtrQ: Const(0, width: 3),
-      iqCntQ: Const(0, width: 4),
+      iqWrPtrQ: Const(0, width: iqAw),
+      iqRdPtrQ: Const(0, width: iqAw),
+      iqCntQ: Const(0, width: iqCw),
       idValidQ: Const(0, width: 1),
       idWordQ: Const(0, width: 16),
       idPcQ: trapTableBaseConst,
@@ -1187,9 +1196,9 @@ class CpuCore extends Module {
       // Stage 1 (IF): Prefetch Queue, Pure-FF FWFT Head & Port A Sequencer
       // =======================================================================
       If(flush, then: [
-        iqWrPtrQ < Const(0, width: 3),
-        iqRdPtrQ < Const(0, width: 3),
-        iqCntQ < Const(0, width: 4),
+        iqWrPtrQ < Const(0, width: iqAw),
+        iqRdPtrQ < Const(0, width: iqAw),
+        iqCntQ < Const(0, width: iqCw),
         idValidQ < 0,
         idPcQ < redirectTarget,
         idSlotQ < Const(MicroRISC4Constants.slotByte0, width: 1),
@@ -1228,16 +1237,16 @@ class CpuCore extends Module {
 
         // Prefetch Queue pointers & count
         If(iqPush, then: [
-          iqWrPtrQ < iqWrPtrQ + Const(1, width: 3),
+          iqWrPtrQ < iqWrPtrQ + Const(1, width: iqAw),
         ]),
         If(iqPop, then: [
-          iqRdPtrQ < iqRdPtrQ + Const(1, width: 3),
+          iqRdPtrQ < iqRdPtrQ + Const(1, width: iqAw),
         ]),
         If(iqPush & (~iqPop), then: [
-          iqCntQ < iqCntQ + Const(1, width: 4),
+          iqCntQ < iqCntQ + Const(1, width: iqCw),
         ], orElse: [
           If((~iqPush) & iqPop, then: [
-            iqCntQ < iqCntQ - Const(1, width: 4),
+            iqCntQ < iqCntQ - Const(1, width: iqCw),
           ]),
         ]),
 

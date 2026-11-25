@@ -54,9 +54,9 @@ class Mr4TinyTop extends Module {
     List<int>? bootRomWords,
     int clkFreqMhz = 50,
     int? uartDivisor,
-    int localRamWords = 16,
+    int localRamWords = 8,
     int bootRomBase = 0x0100,
-    bool enableCpuInfo = true,
+    bool enableCpuInfo = false,
     super.name = 'tt_um_mr4',
   }) : uartDivisor = uartDivisor ?? AsicTop.defaultUartDivisor(clkFreqMhz) {
     assert(this.uartDivisor >= 4 && (this.uartDivisor % 4) == 0,
@@ -126,10 +126,12 @@ class Mr4TinyTop extends Module {
       memoryTarget: MemoryTarget.asicFlop,
       bootRomBase: bootRomBase,
       bootRomWords: bootRomWords,
+      bootRomPortBRead: false, // Single-port Port-A-only Boot ROM (cuts ROM area 50%)
       clkFreqMhz: clkFreqMhz,
       trapTableBase: 0x0100,
       memWords: 512, // 0x0000..0x01FF local; 0x0200..0xFFFF external QSPI
       localRamWords: localRamWords,
+      iqAddrWidth: 2, // 4-entry prefetch queue (+ 1 FWFT head = 10 slots buffered)
     );
 
     cpu = CpuCore(
@@ -158,6 +160,7 @@ class Mr4TinyTop extends Module {
       dcReqWdata: cpu.output('dc_req_wdata'),
       qspiSdIn: qspiSdIn,
       useFlash: useFlash,
+      compactCache: true, // 2-word coherent I-cache for 2x2 TT tile fit
       name: 'qspi_ctrl',
     );
 

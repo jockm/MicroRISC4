@@ -301,6 +301,7 @@ class CpuCore extends Module {
       initialMemory: initialMemory,
       bootRomBase: config.bootRomBase,
       bootRomWords: config.bootRomWords,
+      sramDepth: config.localRamWords,
       sramMacroName: config.sramMacroName,
       name: '${name}_ram',
     );

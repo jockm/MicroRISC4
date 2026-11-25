@@ -563,6 +563,7 @@ endmodule
 /// (`0x0000`–`0x00FF`) and upper RAM/stacks fully writable in SRAM.
 class DualPortRamWithBootRom extends Module implements DualPortMemory {
   final int depth;
+  final int sramDepth;
   final int bootRomBase;
   final int bootRomWords;
   final int readLatency;
@@ -579,6 +580,7 @@ class DualPortRamWithBootRom extends Module implements DualPortMemory {
     required Logic portBEn,
     required List<int> romWords,
     this.depth = 2048,
+    int? sramDepth,
     this.bootRomBase = 0x0100,
     this.readLatency = 1,
     int dataWidth = 16,
@@ -586,12 +588,16 @@ class DualPortRamWithBootRom extends Module implements DualPortMemory {
     String? macroName,
     Map<int, int>? initialMemory,
     super.name = 'asic_ram_with_bootrom',
-  }) : bootRomWords = romWords.length {
+  })  : sramDepth = sramDepth ?? depth,
+        bootRomWords = romWords.length {
     assert(romWords.isNotEmpty, 'romWords must be non-empty');
     assert(bootRomBase >= 0 && bootRomBase + romWords.length <= depth,
         'Boot ROM [$bootRomBase..${bootRomBase + romWords.length}) exceeds depth $depth');
+    assert(this.sramDepth >= 2 && this.sramDepth <= depth,
+        'sramDepth (${this.sramDepth}) must be within [2, $depth]');
 
     final addrWidth = (depth <= 1) ? 1 : (depth - 1).bitLength;
+    final sramAddrWidth = (this.sramDepth <= 1) ? 1 : (this.sramDepth - 1).bitLength;
     final romAddrWidth = (romWords.length <= 1) ? 1 : (romWords.length - 1).bitLength;
 
     clk = addInput('clk', clk);
@@ -620,6 +626,15 @@ class DualPortRamWithBootRom extends Module implements DualPortMemory {
     final romOffA = (portAAddr - baseConst).slice(romAddrWidth - 1, 0);
     final romOffB = (portBAddr - baseConst).slice(romAddrWidth - 1, 0);
 
+    final isCompactSram = this.sramDepth < depth;
+    final sramEndConst = Const(this.sramDepth, width: addrWidth);
+    final inSramA = isCompactSram ? portAAddr.lt(sramEndConst) : Const(1);
+    final inSramB = isCompactSram ? portBAddr.lt(sramEndConst) : Const(1);
+    final sramAddrA =
+        isCompactSram ? portAAddr.slice(sramAddrWidth - 1, 0) : portAAddr;
+    final sramAddrB =
+        isCompactSram ? portBAddr.slice(sramAddrWidth - 1, 0) : portBAddr;
+
     bootRom = AsicBootRom(
       clk: clk,
       portAAddr: romOffA,
@@ -632,16 +647,17 @@ class DualPortRamWithBootRom extends Module implements DualPortMemory {
       name: '${name}_rom',
     );
 
-    // Mask writes into the Boot ROM address window; SRAM serves all other addresses
+    // Mask writes into the Boot ROM address window (and out-of-range addresses
+    // when compact scratchpad sramDepth < depth); SRAM serves [0, sramDepth).
     sram = AsicDualPortSram(
       clk: clk,
-      portAAddr: portAAddr,
-      portAEn: portAEn & (~inRomA),
-      portBAddr: portBAddr,
+      portAAddr: sramAddrA,
+      portAEn: portAEn & (~inRomA) & inSramA,
+      portBAddr: sramAddrB,
       portBWdata: portBWdata,
-      portBWe: portBWe & (~inRomB),
-      portBEn: portBEn & (~inRomB),
-      depth: depth,
+      portBWe: portBWe & (~inRomB) & inSramB,
+      portBEn: portBEn & (~inRomB) & inSramB,
+      depth: this.sramDepth,
       dataWidth: dataWidth,
       readLatency: readLatency,
       useMacroBlackbox: useMacroBlackbox,
@@ -650,13 +666,53 @@ class DualPortRamWithBootRom extends Module implements DualPortMemory {
       name: '${name}_sram',
     );
 
-    // Align ROM-select mux signal with readLatency (1 or 2 cycles)
+    // Align ROM-select (and optional compact SRAM valid) mux with readLatency
     final selAQ1 = Logic(name: 'rom_sel_a_q1');
     final selBQ1 = Logic(name: 'rom_sel_b_q1');
     final selAQ2 = Logic(name: 'rom_sel_a_q2');
     final selBQ2 = Logic(name: 'rom_sel_b_q2');
 
-    if (readLatency == 1) {
+    if (isCompactSram) {
+      final sramAQ1 = Logic(name: 'sram_sel_a_q1');
+      final sramBQ1 = Logic(name: 'sram_sel_b_q1');
+      final sramAQ2 = Logic(name: 'sram_sel_a_q2');
+      final sramBQ2 = Logic(name: 'sram_sel_b_q2');
+      if (readLatency == 1) {
+        Sequential(clk, [
+          If(portAEn, then: [selAQ1 < inRomA, sramAQ1 < inSramA]),
+          If(portBEn & (~portBWe), then: [selBQ1 < inRomB, sramBQ1 < inSramB]),
+        ]);
+        portARdataOut <= mux(
+          selAQ1,
+          bootRom.portARdata,
+          mux(sramAQ1, sram.portARdata, Const(0, width: dataWidth)),
+        );
+        portBRdataOut <= mux(
+          selBQ1,
+          bootRom.portBRdata,
+          mux(sramBQ1, sram.portBRdata, Const(0, width: dataWidth)),
+        );
+      } else {
+        Sequential(clk, [
+          If(portAEn, then: [selAQ1 < inRomA, sramAQ1 < inSramA]),
+          selAQ2 < selAQ1,
+          sramAQ2 < sramAQ1,
+          If(portBEn & (~portBWe), then: [selBQ1 < inRomB, sramBQ1 < inSramB]),
+          selBQ2 < selBQ1,
+          sramBQ2 < sramBQ1,
+        ]);
+        portARdataOut <= mux(
+          selAQ2,
+          bootRom.portARdata,
+          mux(sramAQ2, sram.portARdata, Const(0, width: dataWidth)),
+        );
+        portBRdataOut <= mux(
+          selBQ2,
+          bootRom.portBRdata,
+          mux(sramBQ2, sram.portBRdata, Const(0, width: dataWidth)),
+        );
+      }
+    } else if (readLatency == 1) {
       Sequential(clk, [
         If(portAEn, then: [selAQ1 < inRomA]),
         If(portBEn & (~portBWe), then: [selBQ1 < inRomB]),
@@ -1044,6 +1100,7 @@ class MemoryFactory {
     Map<int, int>? initialMemory,
     int bootRomBase = 0x0100,
     List<int>? bootRomWords,
+    int? sramDepth,
     String? sramMacroName,
     String name = 'tdp_bram',
   }) {
@@ -1086,6 +1143,7 @@ class MemoryFactory {
         portBEn: portBEn,
         romWords: resolvedRom,
         depth: depth,
+        sramDepth: sramDepth,
         bootRomBase: bootRomBase,
         readLatency: readLatency,
         dataWidth: dataWidth,

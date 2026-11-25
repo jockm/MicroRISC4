@@ -35,6 +35,7 @@ class CpuConfig {
   final int nocFifoDepth;
   final int trapTableBase;
   final int memWords;
+  final int? localRamWords;
 
   const CpuConfig({
     this.coreId = 0,
@@ -65,6 +66,7 @@ class CpuConfig {
     this.nocFifoDepth = 32,
     this.trapTableBase = 0x0100,
     this.memWords = 65536,
+    this.localRamWords,
   });
 
   int get addrWidth => (memWords - 1).bitLength;

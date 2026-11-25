@@ -88,6 +88,18 @@ ASIC_TILE_CORES        ?= 4
 ASIC_TILE_NOC_FIFO     ?= 16
 ASIC_QUAD_TOP          ?= mr4_quad_top
 
+# Tiny Tapeout MicroRISC4 (`tt_um_mr4`, Track E.1)
+TINY_BLD               := $(BUILD_DIR)/asic_tiny
+TINY_TOP               := tt_um_mr4
+TINY_SV                := $(TINY_BLD)/tt_um_mr4.sv
+TINY_BOOT_PROGRAM      ?= mr4src/asm/tiny_boot.asm
+TINY_BOOT_ROM_BASE     ?= 256
+TINY_BOOT_ROM_WORDS    ?= 256
+TINY_LOCAL_RAM_WORDS   ?= 16
+TINY_CLOCK_MHZ         ?= 50
+TINY_UART_DIVISOR      ?= 432
+TINY_PLATFORM          ?= $(if $(filter command line,$(origin ASIC_PLATFORM)),$(ASIC_PLATFORM),sky130hd)
+
 YOSYS          ?= yosys
 NEXTPNR_ECP5   ?= nextpnr-ecp5
 ECPPACK        ?= ecppack
@@ -104,7 +116,8 @@ SIM_PROGRAM    ?= $(BUILD_DIR)/monitor.bin
         test test-rohd sim debug \
         generate generate-ulx3s ulx3s-bit ulx3s-mr4os ulx3s-timing ulx3s-prog ulx3s-flash ulx3s-term \
         generate-asic asic-check asic-flow \
-        generate-asic-tile asic-tile-check asic-tile-flow asic-quad-flow asic-clean \
+        generate-asic-tile asic-tile-check asic-tile-flow asic-quad-flow \
+        generate-tiny tiny-check tiny-flow asic-clean \
         dot-clean clean
 
 # ------------------------------------------------------------------------------
@@ -145,6 +158,9 @@ help:
 	@echo "  make asic-tile-check  - Run Yosys structural preflight on mr4_tile and hierarchical mr4_quad_top"
 	@echo "  make asic-tile-flow   - Harden 1x mr4_tile macro & export LEF/LIB/GDS abstracts via ORFS Docker"
 	@echo "  make asic-quad-flow   - Assemble 4-tile mr4_quad_top chip from hardened mr4_tile macro via ORFS Docker"
+	@echo "  make generate-tiny    - Assemble tiny_boot.asm & generate Tiny Tapeout tt_um_mr4.sv (Track E.1)"
+	@echo "  make tiny-check       - Run Yosys structural & synth preflight on build/asic_tiny/tt_um_mr4.sv"
+	@echo "  make tiny-flow        - Run ORFS RTL-to-GDS for 2x2 Tiny Tapeout tile (TINY_PLATFORM=sky130hd|ihp-sg13g2)"
 	@echo "  make asic-clean       - Clean cached ORFS outputs (ASIC_PLATFORM=nangate45|asap7|all, optional ASIC_DESIGN=...)"
 	@echo "  make dot-clean        - Remove macOS ._ metadata files (where dot_clean exists)"
 	@echo "  make clean            - Remove $(BUILD_DIR)/ and generated SV/bitstream artifacts"
@@ -493,6 +509,63 @@ asic-quad-flow:
 		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4_quad/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" $(ORFS_EXTRA_ARGS) $(ORFS_TARGET)'; \
 	fi
 	@echo "==> Hierarchical 4-tile $(ASIC_QUAD_TOP) GDSII ready under: $(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/$(ASIC_QUAD_TOP)/base/"
+	@$(DOT_CLEAN_CMD)
+
+# ------------------------------------------------------------------------------
+# Tiny Tapeout MicroRISC4 (`tt_um_mr4`, Track E.1)
+# ------------------------------------------------------------------------------
+
+$(TINY_BLD):
+	mkdir -p $(TINY_BLD)
+
+generate-tiny: setup | $(TINY_BLD)
+	@echo "==> Assembling Tiny Tapeout Boot ROM ($(TINY_BOOT_PROGRAM)) -> $(TINY_BLD)/tiny_boot.hex..."
+	@$(MR4ASM) -I $(LIB_DIR) "$(TINY_BOOT_PROGRAM)" --hex -o "$(TINY_BLD)/tiny_boot.hex" -l "$(TINY_BLD)/tiny_boot.lst"
+	@echo "==> Generating Tiny Tapeout SystemVerilog ($(TINY_SV))..."
+	@cd $(ROHD_DIR) && $(DART) run bin/generate_tiny.dart \
+		--boot-hex "$(CURDIR)/$(TINY_BLD)/tiny_boot.hex" \
+		--boot-rom-base "$(TINY_BOOT_ROM_BASE)" \
+		--boot-rom-words "$(TINY_BOOT_ROM_WORDS)" \
+		--local-ram-words "$(TINY_LOCAL_RAM_WORDS)" \
+		--clk-mhz "$(TINY_CLOCK_MHZ)" \
+		--uart-divisor "$(TINY_UART_DIVISOR)" \
+		--out "$(CURDIR)/$(TINY_BLD)"
+	@$(DOT_CLEAN_CMD)
+
+tiny-check: generate-tiny
+	@echo "==> Checking $(TINY_SV) for forbidden FPGA/ECP5 primitives..."
+	@if grep -n -E "EHXPLLL|ODDRX1F|ram_style|syn_useioff|\\\$$readmemh" "$(TINY_SV)"; then \
+		echo "[FAIL] Forbidden FPGA primitive or \$$readmemh found in $(TINY_SV)!"; exit 1; \
+	fi
+	@echo "==> Running Yosys Tiny Tapeout structural + synth preflight (log: $(TINY_BLD)/tiny_check.log)..."
+	@$(YOSYS) -l "$(TINY_BLD)/tiny_check.log" \
+		-p "read_verilog -sv -DSYNTHESIS $(TINY_SV); hierarchy -check -top $(TINY_TOP); proc; opt; check -assert; synth -top $(TINY_TOP); stat" | tail -n 35
+	@echo "==> [PASS] Tiny Tapeout structural & synthesis preflight clean: $(TINY_SV)"
+	@$(DOT_CLEAN_CMD)
+
+tiny-flow: generate-tiny
+	@mkdir -p "$(ASIC_BLD)/orfs"
+	@if [ "$(ORFS_USE_DOCKER)" = "1" ]; then \
+		command -v docker >/dev/null 2>&1 || { \
+			echo "[FAIL] docker not found in PATH. See GettingStarted.md for Docker + ORFS setup."; exit 1; \
+		}; \
+		HOST_ROOT="$(CURDIR)"; \
+		if command -v cygpath >/dev/null 2>&1; then \
+			HOST_ROOT="$$(cygpath -w "$(CURDIR)")"; \
+		fi; \
+		DOCKER_USER_FLAG=""; \
+		if [ "$$(uname -s)" = "Linux" ]; then \
+			DOCKER_USER_FLAG="-u $$(id -u):$$(id -g)"; \
+		fi; \
+		echo "==> Running ORFS Tiny Tapeout flow ($(TINY_PLATFORM), target=$(ORFS_TARGET)) in Docker ($(ORFS_DOCKER_IMAGE))..."; \
+		MSYS_NO_PATHCONV=1 docker run --rm $$DOCKER_USER_FLAG \
+			-v "$$HOST_ROOT:/work/mr4" \
+			"$(ORFS_DOCKER_IMAGE)" \
+			bash -c 'cd /OpenROAD-flow-scripts && [ -f ./env.sh ] && source ./env.sh; exec make -C /OpenROAD-flow-scripts/flow DESIGN_CONFIG=/work/mr4/asic/mr4_tiny/config.mk WORK_HOME=/work/mr4/build/asic/orfs PLATFORM="$(TINY_PLATFORM)" $(ORFS_EXTRA_ARGS) $(ORFS_TARGET)'; \
+	else \
+		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4_tiny/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(TINY_PLATFORM)" $(ORFS_EXTRA_ARGS) $(ORFS_TARGET)'; \
+	fi
+	@echo "==> Tiny Tapeout $(TINY_TOP) GDSII ready under: $(ASIC_BLD)/orfs/results/$(TINY_PLATFORM)/$(TINY_TOP)/base/"
 	@$(DOT_CLEAN_CMD)
 
 # Clean cached ORFS outputs so config.mk / PDN / routing-layer edits rebuild cleanly.

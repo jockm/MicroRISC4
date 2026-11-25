@@ -29,3 +29,15 @@ MicroRISC4 has been synthesized, timed, and tested on both live **Lattice ECP5-8
 | **OpenROAD — ASAP7 (7 nm)** | 1-Core `mr4_asic_top` (1024w flop RAM + Boot ROM + UART) | **1,001.3 MHz (1.001 GHz)** | `0.00784 mm²` stdcell (`0.0235 mm²` die), `15.7 mW` @ 500 MHz | `0` errors, `+1,001 ps` slack @ 500 MHz target (`6.0 µW` leakage) |
 
 *Note: The OpenROAD runs above used conservative clock targets (100 MHz on 45 nm, 500 MHz on 7 nm) and a standalone 1024×16 flip-flop RAM (~94% of die area) with zero foundry SRAM macros. With compiled foundry SRAM macros and tightened clock targets, the current 4-stage RTL projects to ~700–900 MHz on 45 nm and ~2+ GHz on 7 nm (with 1 GHz @ 45 nm / 3 GHz @ 7 nm reachable via a 5–6 stage EX/branch split and 2-cycle pipelined SRAM).*
+
+## How LLMs Are Used in This Project.
+The project makes use of LLM's in a Spec -> Revise -> Generate -> Test loop.  Normally for specific features or goals.  Each step is reviewed by a human, as is the output.
+
+In addition human hands have revised code and documents directly and created original code.
+
+Decisions and the direction of development are always made by a human, all research and references are always checked.
+
+Multiple LLMs have been used:
+- Google Gemini
+- Antropic Claude
+- Microsoft Copilot

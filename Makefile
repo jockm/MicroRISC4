@@ -604,13 +604,8 @@ tiny-gls:
 		HOST_ROOT="$(CURDIR)"; \
 		if command -v cygpath >/dev/null 2>&1; then HOST_ROOT="$$(cygpath -w "$(CURDIR)")"; fi; \
 		echo "==> Preparing $(TINY_PLATFORM) standard-cell GLS models -> $$OUT_CELLS..."; \
-		if [ "$(TINY_PLATFORM)" = "ihp-sg13g2" ]; then \
-			MSYS_NO_PATHCONV=1 docker run --rm -v "$$HOST_ROOT:/work/mr4" "$(ORFS_DOCKER_IMAGE)" \
-				bash -c 'cp /OpenROAD-flow-scripts/flow/platforms/ihp-sg13g2/verilog/sg13g2_stdcell.v /work/mr4/build/asic_tiny/gls_ihp-sg13g2_cells.v'; \
-		else \
-			MSYS_NO_PATHCONV=1 docker run --rm -v "$$HOST_ROOT:/work/mr4" "$(ORFS_DOCKER_IMAGE)" \
-				bash -c 'set -e; LIBS=$$(find /OpenROAD-flow-scripts/flow/platforms/$(TINY_PLATFORM)/lib -name "*.lib" | head -n 4); python3 /work/mr4/tools/lib2vlog.py --lib $$LIBS --netlist /work/mr4/build/asic/orfs/results/$(TINY_PLATFORM)/$(TINY_TOP)/base/6_final.v --out /work/mr4/build/asic_tiny/gls_$(TINY_PLATFORM)_cells.v'; \
-		fi; \
+		MSYS_NO_PATHCONV=1 docker run --rm -v "$$HOST_ROOT:/work/mr4" "$(ORFS_DOCKER_IMAGE)" \
+			bash -c 'set -e; LIBS=$$(find /OpenROAD-flow-scripts/flow/platforms/$(TINY_PLATFORM)/lib -name "*.lib" | head -n 4); python3 /work/mr4/tools/lib2vlog.py --lib $$LIBS --netlist /work/mr4/build/asic/orfs/results/$(TINY_PLATFORM)/$(TINY_TOP)/base/6_final.v --out /work/mr4/build/asic_tiny/gls_$(TINY_PLATFORM)_cells.v'; \
 		CELL_MODELS="$$OUT_CELLS"; \
 	fi; \
 	echo "==> Compiling post-route GLS netlist ($(TINY_PLATFORM)) with $(IVERILOG)..."; \

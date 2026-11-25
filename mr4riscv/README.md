@@ -1,5 +1,9 @@
 # `mr4riscv`: Heterogeneous Multi-Core RV32IM Subsystem
 
+## NOTICE:
+
+This sub project has been deprecated (dead), and will be removed at some point.  This idea is being carried forward with the Particle Core and the Parcore sub project.  See: https://github.com/jockm/Particle
+
 `mr4riscv` is a decoupled, multi-core implementation of the RISC-V **RV32IM** instruction set architecture running on the 16-bit word-addressed MicroRISC4 computing fabric. 
 
 Rather than implementing a monolithic 32-bit hardware core, the pipeline is partitioned across five cooperating MicroRISC4 cores communicating over hardware streaming FIFOs (`0x000A`/`0x000B`) and Mailbox trap strobes (`0x000C`).

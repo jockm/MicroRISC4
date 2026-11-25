@@ -140,7 +140,7 @@ help:
 	@echo "  make test-rohd        - Run ROHD Dart test suite (assembles monitor hex first)"
 	@echo "  make os-test          - Run OS, compiler, FAT32, and multi-core regression tests (alias: test-os)"
 	@echo "  make sim              - Run a binary in mr4sim.py (SIM_PROGRAM=build/monitor.bin)"
-	@echo "  make sim-os           - Run the OS boot test in mr4sim.py (SIM_PROGRAM=build/monitor.bin)"
+	@echo "  make sim-os           - Run the OS boot test in mr4sim.py"
 	@echo "  make debug            - Run mr4sim.py in interactive m4db debugger mode"
 	@echo "  make generate         - Alias for generate-ulx3s"
 	@echo "  make generate-ulx3s   - Assemble ULX3S_PROGRAM and generate SV in $(ULX3S_BLD)"
@@ -328,6 +328,8 @@ ulx3s-term:
 		echo "[FAIL] No USB serial port found: connect the ULX3S, or pass ULX3S_PORT=/dev/..."; exit 1; \
 	fi
 	@$(PYTHON) $(ROHD_DIR)/boards/ulx3s/ulx3s_term.py "$(ULX3S_PORT)" $(ULX3S_BAUD)
+
+term: ulx3s-term
 
 # ------------------------------------------------------------------------------
 # ASIC RTL Generation & Structural Preflight (Road to OpenROAD, Track D.2)

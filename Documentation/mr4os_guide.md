@@ -180,7 +180,7 @@ Core 0 maintains per-core state in `os_proc.a4`:
 - **Per-PID CWD Isolation:** Each core tracks its own FAT32 current directory cluster (`proc_cwd_hi[pid]`, `proc_cwd_lo[pid]`). Children inherit their spawning parent's CWD; calling `sys_chdir()` in a worker only updates that worker's CWD and never affects Core 0 or other workers. `fat32_rmdir()` checks `proc_is_cwd_in_use()` to prevent deleting any directory currently held as a CWD by Core 0 or any active worker.
 - **Per-PID Command-Line Arguments:** Core 0 stores a 64-byte (`PROC_ARG_WORDS = 32`) NUL-terminated argument string per core in `proc_args[]`, retrieved via `sys_getargs()`.
 - **Per-PID `stat` Cache:** `stat_cache[MAX_CORES]` isolates concurrent two-step `SYS_STAT_PATH` + `SYS_STAT_GET` calls across workers.
-- **Clean Reclamation:** On `SYS_EXIT`, unhandled trap/fault, or `kill`/`Ctrl-C`, Core 0 automatically closes every open file/directory descriptor owned by that PID (`fat32_close_owner(pid)`), clears its console output and argument buffer, resets its CWD to root, restores the `mr4> ` prompt if it was the foreground process, and marks the core `PROC_FREE`.
+- **Clean Reclamation:** On `SYS_EXIT`, unhandled trap/fault, or `kill`/`Ctrl-C`, Core 0 automatically closes every open file/directory descriptor owned by that PID (`fat32_close_owner(pid)`), clears its console output and argument buffer, resets its CWD to root, restores the current-directory prompt if it was the foreground process, and marks the core `PROC_FREE`.
 
 ### 2.7 Console Ownership Model
 
@@ -189,8 +189,8 @@ Because multiple cores can execute simultaneously while sharing a single UART te
 - **`fg_pid` (Keyboard Input Owner):**
   - When `fg_pid == 0`, the Core 0 interactive shell owns UART RX.
   - When `fg_pid == pid` (`1..MAX_CORES-1`), UART RX bytes are intercepted by Core 0:
-    - **`Ctrl-Z` (`0x1A`):** Detaches `fg_pid` to the background (`proc_set_bg`), prints `[Backgrounded PID N]`, and returns the `mr4> ` prompt.
-    - **`Ctrl-C` (`0x03`):** Sends Mailbox Trap 14 to kill `fg_pid`, prints `^C Killed PID N`, and returns the `mr4> ` prompt.
+    - **`Ctrl-Z` (`0x1A`):** Detaches `fg_pid` to the background (`proc_set_bg`), prints `[Backgrounded PID N]`, and returns the prompt with the current directory.
+    - **`Ctrl-C` (`0x03`):** Sends Mailbox Trap 14 to kill `fg_pid`, prints `^C Killed PID N`, and returns the prompt with the current directory.
     - **All other bytes:** Enqueued into a 16-byte ring buffer (`fg_rx_buf`), which `SYS_GETC` pops exclusively for `fg_pid`. Background workers calling `SYS_GETC` immediately receive `ERR_EMPTY`.
 - **`proc_con_out[pid]` (Console Output Permission):**
   - **Foreground launch (`!` / `!<app>` or `fg <pid>`):** Grants exclusive output (`proc_con_out[pid] = 1`, mutes other workers) and keyboard ownership (`fg_pid = pid`).
@@ -239,17 +239,17 @@ make sim-os
 make os-test
 ```
 
-On boot, Core 0 initializes the process table, mounts the SD card, and displays the prompt:
+On boot, Core 0 initializes the process table, mounts the SD card, changes to `/WORK` when present, and displays the current directory in the prompt:
 
 ```text
 MicroRISC4 OS v0.1 (Core 0)
 FAT32 mounted OK
-mr4>
+mr4:/WORK>
 ```
 
 ### 3.2 Interactive Line Editor & Command History
 
-The Core 0 shell (`os_shell.a4`) provides a non-blocking line editor with a **64-byte** (`LINE_MAX = 64`) input buffer:
+The Core 0 shell (`os_shell.a4`) provides a non-blocking line editor with a **64-byte** (`LINE_MAX = 64`) input buffer. Its prompt displays the current directory, for example `mr4:/WORK> `:
 
 - **Editing:** Printable ASCII (`0x20`–`0x7E`), `Backspace` (`0x08` or `0x7F`) with erase-echo (`\b \b`), and `Enter` (`\r` or `\n`).
 - **4-Entry Command History:** Every non-empty submitted command is stored in a 4-slot circular history buffer (`HIST_MAX = 4`):
@@ -288,39 +288,39 @@ For example, from `/WORK`, typing `!cat README.TXT` locates `/CAT.PRG` (or `/BIN
 - **Path Resolution:**
   - If `<file>` contains `/` (a full or explicit path such as `@/work/setup.do`), that exact path is opened directly.
   - Otherwise (a bare name such as `@setup` or `do setup`), the shell looks for `/BIN/<name>.DO` (or `/BIN/<name>` if `.` is present), falling back to `<name>` / `<name>.DO` in the current directory.
-- **Silent Execution:** Script lines are executed silently without echoing commands or intermediate `mr4> ` prompts — only explicit `echo` and program output appear, followed by a single `mr4> ` prompt upon completion.
+- **Silent Execution:** Script lines are executed silently without echoing commands or intermediate prompts — only explicit `echo` and program output appear, followed by a single prompt showing the current directory upon completion.
 - **Formatting:** Both `\n` and `\r\n` line endings are supported (maximum 63 characters per line). Blank lines and lines whose first non-whitespace character is `#` are skipped.
 - **Foreground Synchronization:** If a script line launches a foreground program (`!app`), the script automatically pauses until that worker exits before advancing to the next line. Background launches (`&app` / `run app`) proceed immediately.
-- **Abort on `Ctrl-C`:** Pressing `Ctrl-C` kills any active foreground worker and aborts the remainder of the script cleanly, closing its file descriptor and returning to `mr4> `.
+- **Abort on `Ctrl-C`:** Pressing `Ctrl-C` kills any active foreground worker and aborts the remainder of the script cleanly, closing its file descriptor and returning to the prompt with the current directory.
 
 ### 3.6 Console Ownership & Job Control Walkthrough
 
 ```text
-mr4> &myworker
+mr4:/WORK> &myworker
 Spawned PID 1 (01A4 words)
-mr4> ps
+mr4:/WORK> ps
 PID  STATE  NAME
 0    RUN    os_kernel
 1    RUN    MYWORKER.PRG
 2    FREE   -
 3    FREE   -
-mr4> fg --fgoutput 1
+mr4:/WORK> fg --fgoutput 1
 Console output enabled for PID 1
-mr4> ps
+mr4:/WORK> ps
 PID  STATE  NAME
 0    RUN    os_kernel
 1    RUN    MYWORKER.PRG  [OUT]
 2    FREE   -
 3    FREE   -
-mr4> fg 1
+mr4:/WORK> fg 1
 ... interactive output from PID 1; keystrokes now go to PID 1 ...
 ^Z
 [Backgrounded PID 1]
-mr4> bg 1
+mr4:/WORK> bg 1
 Backgrounded PID 1
-mr4> kill 1
+mr4:/WORK> kill 1
 Killed PID 1
-mr4>
+mr4:/WORK>
 ```
 
 - `ps` annotates worker rows with **`[FG]`** when a worker owns both foreground input and exclusive output, or **`[OUT]`** when its console output is enabled while the shell retains keyboard input.

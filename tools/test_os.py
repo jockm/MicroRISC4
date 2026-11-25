@@ -107,9 +107,22 @@ def run_until_prompt(sim, uart_out, max_steps=6000000, worker=None) -> bool:
             worker.step()
         if sim.halted:
             return False
-        if len(uart_out) > start and "".join(uart_out[start:]).endswith("mr4> "):
+        if len(uart_out) > start and is_shell_prompt("".join(uart_out[start:])):
             return True
     return False
+
+
+def is_shell_prompt(text: str) -> bool:
+    prompt_line = text.rsplit("\n", 1)[-1]
+    return "mr4:" in prompt_line and prompt_line.endswith("> ")
+
+
+def has_shell_prompt(text: str) -> bool:
+    return "mr4:" in text
+
+
+def shell_prompt_count(text: str) -> int:
+    return text.count("mr4:")
 
 
 # ------------------------------------------------------------------------------
@@ -513,7 +526,7 @@ def test_os_async_trap1(args):
 
     reply = [peer.noc_ni.fifo_r(), peer.noc_ni.fifo_r()]
     assert reply == [0, 0], f"Unexpected SYS_PUTC reply: {reply}"
-    assert "mr4> !" in "".join(uart_out), "SYS_PUTC '!' missing from UART"
+    assert "mr4:" in "".join(uart_out) and "> !" in "".join(uart_out), "SYS_PUTC '!' missing from UART"
 
     for ch in "ps\r":
         sim.rx_queue.append(ord(ch))
@@ -902,7 +915,7 @@ void main(void) {
             return False
 
         # Boot OS
-        assert step_all(1500000, lambda: "".join(uart_out).endswith("mr4> ")), "OS boot failed"
+        assert step_all(1500000, lambda: is_shell_prompt("".join(uart_out))), "OS boot failed"
 
         procs_addr = os_sim.sym_to_addr["_procs"]
         pid1_state = procs_addr + 10
@@ -913,7 +926,7 @@ void main(void) {
             os_sim.rx_queue.append(ord(ch))
         assert step_all(
             14000000,
-            lambda: len(uart_out) > start and "".join(uart_out[start:]).endswith("mr4> "),
+            lambda: len(uart_out) > start and is_shell_prompt("".join(uart_out[start:])),
         ), f"! SPAWN.PRG prompt timeout; output:\n{''.join(uart_out[start:])}"
 
         # Wait until BOTH parent (PID 1 on Core 1) and child (PID 2 on Core 2) finish
@@ -937,7 +950,7 @@ void main(void) {
             os_sim.rx_queue.append(ord(ch))
         assert step_all(
             2000000,
-            lambda: len(uart_out) > ps_start and "".join(uart_out[ps_start:]).endswith("mr4> "),
+            lambda: len(uart_out) > ps_start and is_shell_prompt("".join(uart_out[ps_start:])),
         ), "ps after multi-worker SYS_SPAWN timed out"
         ps_out = "".join(uart_out[ps_start:])
         assert "1    FREE" in ps_out and "2    FREE" in ps_out, f"Workers not reclaimed in ps:\n{ps_out}"
@@ -1014,11 +1027,11 @@ void main(void) {
             start = len(uart_out)
             for ch in cmd_str:
                 os_sim.rx_queue.append(ord(ch))
-            ok = step_all(max_steps, lambda: len(uart_out) > start and "".join(uart_out[start:]).endswith("mr4> "))
+            ok = step_all(max_steps, lambda: len(uart_out) > start and is_shell_prompt("".join(uart_out[start:])))
             assert ok, f"Command {cmd_str!r} timed out; out={''.join(uart_out[start:])!r}"
             return "".join(uart_out[start:])
 
-        assert step_all(1500000, lambda: "".join(uart_out).endswith("mr4> ")), "OS boot failed"
+        assert step_all(1500000, lambda: is_shell_prompt("".join(uart_out))), "OS boot failed"
 
         # 1. Shell edge cases: backspace (0x08 & 0x7F), >LINE_MAX clamping, unknown command
         out_bs = send_cmd("ecxo\x08\x7fho edit_ok\r")
@@ -1701,13 +1714,13 @@ void main(void) {
             for ch in cmd_str:
                 os_sim.rx_queue.append(ord(ch))
             if wait_contains_prompt:
-                ok = step_all(max_steps, lambda: "mr4> " in "".join(uart_out[start:]))
+                ok = step_all(max_steps, lambda: has_shell_prompt("".join(uart_out[start:])))
             else:
-                ok = step_all(max_steps, lambda: len(uart_out) > start and "".join(uart_out[start:]).endswith("mr4> "))
+                ok = step_all(max_steps, lambda: len(uart_out) > start and is_shell_prompt("".join(uart_out[start:])))
             assert ok, f"Command {cmd_str!r} timed out; out={''.join(uart_out[start:])!r}"
             return "".join(uart_out[start:])
 
-        assert step_all(1500000, lambda: "".join(uart_out).endswith("mr4> ")), "OS boot failed"
+        assert step_all(1500000, lambda: is_shell_prompt("".join(uart_out))), "OS boot failed"
 
         procs_addr = os_sim.sym_to_addr["_procs"]
         pid1_state = procs_addr + 10
@@ -1738,7 +1751,7 @@ void main(void) {
         os_sim.rx_queue.append(0x1A)
         assert step_all(
             2000000,
-            lambda: os_sim.mem[fg_pid_addr] == 0 and "".join(uart_out[cz_start:]).endswith("mr4> "),
+            lambda: os_sim.mem[fg_pid_addr] == 0 and is_shell_prompt("".join(uart_out[cz_start:])),
         ), f"Ctrl-Z failed: {''.join(uart_out[cz_start:])!r}"
         assert "[Backgrounded PID 1]" in "".join(uart_out[cz_start:])
         out_ps = send_cmd("ps\r")
@@ -1754,7 +1767,7 @@ void main(void) {
             2000000,
             lambda: os_sim.mem[fg_pid_addr] == 0
             and os_sim.mem[pid1_state] == 0
-            and "".join(uart_out[cc_start:]).endswith("mr4> "),
+            and is_shell_prompt("".join(uart_out[cc_start:])),
         ), f"Ctrl-C failed: {''.join(uart_out[cc_start:])!r}"
         assert "^C Killed PID 1" in "".join(uart_out[cc_start:])
 
@@ -2274,12 +2287,12 @@ void main(void) {
             ok = step_until(4000000, lambda: expect in "".join(uart_out[kstart:]))
             assert ok, f"Key {seq!r} did not decode to {expect!r}; out={''.join(uart_out[kstart:])!r}"
 
-        # Quit cleanly with 'q' and confirm return to mr4> prompt
+        # Quit cleanly with 'q' and confirm return to the shell prompt
         qstart = len(uart_out)
         os_sim.rx_queue.append(ord("q"))
         assert step_until(
             4000000,
-            lambda: "TERM_OK" in "".join(uart_out[qstart:]) and "".join(uart_out[qstart:]).endswith("mr4> "),
+            lambda: "TERM_OK" in "".join(uart_out[qstart:]) and is_shell_prompt("".join(uart_out[qstart:])),
         ), f"TERMAPP.PRG quit failed; out={''.join(uart_out[qstart:])!r}"
 
         assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
@@ -2371,7 +2384,8 @@ void main(void) {
         assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
         boot_out = "".join(uart_out)
         assert "BOOT_DO_RAN\r\n" in boot_out, f"/BIN/BOOT.DO did not run at boot:\n{boot_out!r}"
-        assert boot_out.index("FAT32 mounted OK") < boot_out.index("BOOT_DO_RAN\r\n") < boot_out.rindex("mr4> ")
+        assert boot_out.index("FAT32 mounted OK") < boot_out.index("BOOT_DO_RAN\r\n") < boot_out.rindex("mr4:")
+        assert boot_out.endswith("mr4:/WORK> "), f"Boot prompt omitted current directory:\n{boot_out!r}"
 
         def send_cmd(cmd_str: str, max_steps: int = 20000000) -> str:
             start = len(uart_out)
@@ -2382,6 +2396,8 @@ void main(void) {
             return "".join(uart_out[start:])
 
         assert "/WORK\r\n" in send_cmd("pwd\r"), "OS did not start in /WORK"
+        assert send_cmd("cd /\r").endswith("mr4:/> "), "Prompt did not update for root directory"
+        assert send_cmd("cd /WORK\r").endswith("mr4:/WORK> "), "Prompt did not update for /WORK"
 
         out_args = send_cmd("do args.do ARGUMENT.TXT second\r")
         assert "PARAMS:ARGUMENT.TXT:second\r\n" in out_args, f"Script parameters did not expand:\n{out_args!r}"
@@ -2400,7 +2416,7 @@ void main(void) {
         assert "from_script" in out1, f"Foreground ! cat inside script failed:\n{out1!r}"
         assert "Spawned PID 1" in out1, f"Background &fibers inside script failed:\n{out1!r}"
         assert "STEP_DONE" in out1, f"Script did not finish after fg app:\n{out1!r}"
-        assert out1.count("mr4> ") == 1, f"Expected silent execution (1 final prompt), got:\n{out1!r}"
+        assert shell_prompt_count(out1) == 1, f"Expected silent execution (1 final prompt), got:\n{out1!r}"
         assert out1.index("STEP_ONE") < out1.index("from_script") < out1.index("STEP_DONE")
 
         # Wait for background &fibers to exit cleanly before next test
@@ -2417,7 +2433,7 @@ void main(void) {
         for invocation in ("do /work/full.do\r", "@/work/full.do\r", "@ /work/full.do\r"):
             out_f = send_cmd(invocation)
             assert "FULL_A" in out_f and "FULL_B" in out_f, f"{invocation!r} failed:\n{out_f!r}"
-            assert out_f.count("mr4> ") == 1, f"{invocation!r} printed extra prompts:\n{out_f!r}"
+            assert shell_prompt_count(out_f) == 1, f"{invocation!r} printed extra prompts:\n{out_f!r}"
 
         # 3. Missing script error
         assert "Script not found" in send_cmd("do /no/such.do\r")

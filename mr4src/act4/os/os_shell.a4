@@ -32,7 +32,13 @@ u16 sh_sc_len    = 0;
 u16 sh_sc_expand_len = 0;
 
 void shell_prompt(void) {
-    uart_puts("mr4> ");
+    uart_puts("mr4:");
+    if (getbyte(cwd_path, 0) == 0) {
+        uart_putc(47);
+    } else {
+        uart_puts(cwd_path);
+    }
+    uart_puts("> ");
 }
 
 // Split sh_line into sh_cmd and sh_arg (separated by space)

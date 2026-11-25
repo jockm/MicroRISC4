@@ -56,6 +56,8 @@ else ifeq ($(PLATFORM),sky130hd)
 else ifeq ($(PLATFORM),ihp-sg13g2)
   export CLOCK_PERIOD ?= 20.0
   export CORE_UTILIZATION = 35
+  # IHP SG13G2 pdn.tcl adds a 5um+2um+5um ring @ 4.5um offset (~16.5um/side)
+  export CORE_MARGIN = 20
 else
   # Nangate45 (and default ns-based PDKs): 10.0 ns = 100 MHz
   export CLOCK_PERIOD ?= 10.0

@@ -45,6 +45,7 @@ else ifeq ($(PLATFORM),sky130hd)
 else ifeq ($(PLATFORM),ihp-sg13g2)
   export CLOCK_PERIOD      ?= 20.0
   export CORE_UTILIZATION   = 35
+  export CORE_MARGIN        = 20
   export MAX_ROUTING_LAYER ?= Metal4
 else
   export CLOCK_PERIOD          ?= 10.0

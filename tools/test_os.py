@@ -354,16 +354,29 @@ def test_os_shell_fs(args):
     root_off = (data_lba + (root_clus - 2) * spc) * 512
 
     readme_clus = None
-    ls_clus = None
+    bin_clus = None
+    work_clus = None
     for idx in range(16):
         ent = img_bytes[root_off + idx * 32 : root_off + (idx + 1) * 32]
         name = ent[0:11].decode("ascii", errors="ignore")
         clus = (struct.unpack_from("<H", ent, 20)[0] << 16) | struct.unpack_from("<H", ent, 26)[0]
         if name == "README  TXT":
             readme_clus = clus
-        elif name == "LS      PRG":
+        elif name == "BIN        ":
+            bin_clus = clus
+        elif name == "WORK       ":
+            work_clus = clus
+    assert readme_clus is not None and bin_clus is not None and work_clus is not None
+
+    ls_clus = None
+    bin_off = (data_lba + (bin_clus - 2) * spc) * 512
+    for idx in range(16):
+        ent = img_bytes[bin_off + idx * 32 : bin_off + (idx + 1) * 32]
+        name = ent[0:11].decode("ascii", errors="ignore")
+        clus = (struct.unpack_from("<H", ent, 20)[0] << 16) | struct.unpack_from("<H", ent, 26)[0]
+        if name == "LS      PRG":
             ls_clus = clus
-    assert readme_clus is not None and ls_clus is not None
+    assert ls_clus is not None
 
     sim = mr4sim.MicroRISC4Sim(core_id=0)
     sim.sd_card = mr4sim.SpiSdCard(img_bytes)
@@ -389,6 +402,7 @@ def test_os_shell_fs(args):
         "help",
         "ps",
         "ls",
+        "ls /bin",
         "echo Hello MicroRISC4 world",
         "clear",
         "stat",
@@ -419,6 +433,8 @@ def test_os_shell_fs(args):
     for snippet in (
         "FAT32 mounted OK",
         "0    RUN    os_kernel",
+        "BIN",
+        "WORK",
         "LS.PRG",
         "Hello MicroRISC4 world",
         "\x1b[2J\x1b[H",
@@ -670,10 +686,7 @@ def test_os_mul(_args):
     with tempfile.TemporaryDirectory() as td:
         p = Path(td)
         sd_root = p / "sd_root"
-        sd_root.mkdir()
-        for item in (BUILD_DIR / "sd_root").iterdir():
-            if item.is_file():
-                shutil.copy(item, sd_root / item.name)
+        shutil.copytree(BUILD_DIR / "sd_root", sd_root)
         (sd_root / "TEST.MUL").write_text(
             "set n 0\n"
             "expr 2+3*4\n"
@@ -2100,15 +2113,16 @@ def test_os_path_and_history(args):
             break
     assert os_sim.mem[pid1_state] == 0 and os_sim.mem[pid1_state + 1] == 0
 
-    assert "Created /bin" in send_cmd("mkdir /bin\r")
-    assert "Copied CAT.PRG -> /bin/mycat.prg" in send_cmd("cp CAT.PRG /bin/mycat.prg\r")
-    assert "Created /work" in send_cmd("mkdir /work\r")
+    assert "Copied /bin/cat.prg -> /bin/mycat.prg" in send_cmd("cp /bin/cat.prg /bin/mycat.prg\r")
+    assert "Copied /bin/cat.prg -> /rootcat.prg" in send_cmd("cp /bin/cat.prg /rootcat.prg\r")
     send_cmd("cd /work\r")
     assert "Wrote msg.txt" in send_cmd("write msg.txt found via path\r")
     out_bin = send_cmd("! mycat msg.txt\r")
     assert "found via path" in out_bin, f"! mycat via /BIN failed:\n{out_bin}"
-    out_root = send_cmd("! cat msg.txt\r")
-    assert "found via path" in out_root, f"! cat via / failed:\n{out_root}"
+    out_root = send_cmd("! rootcat msg.txt\r")
+    assert "found via path" in out_root, f"! rootcat via / failed:\n{out_root}"
+    out_cat = send_cmd("! cat msg.txt\r")
+    assert "found via path" in out_cat, f"! cat via /BIN failed:\n{out_cat}"
     send_cmd("cd /\r")
 
     # 3. 4-entry Up/Down arrow history ring (ESC [ A / ESC [ B) + ignore ESC [ C

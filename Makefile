@@ -622,14 +622,14 @@ $(OS_BUILD)/%.prg: $(OS_BUILD)/%.asm
 os-build: $(OS_MAIN_BIN) $(OS_APP_PRGS) $(BUILD_DIR)/worker_stub.bin
 
 $(SD_SRC_DIR): $(OS_APP_PRGS)
-	mkdir -p $(SD_SRC_DIR)
-	rm -f $(SD_SRC_DIR)/*.BIN
-	cp $(LS_PRG) $(SD_SRC_DIR)/LS.PRG
-	cp $(PS_PRG) $(SD_SRC_DIR)/PS.PRG
-	cp $(CAT_PRG) $(SD_SRC_DIR)/CAT.PRG
-	cp $(XI_PRG) $(SD_SRC_DIR)/XI.PRG
-	cp $(FIBERS_PRG) $(SD_SRC_DIR)/FIBERS.PRG
-	cp $(MUL_PRG) $(SD_SRC_DIR)/MUL.PRG
+	rm -rf $(SD_SRC_DIR)
+	mkdir -p $(SD_SRC_DIR)/BIN $(SD_SRC_DIR)/WORK
+	cp $(LS_PRG) $(SD_SRC_DIR)/BIN/LS.PRG
+	cp $(PS_PRG) $(SD_SRC_DIR)/BIN/PS.PRG
+	cp $(CAT_PRG) $(SD_SRC_DIR)/BIN/CAT.PRG
+	cp $(XI_PRG) $(SD_SRC_DIR)/BIN/XI.PRG
+	cp $(FIBERS_PRG) $(SD_SRC_DIR)/BIN/FIBERS.PRG
+	cp $(MUL_PRG) $(SD_SRC_DIR)/BIN/MUL.PRG
 	printf "Hello from MicroRISC4 FAT32 SD card!\n" > $(SD_SRC_DIR)/README.TXT
 
 sd-img: $(SD_SRC_DIR)

@@ -295,10 +295,10 @@ python3 tools/mr4sim.py --enable-math build/my_app.bin
    make ulx3s-timing
    ```
 
-2. Copy the files from `build/sd_root/` (`LS.PRG`, `CAT.PRG`, `PS.PRG`,
-   `MUL.PRG`, `XI.PRG`, `FIBERS.PRG`, `README.TXT`) to the root of a
-   FAT32-formatted microSD card (standard MBR partition 1) and insert it into
-   the ULX3S onboard microSD slot.
+2. Copy the contents of `build/sd_root/` (`BIN/` with `LS.PRG`, `CAT.PRG`,
+   `PS.PRG`, `MUL.PRG`, `XI.PRG`, `FIBERS.PRG`, plus `WORK/` and `README.TXT`)
+   to the root of a FAT32-formatted microSD card (standard MBR partition 1) and
+   insert it into the ULX3S onboard microSD slot.
 3. Load the bitstream into ULX3S SRAM and open the 3 Mbaud serial terminal:
 
    ```sh

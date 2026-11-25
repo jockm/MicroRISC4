@@ -2375,6 +2375,8 @@ void main(void) {
             assert ok, f"Command {cmd_str!r} timed out; out={''.join(uart_out[start:])!r}"
             return "".join(uart_out[start:])
 
+        assert "/WORK\r\n" in send_cmd("pwd\r"), "OS did not start in /WORK"
+
         # 1. @hello -> resolves /BIN/HELLO.DO, runs silently, waits on ! cat, launches &fibers
         out1 = send_cmd("@hello\r")
         assert "STEP_ONE" in out1, f"Missing STEP_ONE:\n{out1!r}"

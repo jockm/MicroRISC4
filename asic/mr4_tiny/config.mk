@@ -40,10 +40,11 @@ ifeq ($(PLATFORM),sky130hd)
   export CORE_AREA ?= 3.68 5.44 327.98 220.32
 else ifeq ($(PLATFORM),ihp-sg13g2)
   export CLOCK_PERIOD ?= 20.0
-  # Exact 2x2 Tiny Tapeout IHP SG13G2 tile footprint (415.68 x 313.74 um = 0.1304 mm^2)
-  # with 20.16 / 22.68 um margins for ORFS's SG13G2 TopMetal1/2 PDN ring
-  export DIE_AREA  ?= 0 0 415.68 313.74
-  export CORE_AREA ?= 20.16 22.68 395.52 291.06
+  # Exact 3x2 Tiny Tapeout IHP SG13G2 tile footprint (629.28 x 313.74 um = 0.1974 mm^2;
+  # site grid 0.48 x 3.78 um -> 1311 x 83 sites) with 20.16 / 22.68 um margins for
+  # ORFS's standalone SG13G2 TopMetal1/2 PDN ring (~67% stdcell utilization)
+  export DIE_AREA  ?= 0 0 629.28 313.74
+  export CORE_AREA ?= 20.16 22.68 609.12 291.06
 else ifeq ($(PLATFORM),asap7)
   export CLOCK_PERIOD ?= 2000
   export CORE_UTILIZATION ?= 45

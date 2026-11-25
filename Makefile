@@ -588,7 +588,9 @@ tiny-sim: generate-tiny
 # Usage:
 #   make tiny-gls TINY_PLATFORM=sky130hd
 #   make tiny-gls TINY_PLATFORM=ihp-sg13g2
-#   (Optionally pass GLS_STDCELL_V="path/to/primitives.v path/to/sky130_fd_sc_hd.v" if running outside Docker)
+# Automatically extracts official PDK .v models (e.g. sg13g2_stdcell.v) or generates
+# exact 4-state Liberty behavioral cell models via tools/lib2vlog.py from ORFS Docker,
+# then runs Icarus Verilog (`iverilog`/`vvp`) on the actual post-route `6_final.v`!
 tiny-gls:
 	@NETLIST="$(ASIC_BLD)/orfs/results/$(TINY_PLATFORM)/$(TINY_TOP)/base/6_final.v"; \
 	if [ ! -f "$$NETLIST" ]; then \
@@ -596,30 +598,29 @@ tiny-gls:
 	fi
 	@mkdir -p "$(TINY_BLD)"
 	@$(MR4ASM) -I $(LIB_DIR) asic/mr4_tiny/tiny_payload.asm --hex -o "$(TINY_BLD)/tiny_payload.hex"
-	@if [ -n "$(GLS_STDCELL_V)" ]; then \
-		echo "==> Compiling post-route GLS netlist ($(TINY_PLATFORM)) with host $(IVERILOG)..."; \
-		$(IVERILOG) -g2012 -DFUNCTIONAL -DUNIT_DELAY=#0 -Ptb_tt_um_mr4.UART_DIV=$(TINY_UART_DIVISOR) \
-			-o "$(TINY_BLD)/tb_tt_um_mr4_gls_$(TINY_PLATFORM).vvp" \
-			asic/mr4_tiny/tb_tt_um_mr4.sv \
-			"$(ASIC_BLD)/orfs/results/$(TINY_PLATFORM)/$(TINY_TOP)/base/6_final.v" \
-			$(GLS_STDCELL_V) && \
-		$(VVP) "$(TINY_BLD)/tb_tt_um_mr4_gls_$(TINY_PLATFORM).vvp" "+PAYLOAD_HEX=$(TINY_BLD)/tiny_payload.hex"; \
-	else \
-		echo "==> Running post-route GLS ($(TINY_PLATFORM)) via ORFS Docker / PDK stdcell models..."; \
+	@CELL_MODELS="$(GLS_STDCELL_V)"; \
+	if [ -z "$$CELL_MODELS" ]; then \
+		OUT_CELLS="$(TINY_BLD)/gls_$(TINY_PLATFORM)_cells.v"; \
 		HOST_ROOT="$(CURDIR)"; \
 		if command -v cygpath >/dev/null 2>&1; then HOST_ROOT="$$(cygpath -w "$(CURDIR)")"; fi; \
-		MSYS_NO_PATHCONV=1 docker run --rm -v "$$HOST_ROOT:/work/mr4" "$(ORFS_DOCKER_IMAGE)" \
-			bash -c 'set -e; \
-			  PLAT="$(TINY_PLATFORM)"; \
-			  NETLIST="/work/mr4/build/asic/orfs/results/$$PLAT/tt_um_mr4/base/6_final.v"; \
-			  CELLS=$$(find /OpenROAD-flow-scripts/flow/platforms/$$PLAT -type f \( -name "*stdcell*.v" -o -name "*sc_hd*.v" -o -name "primitives.v" \) 2>/dev/null | sort); \
-			  if [ -z "$$CELLS" ]; then echo "[INFO] No .v behavioral stdcell models bundled in ORFS for $$PLAT; pass GLS_STDCELL_V=..."; exit 2; fi; \
-			  echo "Using PDK models: $$CELLS"; \
-			  iverilog -g2012 -DFUNCTIONAL -DUNIT_DELAY=#0 -Ptb_tt_um_mr4.UART_DIV=$(TINY_UART_DIVISOR) \
-			    -o /work/mr4/build/asic_tiny/tb_tt_um_mr4_gls_$$PLAT.vvp \
-			    /work/mr4/asic/mr4_tiny/tb_tt_um_mr4.sv "$$NETLIST" $$CELLS && \
-			  vvp /work/mr4/build/asic_tiny/tb_tt_um_mr4_gls_$$PLAT.vvp +PAYLOAD_HEX=/work/mr4/build/asic_tiny/tiny_payload.hex'; \
-	fi
+		echo "==> Preparing $(TINY_PLATFORM) standard-cell GLS models -> $$OUT_CELLS..."; \
+		if [ "$(TINY_PLATFORM)" = "ihp-sg13g2" ]; then \
+			MSYS_NO_PATHCONV=1 docker run --rm -v "$$HOST_ROOT:/work/mr4" "$(ORFS_DOCKER_IMAGE)" \
+				bash -c 'cp /OpenROAD-flow-scripts/flow/platforms/ihp-sg13g2/verilog/sg13g2_stdcell.v /work/mr4/build/asic_tiny/gls_ihp-sg13g2_cells.v'; \
+		else \
+			MSYS_NO_PATHCONV=1 docker run --rm -v "$$HOST_ROOT:/work/mr4" "$(ORFS_DOCKER_IMAGE)" \
+				bash -c 'set -e; LIBS=$$(find /OpenROAD-flow-scripts/flow/platforms/$(TINY_PLATFORM)/lib -name "*.lib" | head -n 4); python3 /work/mr4/tools/lib2vlog.py --lib $$LIBS --netlist /work/mr4/build/asic/orfs/results/$(TINY_PLATFORM)/$(TINY_TOP)/base/6_final.v --out /work/mr4/build/asic_tiny/gls_$(TINY_PLATFORM)_cells.v'; \
+		fi; \
+		CELL_MODELS="$$OUT_CELLS"; \
+	fi; \
+	echo "==> Compiling post-route GLS netlist ($(TINY_PLATFORM)) with $(IVERILOG)..."; \
+	$(IVERILOG) -g2012 -DFUNCTIONAL -DUNIT_DELAY=#0 -Ptb_tt_um_mr4.UART_DIV=$(TINY_UART_DIVISOR) \
+		-o "$(TINY_BLD)/tb_tt_um_mr4_gls_$(TINY_PLATFORM).vvp" \
+		asic/mr4_tiny/tb_tt_um_mr4.sv \
+		"$(ASIC_BLD)/orfs/results/$(TINY_PLATFORM)/$(TINY_TOP)/base/6_final.v" \
+		$$CELL_MODELS && \
+	echo "==> Running post-route Gate-Level Simulation ($(VVP))..." && \
+	$(VVP) "$(TINY_BLD)/tb_tt_um_mr4_gls_$(TINY_PLATFORM).vvp" "+PAYLOAD_HEX=$(TINY_BLD)/tiny_payload.hex"
 	@$(DOT_CLEAN_CMD)
 
 # Clean cached ORFS outputs so config.mk / PDN / routing-layer edits rebuild cleanly.

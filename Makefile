@@ -605,7 +605,7 @@ tiny-gls:
 		if command -v cygpath >/dev/null 2>&1; then HOST_ROOT="$$(cygpath -w "$(CURDIR)")"; fi; \
 		echo "==> Preparing $(TINY_PLATFORM) standard-cell GLS models -> $$OUT_CELLS..."; \
 		MSYS_NO_PATHCONV=1 docker run --rm -v "$$HOST_ROOT:/work/mr4" "$(ORFS_DOCKER_IMAGE)" \
-			bash -c 'set -e; LIBS=$$(find /OpenROAD-flow-scripts/flow/platforms/$(TINY_PLATFORM)/lib -name "*.lib" | head -n 4); python3 /work/mr4/tools/lib2vlog.py --lib $$LIBS --netlist /work/mr4/build/asic/orfs/results/$(TINY_PLATFORM)/$(TINY_TOP)/base/6_final.v --out /work/mr4/build/asic_tiny/gls_$(TINY_PLATFORM)_cells.v'; \
+			bash -c 'set -e; LIBS=$$(find /OpenROAD-flow-scripts/flow/platforms/$(TINY_PLATFORM)/lib -name "*.lib" | grep -E "stdcell.*typ|sc_hd.*tt|Nangate|asap7" | head -n 4); if [ -z "$$LIBS" ]; then LIBS=$$(find /OpenROAD-flow-scripts/flow/platforms/$(TINY_PLATFORM)/lib -name "*.lib"); fi; echo "Using Liberty: $$LIBS"; python3 /work/mr4/tools/lib2vlog.py --lib $$LIBS --netlist /work/mr4/build/asic/orfs/results/$(TINY_PLATFORM)/$(TINY_TOP)/base/6_final.v --out /work/mr4/build/asic_tiny/gls_$(TINY_PLATFORM)_cells.v'; \
 		CELL_MODELS="$$OUT_CELLS"; \
 	fi; \
 	echo "==> Compiling post-route GLS netlist ($(TINY_PLATFORM)) with $(IVERILOG)..."; \

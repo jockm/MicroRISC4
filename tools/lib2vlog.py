@@ -313,6 +313,10 @@ def main() -> int:
                 out_lines.append(f"module {cell_name} ();\nendmodule\n")
             stub_count += 1
 
+    if not parsed:
+        print(f"Error: 0 of {len(wanted)} netlist cells matched Liberty files: {args.lib}", file=sys.stderr)
+        return 1
+
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text("\n".join(out_lines), encoding="utf-8")
     print(f"Generated {len(parsed)} Liberty behavioral models + {stub_count} physical stubs -> {args.out}")

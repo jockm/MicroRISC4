@@ -695,11 +695,13 @@ class Parser:
         self.consume("TRAP")
         self.consume("LPAREN")
         vec_expr = self.parse_expr()
-        self.consume("COMMA")
-        data_expr = self.parse_expr()
+        data_byte = 0
+        if self.match("COMMA"):
+            self.consume("COMMA")
+            data_expr = self.parse_expr()
+            data_byte = self.eval_const(data_expr) & 0xFF
         self.consume("RPAREN")
         self.consume("SEMI")
-        data_byte = self.eval_const(data_expr) & 0xFF
         return TrapStmt(vec_expr, data_byte)
 
     def parse_setbyte(self) -> SetByteStmt:

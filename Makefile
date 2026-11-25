@@ -115,7 +115,7 @@ ULX3S_BAUD     ?= 3000000
 SIM_PROGRAM    ?= $(BUILD_DIR)/monitor.bin
 
 .PHONY: all help setup analyze build apps \
-        test test-rohd sim debug \
+        test test-rohd test-act4c sim debug \
         generate generate-ulx3s ulx3s-bit ulx3s-mr4os ulx3s-timing ulx3s-prog ulx3s-flash ulx3s-term \
         generate-asic asic-check asic-flow \
         generate-asic-tile asic-tile-check asic-tile-flow asic-quad-flow \
@@ -138,6 +138,7 @@ help:
 	@echo "  make apps             - Assemble mr4src/asm/*.asm and compile mr4src/act4/*.a4"
 	@echo "  make test             - Run all ROHD unit and firmware boot tests"
 	@echo "  make test-rohd        - Run ROHD Dart test suite (assembles monitor hex first)"
+	@echo "  make test-act4c       - Run focused ACT4 host-compiler baseline fixtures"
 	@echo "  make os-test          - Run OS, compiler, FAT32, and multi-core regression tests (alias: test-os)"
 	@echo "  make sim              - Run a binary in mr4sim.py (SIM_PROGRAM=build/monitor.bin)"
 	@echo "  make sim-os           - Run the OS boot test in mr4sim.py"
@@ -777,7 +778,10 @@ sim-os: os-build sd-img
 
 os-test: test-os
 
-test-os: os-build sd-img
+test-act4c:
+	$(PYTHON) $(TOOLS_DIR)/test_act4c.py
+
+test-os: os-build sd-img test-act4c
 	$(PYTHON) $(TOOLS_DIR)/test_os.py --sd-image $(SD_IMG)
 
 clean-os:

@@ -185,6 +185,22 @@ source-file organization can be decided during implementation.
 - Add tests for malformed inputs and host compiler behavior that will serve as
   the compatibility oracle.
 
+**Status: Complete.** The focused host suite is
+[`tools/test_act4c.py`](../tools/test_act4c.py), runnable with
+`make test-act4c` and included in `make os-test`. It covers deterministic
+assembly, assembly acceptance, code-generation options, relative and
+include-directory imports, duplicate import suppression, trap payloads, and
+source diagnostics. Its default-output fixture pins both assembly and
+assembled-binary SHA-256 baselines. `make test-act4c` passed 6/6 fixtures, and
+`make os-test` passed all 19 OS regression scenarios. The existing OS suite
+remains the runtime oracle.
+
+The audit found two manual/compiler discrepancies and reconciled them:
+`trap(vector)` now emits a zero payload as documented, and the CLI reference
+now lists `--hw-math` and accurately describes the default output filename.
+The host compiler's 19 OS regression scenarios are described in
+[`GettingStarted.md`](../GettingStarted.md).
+
 **Exit criteria:** the intended compatibility target is explicit, tested, and
 small enough to run for every resident compiler change.
 

@@ -257,9 +257,9 @@ make os-test
 ```
 
 `make os-test` builds the FAT32 SD image (`build/sd_root` → `/tmp/mr4_sd.img`)
-and runs the 18-test ACT4 compiler, trap ISR, FAT32 filesystem, multi-core Lean
-Ring IPC, cooperative fiber, shell script, and `--hw-math` codegen suite in
-`tools/mr4sim.py`.
+and runs the focused ACT4 host-compiler fixtures followed by the 19-scenario
+ACT4 compiler, trap ISR, FAT32 filesystem, multi-core Lean Ring IPC, cooperative
+fiber, shell script, and `--hw-math` codegen suite using `tools/mr4sim.py`.
 
 ### 3. Build and simulate individual programs
 

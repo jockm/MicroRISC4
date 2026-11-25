@@ -208,7 +208,8 @@ trap(vector);
 trap(vector, data_byte);
 ```
 - `vector`: Can be an arbitrary runtime expression ($0$–$15$).
-- `data_byte`: Optional 8-bit immediate payload constant ($0$–$255$).
+- `data_byte`: Optional 8-bit immediate payload constant ($0$–$255$). If
+  omitted, the compiler emits a zero payload.
 
 ---
 
@@ -331,10 +332,11 @@ python3 tools/act4c.py [options] <input.a4>
 ### Options & Flags
 | Flag | Parameter | Description |
 | :--- | :---: | :--- |
-| `-o`, `--output` | `<file.asm>` | Destination assembly output filename. Defaults to `<input>.asm`. |
+| `-o`, `--output` | `<file.asm>` | Destination assembly output filename. Defaults to the input path with its extension replaced by `.asm`. |
 | `-I`, `-i`, `--include` | `<dir>` | Add directory to recursive `import` search path. Can be specified multiple times. |
 | `--org` | `<addr>` | Starting code origin for application code (default: `0x0200`). |
 | `--nopreamble` | *(none)* | Suppresses emission of the vector dispatch table at `0x0100` and `START_PROGRAM`. |
+| `--hw-math` | *(none)* | Lower supported multiplication, division, modulo, and shift operations to the optional hardware math accelerator, with a startup capability guard. |
 
 ### Build Pipeline Example
 ```bash

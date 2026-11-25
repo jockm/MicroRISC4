@@ -1,6 +1,6 @@
 # MicroRISC4 Phase 2 Roadmap: High-Frequency Scaling, Hardware OS Bring-Up, Compiler Efficiency & OpenROAD ASIC Flow
 
-> **Status:** Active (supersedes Phase 1 [Roadmap.md](Roadmap.md), which is 100% complete and hardware-verified on ULX3S-85F — including a 4-minute, ~896 MB, 0-error 4-core SDRAM + Lean Ring NoC + Trap 14 soak test).
+> **Status:** Complete — 13/13 items verified (superseded by [Roadmap_Phase3.md](Roadmap_Phase3.md); supersedes Phase 1 [Roadmap.md](Roadmap.md)).
 > **Related Documents:** [Roadmap.md](Roadmap.md) (Phase 1 Archive) · [RoadmapOS.md](RoadmapOS.md) (MR4OS) · [Road_to_OpenROAD.md](Road_to_OpenROAD.md) (ASIC Flow Guide)
 
 ---

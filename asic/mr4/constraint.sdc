@@ -16,10 +16,10 @@ if {[info exists ::env(PLATFORM)]} {
 
 if {$current_platform eq "asap7"} {
     set clk_period            [expr {[info exists ::env(CLOCK_PERIOD)] ? $::env(CLOCK_PERIOD) : 2000.0}]
-    set clk_uncertainty_setup 50.0
+    set clk_uncertainty_setup [expr {min(50.0, $clk_period * 0.04)}]
     set clk_uncertainty_hold  15.0
-    set clk_slew              50.0
-    set io_slew               50.0
+    set clk_slew              [expr {min(50.0, $clk_period * 0.05)}]
+    set io_slew               [expr {min(50.0, $clk_period * 0.05)}]
     set out_load              10.0
 } elseif {$current_platform eq "sky130hd" || $current_platform eq "ihp-sg13g2"} {
     set clk_period            [expr {[info exists ::env(CLOCK_PERIOD)] ? $::env(CLOCK_PERIOD) : 20.0}]

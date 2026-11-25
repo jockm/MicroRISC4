@@ -31,7 +31,12 @@ export SDC_FILE        = $(MR4_ASIC_DIR)/constraint.sdc
 # real standard-cell flip-flops (ORFS defaults SYNTH_MEMORY_MAX_BITS to 4096).
 # For foundry tapeout, switch to ASIC_MEM_TARGET=sram with compiled SRAM macros
 # (or pass SYNTH_MOCK_LARGE_MEMORIES=1 for a quick CPU+ROM+UART timing check).
-export SYNTH_MEMORY_MAX_BITS ?= 16384
+ifeq ($(SYNTH_MOCK_LARGE_MEMORIES),1)
+  # Mock memories > 4096 bits (replaces 1024x16 flop RAM so pure CpuCore+ROM+UART Fmax is measured)
+  export SYNTH_MEMORY_MAX_BITS ?= 4096
+else
+  export SYNTH_MEMORY_MAX_BITS ?= 16384
+endif
 
 # Floorplan & placement density defaults (conservative for clean first-pass routing)
 export CORE_UTILIZATION ?= 40

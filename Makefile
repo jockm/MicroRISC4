@@ -77,6 +77,9 @@ ORFS_USE_DOCKER        ?= 1
 ORFS_DOCKER_IMAGE      ?= openroad/orfs:latest
 ORFS_ROOT              ?= $(HOME)/OpenROAD-flow-scripts
 ORFS_TARGET            ?= finish
+ORFS_EXTRA_ARGS         = $(if $(CLOCK_PERIOD),CLOCK_PERIOD="$(CLOCK_PERIOD)",) \
+                          $(if $(CORE_UTILIZATION),CORE_UTILIZATION="$(CORE_UTILIZATION)",) \
+                          $(if $(SYNTH_MOCK_LARGE_MEMORIES),SYNTH_MOCK_LARGE_MEMORIES="$(SYNTH_MOCK_LARGE_MEMORIES)",)
 
 # Hierarchical Multi-Core ASIC Tile & Cluster settings (Track D.4)
 ASIC_TILE_BLD          := $(BUILD_DIR)/asic_tile
@@ -371,13 +374,13 @@ asic-flow:
 		MSYS_NO_PATHCONV=1 docker run --rm $$DOCKER_USER_FLAG \
 			-v "$$HOST_ROOT:/work/mr4" \
 			"$(ORFS_DOCKER_IMAGE)" \
-			bash -c 'cd /OpenROAD-flow-scripts && [ -f ./env.sh ] && source ./env.sh; exec make -C /OpenROAD-flow-scripts/flow DESIGN_CONFIG=/work/mr4/asic/mr4/config.mk WORK_HOME=/work/mr4/build/asic/orfs PLATFORM="$(ASIC_PLATFORM)" $(ORFS_TARGET)'; \
+			bash -c 'cd /OpenROAD-flow-scripts && [ -f ./env.sh ] && source ./env.sh; exec make -C /OpenROAD-flow-scripts/flow DESIGN_CONFIG=/work/mr4/asic/mr4/config.mk WORK_HOME=/work/mr4/build/asic/orfs PLATFORM="$(ASIC_PLATFORM)" $(ORFS_EXTRA_ARGS) $(ORFS_TARGET)'; \
 	else \
 		if [ ! -f "$(ORFS_ROOT)/flow/Makefile" ]; then \
 			echo "[FAIL] ORFS Makefile not found at $(ORFS_ROOT)/flow/Makefile (set ORFS_ROOT or ORFS_USE_DOCKER=1)."; exit 1; \
 		fi; \
 		echo "==> Running native ORFS ($(ASIC_PLATFORM), target=$(ORFS_TARGET)) from $(ORFS_ROOT)..."; \
-		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" $(ORFS_TARGET)'; \
+		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" $(ORFS_EXTRA_ARGS) $(ORFS_TARGET)'; \
 	fi
 	@echo "==> ORFS outputs under: $(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/$(ASIC_TOP)/base/"
 	@$(DOT_CLEAN_CMD)
@@ -445,9 +448,9 @@ asic-tile-flow:
 		MSYS_NO_PATHCONV=1 docker run --rm $$DOCKER_USER_FLAG \
 			-v "$$HOST_ROOT:/work/mr4" \
 			"$(ORFS_DOCKER_IMAGE)" \
-			bash -c 'cd /OpenROAD-flow-scripts && [ -f ./env.sh ] && source ./env.sh; exec make -C /OpenROAD-flow-scripts/flow DESIGN_CONFIG=/work/mr4/asic/mr4_tile/config.mk WORK_HOME=/work/mr4/build/asic/orfs PLATFORM="$(ASIC_PLATFORM)" finish generate_abstract'; \
+			bash -c 'cd /OpenROAD-flow-scripts && [ -f ./env.sh ] && source ./env.sh; exec make -C /OpenROAD-flow-scripts/flow DESIGN_CONFIG=/work/mr4/asic/mr4_tile/config.mk WORK_HOME=/work/mr4/build/asic/orfs PLATFORM="$(ASIC_PLATFORM)" $(ORFS_EXTRA_ARGS) finish generate_abstract'; \
 	else \
-		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4_tile/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" finish generate_abstract'; \
+		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4_tile/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" $(ORFS_EXTRA_ARGS) finish generate_abstract'; \
 	fi
 	@echo "==> Hardened mr4_tile abstracts ready under: $(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/mr4_tile/base/"
 	@$(DOT_CLEAN_CMD)
@@ -485,9 +488,9 @@ asic-quad-flow:
 		MSYS_NO_PATHCONV=1 docker run --rm $$DOCKER_USER_FLAG \
 			-v "$$HOST_ROOT:/work/mr4" \
 			"$(ORFS_DOCKER_IMAGE)" \
-			bash -c 'cd /OpenROAD-flow-scripts && [ -f ./env.sh ] && source ./env.sh; exec make -C /OpenROAD-flow-scripts/flow DESIGN_CONFIG=/work/mr4/asic/mr4_quad/config.mk WORK_HOME=/work/mr4/build/asic/orfs PLATFORM="$(ASIC_PLATFORM)" $(ORFS_TARGET)'; \
+			bash -c 'cd /OpenROAD-flow-scripts && [ -f ./env.sh ] && source ./env.sh; exec make -C /OpenROAD-flow-scripts/flow DESIGN_CONFIG=/work/mr4/asic/mr4_quad/config.mk WORK_HOME=/work/mr4/build/asic/orfs PLATFORM="$(ASIC_PLATFORM)" $(ORFS_EXTRA_ARGS) $(ORFS_TARGET)'; \
 	else \
-		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4_quad/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" $(ORFS_TARGET)'; \
+		bash -c 'cd "$(ORFS_ROOT)" && [ -f ./env.sh ] && source ./env.sh; exec "$(MAKE)" -C "$(ORFS_ROOT)/flow" DESIGN_CONFIG="$(CURDIR)/asic/mr4_quad/config.mk" WORK_HOME="$(CURDIR)/$(ASIC_BLD)/orfs" PLATFORM="$(ASIC_PLATFORM)" $(ORFS_EXTRA_ARGS) $(ORFS_TARGET)'; \
 	fi
 	@echo "==> Hierarchical 4-tile $(ASIC_QUAD_TOP) GDSII ready under: $(ASIC_BLD)/orfs/results/$(ASIC_PLATFORM)/$(ASIC_QUAD_TOP)/base/"
 	@$(DOT_CLEAN_CMD)

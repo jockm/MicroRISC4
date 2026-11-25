@@ -2312,6 +2312,7 @@ void main(void) {
 
         bin_dir = sd_root / "BIN"
         bin_dir.mkdir()
+        (bin_dir / "BOOT.DO").write_text("echo BOOT_DO_RAN\n", encoding="utf-8")
         (bin_dir / "HELLO.DO").write_text(
             "# Demo script in /BIN/HELLO.DO\n"
             "\n"
@@ -2362,6 +2363,9 @@ void main(void) {
         mr4sim.connect_os_worker(os_sim, worker_sim)
 
         assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
+        boot_out = "".join(uart_out)
+        assert "BOOT_DO_RAN\r\n" in boot_out, f"/BIN/BOOT.DO did not run at boot:\n{boot_out!r}"
+        assert boot_out.index("FAT32 mounted OK") < boot_out.index("BOOT_DO_RAN\r\n") < boot_out.rindex("mr4> ")
 
         def send_cmd(cmd_str: str, max_steps: int = 20000000) -> str:
             start = len(uart_out)

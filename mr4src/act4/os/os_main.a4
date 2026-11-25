@@ -617,10 +617,15 @@ void main(void) {
     if (fat32_mount() == 0) {
         proc_cwd_init_all();
         uart_puts("FAT32 mounted OK\r\n");
+        if (fat32_stat("/BIN/BOOT.DO", &sys_ent) == 0 && (sys_ent.attr & ATTR_DIRECTORY) == 0) {
+            shell_cmd_do("/BIN/BOOT.DO");
+        }
     } else {
         uart_puts("FAT32 mount skipped/failed\r\n");
     }
-    shell_prompt();
+    if (sh_script_fd == 0xFFFF) {
+        shell_prompt();
+    }
 
     while (true) {
         noc_poll_syscalls();

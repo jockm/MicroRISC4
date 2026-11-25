@@ -38,6 +38,11 @@ u16 xi_undo_col = 0;
 u16 xi_undo_available = 0;
 u16 *xi_status = "NORMAL";
 
+void xi_quit(void) {
+    term_cursor_show();
+    sys_exit(0);
+}
+
 u16 xi_line_start(u16 line) {
     u16 i = 0;
     u16 l = 0;
@@ -850,12 +855,10 @@ void xi_read_colon(void) {
             result = xi_execute_colon();
             if (result == 1) {
                 xi_status = "ZZ";
-                term_cursor_show();
-                sys_exit(0);
+                xi_quit();
             }
             if (result == 2) {
-                term_cursor_show();
-                sys_exit(0);
+                xi_quit();
             }
             return;
         } else if (key == 8 || key == KEY_BACKSPACE) {
@@ -945,8 +948,7 @@ void xi_normal_key(u16 key) {
     if (xi_z_pending == 3) {
         if (key == 'Z') {
             if (xi_save() == 0) {
-                term_cursor_show();
-                sys_exit(0);
+                xi_quit();
             }
         }
         xi_z_pending = 0;

@@ -339,6 +339,8 @@ void xi_redraw(void) {
     u16 i = 0;
     u16 count = xi_line_count();
 
+    term_cursor_hide();
+
     xi_ensure_cursor_visible();
     term_clear();
     if (xi_mode == 4) {
@@ -360,6 +362,8 @@ void xi_redraw(void) {
         sys_puts("Press Esc or q to return.");
         term_goto(17, 1);
         term_clear_eol();
+
+        term_cursor_show();
         return;
     }
     while (row < XI_SCREEN_LINES) {
@@ -406,6 +410,7 @@ void xi_redraw(void) {
         sys_puts(" [+]");
     }
     term_goto(xi_cur_line - xi_top_line + 1, xi_cur_col - xi_left_col + 1);
+    term_cursor_show();
 }
 
 void xi_move_left(void) {
@@ -774,6 +779,7 @@ void xi_read_help(void) {
         key = term_poll_key();
         if (key == 27 || key == 'q') {
             xi_mode = 0;
+            term_cursor_show();
             return;
         }
     }
@@ -844,9 +850,11 @@ void xi_read_colon(void) {
             result = xi_execute_colon();
             if (result == 1) {
                 xi_status = "ZZ";
+                term_cursor_show();
                 sys_exit(0);
             }
             if (result == 2) {
+                term_cursor_show();
                 sys_exit(0);
             }
             return;
@@ -937,6 +945,7 @@ void xi_normal_key(u16 key) {
     if (xi_z_pending == 3) {
         if (key == 'Z') {
             if (xi_save() == 0) {
+                term_cursor_show();
                 sys_exit(0);
             }
         }

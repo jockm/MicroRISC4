@@ -412,6 +412,7 @@ def test_os_shell_fs(args):
     assert p0_name == "os_kernel", f"Unexpected procs[0].name: {p0_name!r}"
 
     cmds = [
+        "cd /",
         "help",
         "ps",
         "ls",
@@ -785,6 +786,9 @@ def test_os_mul(_args):
         mr4sim.connect_os_worker(os_sim, worker_sim)
 
         assert run_until_prompt(os_sim, uart_out, 1500000, worker=worker_sim), "OS boot failed"
+        for ch in "cd /\r":
+            os_sim.rx_queue.append(ord(ch))
+        assert run_until_prompt(os_sim, uart_out, worker=worker_sim), "Could not switch to root directory"
         start = len(uart_out)
         for ch in "! MUL.PRG TEST.MUL alpha beta\r":
             os_sim.rx_queue.append(ord(ch))

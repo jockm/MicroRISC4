@@ -102,7 +102,8 @@ All Phase 3 work builds on these hardware-verified ULX3S-85F FPGA and OpenROAD R
 
 - [ ] **H.1 Fix `xi` Editor Bug & Refine MR4OS `/BIN` + `/WORK` Experience**
   - Reproduce and fix the `xi` bug encountered during live ULX3S-85F bring-up, add a regression test to `tools/test_os.py`, and polish shell ergonomics (e.g., default boot into `/WORK`, `/BIN/AUTOEXEC.DO` startup script support).
-- [ ] **H.2 ACT4 Optimizing Backend (Register Caching & Peephole Pass)**
+  **NOTE:** `xi` bug has been fixed, along with auto run file named `/BIN/BOOT.DO`, user boots into `/WORK`, and shell prompt shows currect directory. This should all be reviewed and tests updated as needed.
+  - [ ] **H.2 ACT4 Optimizing Backend (Register Caching & Peephole Pass)**
   - Add a peephole optimizer and basic-block register-value tracker in `tools/act4c.py` to eliminate redundant loads/pushes, shrink `.PRG` binaries further, and improve real-world IPC across MR4OS and userland apps (verified bit-exact across 18/18 `make os-test` + ROHD co-sim).
 - [ ] **H.3 On-Board Self-Hosting Dev Workflow**
   - Build a compact on-board assembler (`ASM.PRG`) or MuL-assisted build script so small MicroRISC4 assembly programs can be edited in `xi`, assembled into `.PRG` files in `/WORK`, and executed directly on worker cores *on the live ULX3S-85F with no host PC required*.

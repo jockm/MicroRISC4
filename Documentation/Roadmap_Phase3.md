@@ -106,4 +106,4 @@ All Phase 3 work builds on these hardware-verified ULX3S-85F FPGA and OpenROAD R
   - [ ] **H.2 ACT4 Optimizing Backend (Register Caching & Peephole Pass)**
   - Add a peephole optimizer and basic-block register-value tracker in `tools/act4c.py` to eliminate redundant loads/pushes, shrink `.PRG` binaries further, and improve real-world IPC across MR4OS and userland apps (verified bit-exact across 18/18 `make os-test` + ROHD co-sim).
 - [ ] **H.3 On-Board Self-Hosting Dev Workflow**
-  - Build a compact on-board assembler (`ASM.PRG`) or MuL-assisted build script so small MicroRISC4 assembly programs can be edited in `xi`, assembled into `.PRG` files in `/WORK`, and executed directly on worker cores *on the live ULX3S-85F with no host PC required*.
+  - Build a compact on-board assembler (`ASM.PRG`) or MuL-assisted build script so small MicroRISC4 assembly programs can be edited in `xi`, assembled into `.PRG` files in `/WORK`, and executed directly on worker cores *on the live ULX3S-85F with no host PC required*. **NOTE:** There is now `asm.a4` in `mr4src/apps/`.  It needs to be reviewed and make sure there are adequate tests for it.

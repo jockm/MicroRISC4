@@ -690,6 +690,8 @@ SIM        ?= tools/mr4sim.py
 OS_SRC_DIR ?= mr4src/act4
 OS_BUILD   ?= build/os
 SD_SRC_DIR ?= build/sd_root
+SD_DATA_DIR ?= sdcard
+SD_DATA_FILES := $(shell find $(SD_DATA_DIR) -type f -print)
 SD_IMG     ?= /tmp/mr4_sd.img
 SD_SIZE_MB ?= 16
 SD_SPC     ?= 1
@@ -729,7 +731,12 @@ MUL_ASM     := $(OS_BUILD)/mul.asm
 MUL_PRG     := $(OS_BUILD)/mul.prg
 MUL_LST     := $(OS_BUILD)/mul.lst
 
-OS_APP_PRGS := $(LS_PRG) $(PS_PRG) $(CAT_PRG) $(XI_PRG) $(FIBERS_PRG) $(MUL_PRG)
+ASM_A4       := $(OS_SRC_DIR)/apps/asm.a4
+ASM_ASM      := $(OS_BUILD)/asm.asm
+ASM_PRG      := $(OS_BUILD)/asm.prg
+ASM_LST      := $(OS_BUILD)/asm.lst
+
+OS_APP_PRGS := $(LS_PRG) $(PS_PRG) $(CAT_PRG) $(XI_PRG) $(FIBERS_PRG) $(MUL_PRG) $(ASM_PRG)
 
 .PHONY: os-build sd-img sim-os os-test test-os clean-os
 
@@ -750,16 +757,17 @@ $(OS_BUILD)/%.prg: $(OS_BUILD)/%.asm
 
 os-build: $(OS_MAIN_BIN) $(OS_APP_PRGS) $(BUILD_DIR)/worker_stub.bin
 
-$(SD_SRC_DIR): $(OS_APP_PRGS)
+$(SD_SRC_DIR): $(OS_APP_PRGS) $(SD_DATA_FILES)
 	rm -rf $(SD_SRC_DIR)
-	mkdir -p $(SD_SRC_DIR)/BIN $(SD_SRC_DIR)/WORK
+	mkdir -p $(SD_SRC_DIR)/BIN
+	cp -R $(SD_DATA_DIR)/. $(SD_SRC_DIR)/
 	cp $(LS_PRG) $(SD_SRC_DIR)/BIN/LS.PRG
 	cp $(PS_PRG) $(SD_SRC_DIR)/BIN/PS.PRG
 	cp $(CAT_PRG) $(SD_SRC_DIR)/BIN/CAT.PRG
 	cp $(XI_PRG) $(SD_SRC_DIR)/BIN/XI.PRG
 	cp $(FIBERS_PRG) $(SD_SRC_DIR)/BIN/FIBERS.PRG
 	cp $(MUL_PRG) $(SD_SRC_DIR)/BIN/MUL.PRG
-	printf "Hello from MicroRISC4 FAT32 SD card!\n" > $(SD_SRC_DIR)/README.TXT
+	cp $(ASM_PRG) $(SD_SRC_DIR)/BIN/ASM.PRG
 
 sd-img: $(SD_SRC_DIR)
 	python3 $(MKSDIMG) $(SD_SRC_DIR) -o $(SD_IMG) --size-mb $(SD_SIZE_MB) --spc $(SD_SPC)

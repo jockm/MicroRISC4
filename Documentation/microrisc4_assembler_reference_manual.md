@@ -149,9 +149,30 @@ python3 tools/mr4asm.py [options] <source_files...>
 | `--hex` | *(none)* | Emits 65,536 lines of 4-digit hex for Verilog `$readmemh` memory initialization. |
 | `--trap-base` | `<addr>` | Overrides default vector base symbol `TRAP_BASE` (default: `0x0100`). |
 
+## 7. Resident OS Assembler
+
+The OS includes `ASM.PRG`, a two-pass assembler for use on the machine:
+
+```text
+! ASM.PRG <source.asm> <output.prg>
+```
+
+The output is a compact raw binary spanning the lowest through highest emitted
+word address. It can be run as an OS program when the source is laid out for the
+program load address (normally `.org 0x0400`). The assembler supports the
+instructions, pseudo-instructions, directives, and expressions described
+above, and recognizes and expands the fixed macro set in `lib/common.inc`.
+`.include "common.inc"` is accepted as a declaration of those built-in macros.
+
+The resident assembler does not implement general preprocessing: user-defined
+`.macro` blocks, conditional assembly, and includes other than `common.inc`
+are reported as errors. It also does not expand the polled UART `PUTC` and
+`GETC` macros; MR4OS applications should use the console syscalls instead.
+Source lines are limited to 127 bytes.
+
 ---
 
-## 7. Assembly Listing Format (`.lst`)
+## 8. Assembly Listing Format (`.lst`)
 
 When `-l <file.lst>` is passed, `mr4asm.py` produces an annotated listing:
 

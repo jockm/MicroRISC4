@@ -99,6 +99,66 @@ def attach_uart_and_watch(sim: mr4sim.MicroRISC4Sim):
     return uart_out, bad_writes
 
 
+def read_fat32_file(image: bytes | bytearray, path: str) -> bytes:
+    part_lba = struct.unpack_from("<I", image, 454)[0]
+    bpb = image[part_lba * 512 : (part_lba + 1) * 512]
+    spc = bpb[13]
+    reserved = struct.unpack_from("<H", bpb, 14)[0]
+    num_fats = bpb[16]
+    fat_size = struct.unpack_from("<I", bpb, 36)[0]
+    root_cluster = struct.unpack_from("<I", bpb, 44)[0]
+    fat_offset = (part_lba + reserved) * 512
+    data_lba = part_lba + reserved + num_fats * fat_size
+
+    def next_cluster(cluster: int) -> int:
+        return struct.unpack_from("<I", image, fat_offset + cluster * 4)[0] & 0x0FFFFFFF
+
+    def cluster_chain(first: int):
+        cluster = first
+        while 2 <= cluster < 0x0FFFFFF8:
+            yield cluster
+            cluster = next_cluster(cluster)
+
+    def find_entry(directory_cluster: int, component: str) -> bytes:
+        base, _, ext = component.upper().partition(".")
+        short_name = (base[:8].ljust(8) + ext[:3].ljust(3)).encode("ascii")
+        for cluster in cluster_chain(directory_cluster):
+            cluster_offset = (data_lba + (cluster - 2) * spc) * 512
+            for offset in range(0, spc * 512, 32):
+                entry = image[cluster_offset + offset : cluster_offset + offset + 32]
+                if entry[0] == 0:
+                    break
+                if entry[0] == 0xE5 or entry[11] == 0x0F:
+                    continue
+                if entry[:11] == short_name:
+                    return entry
+        raise AssertionError(f"FAT32 path component not found: {component}")
+
+    components = [part for part in path.replace("\\", "/").split("/") if part]
+    directory_cluster = root_cluster
+    entry = b""
+    for index, component in enumerate(components):
+        entry = find_entry(directory_cluster, component)
+        if index + 1 < len(components):
+            directory_cluster = (
+                (struct.unpack_from("<H", entry, 20)[0] << 16)
+                | struct.unpack_from("<H", entry, 26)[0]
+            )
+
+    first_cluster = (
+        (struct.unpack_from("<H", entry, 20)[0] << 16)
+        | struct.unpack_from("<H", entry, 26)[0]
+    )
+    size = struct.unpack_from("<I", entry, 28)[0]
+    content = bytearray()
+    for cluster in cluster_chain(first_cluster):
+        cluster_offset = (data_lba + (cluster - 2) * spc) * 512
+        content.extend(image[cluster_offset : cluster_offset + spc * 512])
+        if len(content) >= size:
+            break
+    return bytes(content[:size])
+
+
 def run_until_prompt(sim, uart_out, max_steps=6000000, worker=None) -> bool:
     start = len(uart_out)
     for _ in range(max_steps):
@@ -478,6 +538,178 @@ def test_os_shell_fs(args):
     assert fat1_ls != 0 and fat1_root == 0x0FFFFFFF, "Adjacent FAT entries corrupted"
     assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
     assert sim.mem[0x0005] == 0xFAFF, f"ASP leaked: 0x{sim.mem[0x0005]:04X}"
+
+
+def test_os_resident_assembler(_args):
+    source = """\
+.include "common.inc"
+.define TEST_VALUE (0x1230 + 4)
+.equ TEST_WORD 0xABCD
+.org 0x0408
+.byte 0xA5, 0x5A
+.org 0x0400
+START_PROGRAM
+_main:
+GET_CPUID R1
+FIFO_POP R2
+FIFO_PUSH R2
+TRIGGER_TRAP 1, 0x12
+SWAP R1, R2
+LOAD16 R1, TEST_VALUE
+LD0 R0
+NOT R1
+NEG R2
+XCHGALL
+SAVEALL
+LOADALL
+STPUSH 4, R0
+STPOP 4, R0
+RPUSH R0
+RPOP R0
+APUSH R1
+APOP R1
+PUSHALL
+POPALL
+RCALL target
+RRET
+BYTE_GET_LO R0, R1
+BYTE_GET_HI R0, R1
+BYTE_SET_LO R0, R1
+BYTE_SET_HI R0, R1
+target:
+NOP
+ERET
+.word TEST_WORD + CPUID, >TEST_VALUE
+.hex DEADBEEF 1
+.byte 'A', 0x42
+.asciz "HI\\r\\n"
+.resw 2
+.align
+"""
+    bad_source = ".macro BAD x\nNOP\n.endmacro\n"
+    unsupported_uart_sources = {
+        "PUTC.ASM": "PUTC R0\n",
+        "GETC.ASM": "GETC R1\n",
+    }
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        sd_root = root / "sd_root"
+        (sd_root / "BIN").mkdir(parents=True)
+        work = sd_root / "WORK"
+        work.mkdir()
+        shutil.copy(OS_BUILD / "asm.prg", sd_root / "BIN" / "ASM.PRG")
+        hello_source = REPO_ROOT / "sdcard" / "WORK" / "HELLO.ASM"
+        shutil.copy(hello_source, work / "HELLO.ASM")
+        hello_prg = work / "HELLO.PRG"
+        subprocess.run(
+            [
+                sys.executable,
+                str(TOOLS_DIR / "mr4asm.py"),
+                "-I",
+                str(LIB_DIR),
+                "--sparsebin",
+                str(hello_source),
+                "-o",
+                str(hello_prg),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        source_path = work / "SAMPLE.ASM"
+        source_path.write_text(source, encoding="utf-8")
+        (work / "BAD.ASM").write_text(bad_source, encoding="utf-8")
+        for filename, contents in unsupported_uart_sources.items():
+            (work / filename).write_text(contents, encoding="utf-8")
+
+        sd_img = root / "asm_test.img"
+        subprocess.run(
+            [
+                sys.executable,
+                str(TOOLS_DIR / "mksdimage.py"),
+                str(sd_root),
+                "-o",
+                str(sd_img),
+                "--size-mb",
+                "16",
+                "--spc",
+                "1",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        sim = mr4sim.MicroRISC4Sim(core_id=0)
+        sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
+        sim.load_binary(str(OS_BUILD / "os_main.bin"))
+        sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+        sim.pc = 0x0100
+        uart_out, bad_writes = attach_uart_and_watch(sim)
+
+        worker = mr4sim.MicroRISC4Sim(core_id=1)
+        worker.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+        worker.pc = 0x0100
+        worker._poll_stdin = lambda: None
+        mr4sim.connect_os_worker(sim, worker)
+        assert run_until_prompt(sim, uart_out, 1500000, worker=worker), "OS boot timed out"
+
+        procs_addr = sim.sym_to_addr["_procs"]
+        pid1_state = procs_addr + 10
+
+        def run_app(command: str, max_steps: int = 50000000) -> str:
+            start = len(uart_out)
+            for ch in command + "\r":
+                sim.rx_queue.append(ord(ch))
+            completed = run_until_prompt(sim, uart_out, max_steps, worker=worker)
+            output = "".join(uart_out[start:])
+            assert completed, (
+                f"{command} prompt timeout; output={output!r}; "
+                f"os_pc=0x{sim.pc:04X}; worker_pc=0x{worker.pc:04X}; "
+                f"state={sim.mem[pid1_state]}; "
+                f"worker_syscall={worker.mem[0x03F4]:04X}"
+            )
+            return output
+
+        output = run_app("! ASM.PRG SAMPLE.ASM OUT.PRG")
+        assert "asm: wrote OUT.PRG" in output, f"Assembler failed:\n{output}"
+        assert sim.mem[pid1_state] == 0 and sim.mem[pid1_state + 1] == 0
+
+        expected = root / "expected.prg"
+        reference = subprocess.run(
+            [
+                sys.executable,
+                str(TOOLS_DIR / "mr4asm.py"),
+                "-I",
+                str(LIB_DIR),
+                "--sparsebin",
+                str(source_path),
+                "-o",
+                str(expected),
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert reference.returncode == 0, reference.stderr.decode("utf-8", errors="replace")
+        actual_bytes = read_fat32_file(sim.sd_card.image, "WORK/OUT.PRG")
+        assert actual_bytes == expected.read_bytes(), (
+            f"Resident assembler output differs from mr4asm.py "
+            f"({len(actual_bytes)} vs {expected.stat().st_size} bytes)"
+        )
+
+        hello_output = run_app("! HELLO.PRG")
+        assert "Hello from Mr4OS!" in hello_output, f"HELLO.ASM syscall output missing:\n{hello_output}"
+        assert sim.mem[pid1_state] == 0 and sim.mem[pid1_state + 1] == 0
+
+        output = run_app("! ASM.PRG BAD.ASM SHOULD.PRG")
+        assert "general preprocessor directives are not supported" in output, output
+        assert sim.mem[pid1_state] == 0 and sim.mem[pid1_state + 1] == 1
+        for filename in unsupported_uart_sources:
+            output = run_app(f"! ASM.PRG {filename} SHOULD.PRG")
+            assert "unknown instruction or directive" in output, output
+            assert sim.mem[pid1_state] == 0 and sim.mem[pid1_state + 1] == 1
+        assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
 
 
 # ------------------------------------------------------------------------------
@@ -2718,6 +2950,7 @@ TESTS = [
     ("compiler_runtime", test_compiler_runtime),
     ("trap_isr", test_trap_isr),
     ("os_shell_fs", test_os_shell_fs),
+    ("os_resident_assembler", test_os_resident_assembler),
     ("os_async_trap1", test_os_async_trap1),
     ("os_multicore_apps", test_os_multicore_apps),
     ("os_mul", test_os_mul),

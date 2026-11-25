@@ -1,0 +1,2128 @@
+// Resident two-pass assembler for MicroRISC4.
+// Usage: ASM.PRG <source.asm> <output.prg>
+import "sys.a4";
+
+const u16 ASM_LINE_BYTES = 128;
+const u16 ASM_NAME_BYTES = 32;
+const u16 ASM_MAX_SYMBOLS = 384;
+const u16 ASM_READ_WORDS = 64;
+const u16 ASM_CHUNK_WORDS = 8192;
+const u16 ASM_EXPR_DEPTH = 48;
+
+u16 asm_args[32];
+u16 asm_input_path[32];
+u16 asm_output_path[32];
+u16 asm_read_buf[ASM_READ_WORDS];
+u16 asm_line[ASM_LINE_BYTES >> 1];
+u16 asm_token[ASM_NAME_BYTES >> 1];
+u16 asm_mnemonic[ASM_NAME_BYTES >> 1];
+u16 asm_operands[ASM_LINE_BYTES >> 1];
+u16 asm_macro_args[4 * (ASM_LINE_BYTES >> 1)];
+u16 asm_symbol_names[ASM_MAX_SYMBOLS * (ASM_NAME_BYTES >> 1)];
+u16 asm_symbol_values[ASM_MAX_SYMBOLS];
+u16 asm_image[ASM_CHUNK_WORDS];
+u16 asm_write_buf[ASM_READ_WORDS];
+u16 asm_expr_values[ASM_EXPR_DEPTH];
+u16 asm_expr_ops[ASM_EXPR_DEPTH];
+u16 asm_label_buf[ASM_NAME_BYTES >> 1];
+u16 asm_label2_buf[ASM_NAME_BYTES >> 1];
+
+u16 asm_symbol_count = 0;
+u16 asm_pass = 0;
+u16 asm_pc = 0;
+u16 asm_slot = 0;
+u16 asm_line_no = 0;
+u16 asm_macro_id = 0;
+u16 asm_min_addr = 0;
+u16 asm_max_addr = 0;
+u16 asm_has_output = 0;
+u16 asm_chunk_base = 0;
+u16 asm_chunk_count = 0;
+u16 asm_source_fd = 0;
+u16 asm_output_fd = 0;
+u16 asm_source_open = 0;
+u16 asm_output_open = 0;
+u16 asm_read_words = 0;
+u16 asm_read_pos = 0;
+u16 asm_read_end = 0;
+u16 asm_read_eof = 0;
+u16 asm_error = 0;
+u16 asm_error_line = 0;
+u16 *asm_error_text = 0;
+u16 asm_expr_pos = 0;
+u16 asm_expr_value_count = 0;
+u16 asm_expr_op_count = 0;
+u16 asm_expr_want_value = 1;
+u16 *asm_expr = 0;
+u16 asm_macro_arg_count = 0;
+u16 asm_operand_start = 0;
+u16 asm_operand_quote = 0;
+u16 asm_operand_escape = 0;
+u16 asm_number_buf[6];
+
+u16 asm_upper(u16 ch) {
+    if (ch >= 97 && ch <= 122) {
+        return ch - 32;
+    }
+    return ch;
+}
+
+u16 asm_equal_ci(u16 *a, u16 *b) {
+    u16 i = 0;
+    u16 ca = 0;
+    u16 cb = 0;
+    while (true) {
+        ca = asm_upper(getbyte(a, i));
+        cb = asm_upper(getbyte(b, i));
+        if (ca != cb) {
+            return 0;
+        }
+        if (ca == 0) {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
+u16 asm_is_space(u16 ch) {
+    return ch == 32 || ch == 9 || ch == 10 || ch == 13;
+}
+
+u16 asm_is_digit(u16 ch) {
+    return ch >= 48 && ch <= 57;
+}
+
+u16 asm_is_ident_start(u16 ch) {
+    ch = asm_upper(ch);
+    return (ch >= 65 && ch <= 90) || ch == 95 || ch == 46;
+}
+
+u16 asm_is_ident_part(u16 ch) {
+    return asm_is_ident_start(ch) || asm_is_digit(ch);
+}
+
+u16 asm_hex_value(u16 ch) {
+    ch = asm_upper(ch);
+    if (ch >= 48 && ch <= 57) {
+        return ch - 48;
+    }
+    if (ch >= 65 && ch <= 70) {
+        return ch - 55;
+    }
+    return 0xFFFF;
+}
+
+void asm_copy(u16 *dst, u16 *src, u16 max_bytes) {
+    u16 i = 0;
+    while (i + 1 < max_bytes) {
+        setbyte(dst, i, getbyte(src, i));
+        if (getbyte(src, i) == 0) {
+            return;
+        }
+        i++;
+    }
+    setbyte(dst, max_bytes - 1, 0);
+}
+
+void asm_copy_range(u16 *dst, u16 *src, u16 start, u16 end, u16 max_bytes) {
+    u16 i = 0;
+    while (start < end && i + 1 < max_bytes) {
+        setbyte(dst, i, getbyte(src, start));
+        i++;
+        start++;
+    }
+    setbyte(dst, i, 0);
+}
+
+void asm_upper_copy(u16 *dst, u16 *src, u16 max_bytes) {
+    u16 i = 0;
+    u16 ch = 0;
+    while (i + 1 < max_bytes) {
+        ch = getbyte(src, i);
+        setbyte(dst, i, asm_upper(ch));
+        if (ch == 0) {
+            return;
+        }
+        i++;
+    }
+    setbyte(dst, max_bytes - 1, 0);
+}
+
+void asm_trim(u16 *text) {
+    u16 start = 0;
+    u16 end = 0;
+    u16 i = 0;
+    while (asm_is_space(getbyte(text, start))) {
+        start++;
+    }
+    end = start;
+    while (getbyte(text, end) != 0) {
+        end++;
+    }
+    while (end > start && asm_is_space(getbyte(text, end - 1))) {
+        end--;
+    }
+    if (start != 0) {
+        i = 0;
+        while (start < end) {
+            setbyte(text, i, getbyte(text, start));
+            i++;
+            start++;
+        }
+        end = i;
+    }
+    setbyte(text, end, 0);
+}
+
+u16 *asm_macro_arg(u16 index) {
+    return &asm_macro_args[index * (ASM_LINE_BYTES >> 1)];
+}
+
+u16 *asm_symbol_name(u16 index) {
+    return &asm_symbol_names[index * (ASM_NAME_BYTES >> 1)];
+}
+
+u16 asm_symbol_find(u16 *name) {
+    u16 i = 0;
+    while (i < asm_symbol_count) {
+        if (asm_equal_ci(asm_symbol_name(i), name) == 1) {
+            return i;
+        }
+        i++;
+    }
+    return 0xFFFF;
+}
+
+void asm_fail(u16 *message) {
+    if (asm_error == 0) {
+        asm_error = 1;
+        asm_error_line = asm_line_no;
+        asm_error_text = message;
+    }
+}
+
+void asm_symbol_set(u16 *name, u16 value, u16 replace) {
+    u16 index = asm_symbol_find(name);
+    if (index != 0xFFFF) {
+        if (replace == 0) {
+            asm_fail("duplicate symbol");
+            return;
+        }
+        asm_symbol_values[index] = value;
+        return;
+    }
+    if (asm_symbol_count >= ASM_MAX_SYMBOLS) {
+        asm_fail("symbol table full");
+        return;
+    }
+    asm_upper_copy(asm_symbol_name(asm_symbol_count), name, ASM_NAME_BYTES);
+    asm_symbol_values[asm_symbol_count] = value;
+    asm_symbol_count++;
+}
+
+u16 asm_symbol_value(u16 *name) {
+    u16 index = asm_symbol_find(name);
+    if (index == 0xFFFF) {
+        if (asm_pass == 1) {
+            return 0;
+        }
+        asm_fail("undefined symbol");
+        return 0;
+    }
+    return asm_symbol_values[index];
+}
+
+u16 asm_expr_precedence(u16 op) {
+    if (op == 1) {
+        return 1;
+    }
+    if (op == 2) {
+        return 2;
+    }
+    if (op == 3) {
+        return 3;
+    }
+    if (op == 4 || op == 5) {
+        return 4;
+    }
+    if (op == 6 || op == 7) {
+        return 5;
+    }
+    if (op == 8 || op == 9 || op == 10) {
+        return 6;
+    }
+    return 7;
+}
+
+void asm_expr_apply(u16 op) {
+    u16 a = 0;
+    u16 b = 0;
+    if (op >= 11) {
+        if (asm_expr_value_count < 1) {
+            asm_fail("invalid expression");
+            return;
+        }
+        a = asm_expr_values[asm_expr_value_count - 1];
+        if (op == 11) {
+            asm_expr_values[asm_expr_value_count - 1] = 0 - a;
+        } else if (op == 12) {
+            asm_expr_values[asm_expr_value_count - 1] = a;
+        } else if (op == 13) {
+            asm_expr_values[asm_expr_value_count - 1] = a ^ 0xFFFF;
+        } else if (op == 14) {
+            asm_expr_values[asm_expr_value_count - 1] = a & 0x00FF;
+        } else if (op == 15) {
+            asm_expr_values[asm_expr_value_count - 1] = (a >> 8) & 0x00FF;
+        }
+        return;
+    }
+    if (asm_expr_value_count < 2) {
+        asm_fail("invalid expression");
+        return;
+    }
+    b = asm_expr_values[asm_expr_value_count - 1];
+    a = asm_expr_values[asm_expr_value_count - 2];
+    asm_expr_value_count--;
+    if (op == 1) {
+        asm_expr_values[asm_expr_value_count - 1] = a | b;
+    } else if (op == 2) {
+        asm_expr_values[asm_expr_value_count - 1] = a ^ b;
+    } else if (op == 3) {
+        asm_expr_values[asm_expr_value_count - 1] = a & b;
+    } else if (op == 4) {
+        if (b >= 16) {
+            asm_expr_values[asm_expr_value_count - 1] = 0;
+        } else {
+            asm_expr_values[asm_expr_value_count - 1] = a << b;
+        }
+    } else if (op == 5) {
+        if (b >= 16) {
+            asm_expr_values[asm_expr_value_count - 1] = 0;
+        } else {
+            asm_expr_values[asm_expr_value_count - 1] = a >> b;
+        }
+    } else if (op == 6) {
+        asm_expr_values[asm_expr_value_count - 1] = a + b;
+    } else if (op == 7) {
+        asm_expr_values[asm_expr_value_count - 1] = a - b;
+    } else if (op == 8) {
+        asm_expr_values[asm_expr_value_count - 1] = a * b;
+    } else if (op == 9) {
+        if (b == 0) {
+            asm_fail("division by zero");
+        } else {
+            asm_expr_values[asm_expr_value_count - 1] = a / b;
+        }
+    } else if (op == 10) {
+        if (b == 0) {
+            asm_fail("division by zero");
+        } else {
+            asm_expr_values[asm_expr_value_count - 1] = a % b;
+        }
+    }
+}
+
+u16 asm_expr_push_op(u16 op) {
+    u16 top = 0;
+    if (asm_expr_op_count >= ASM_EXPR_DEPTH) {
+        asm_fail("expression too complex");
+        return 0;
+    }
+    if (op < 11) {
+        while (asm_expr_op_count > 0) {
+            top = asm_expr_ops[asm_expr_op_count - 1];
+            if (top == 0 || asm_expr_precedence(top) < asm_expr_precedence(op)) {
+                break;
+            }
+            asm_expr_op_count--;
+            asm_expr_apply(top);
+            if (asm_error != 0) {
+                return 0;
+            }
+        }
+    }
+    asm_expr_ops[asm_expr_op_count] = op;
+    asm_expr_op_count++;
+    return 1;
+}
+
+u16 asm_expr_read_number(u16 base) {
+    u16 value = 0;
+    u16 digit = 0;
+    u16 ch = 0;
+    u16 count = 0;
+    while (true) {
+        ch = getbyte(asm_expr, asm_expr_pos);
+        if (base == 10) {
+            if (!asm_is_digit(ch)) {
+                break;
+            }
+            digit = ch - 48;
+        } else if (base == 16) {
+            digit = asm_hex_value(ch);
+            if (digit == 0xFFFF) {
+                break;
+            }
+        } else {
+            if (ch != 48 && ch != 49) {
+                break;
+            }
+            digit = ch - 48;
+        }
+        value = value * base + digit;
+        asm_expr_pos++;
+        count++;
+    }
+    if (count == 0) {
+        asm_fail("invalid number");
+    }
+    return value;
+}
+
+u16 asm_expr_read_char(void) {
+    u16 value = 0;
+    u16 ch = 0;
+    if (getbyte(asm_expr, asm_expr_pos) != 39) {
+        asm_fail("invalid character literal");
+        return 0;
+    }
+    asm_expr_pos++;
+    ch = getbyte(asm_expr, asm_expr_pos);
+    if (ch == 92) {
+        asm_expr_pos++;
+        ch = getbyte(asm_expr, asm_expr_pos);
+        if (ch == 110) {
+            value = 10;
+        } else if (ch == 114) {
+            value = 13;
+        } else if (ch == 116) {
+            value = 9;
+        } else if (ch == 48) {
+            value = 0;
+        } else if (ch == 120) {
+            asm_expr_pos++;
+            value = asm_hex_value(getbyte(asm_expr, asm_expr_pos)) << 4;
+            asm_expr_pos++;
+            value = value | asm_hex_value(getbyte(asm_expr, asm_expr_pos));
+            asm_expr_pos++;
+            if (getbyte(asm_expr, asm_expr_pos) != 39) {
+                asm_fail("invalid character literal");
+                return 0;
+            }
+            asm_expr_pos++;
+            return value;
+        } else {
+            value = ch;
+        }
+    } else {
+        value = ch;
+    }
+    asm_expr_pos++;
+    if (getbyte(asm_expr, asm_expr_pos) != 39) {
+        asm_fail("invalid character literal");
+        return 0;
+    }
+    asm_expr_pos++;
+    return value;
+}
+
+u16 asm_expr_read_atom(void) {
+    u16 ch = getbyte(asm_expr, asm_expr_pos);
+    u16 start = 0;
+    u16 end = 0;
+    u16 i = 0;
+    u16 is_hex = 1;
+    u16 value = 0;
+    if (ch == 39) {
+        return asm_expr_read_char();
+    }
+    if (ch == 36) {
+        asm_expr_pos++;
+        return asm_expr_read_number(16);
+    }
+    if (ch == 37 && (getbyte(asm_expr, asm_expr_pos + 1) == 48 ||
+                     getbyte(asm_expr, asm_expr_pos + 1) == 49)) {
+        asm_expr_pos++;
+        return asm_expr_read_number(2);
+    }
+    if (asm_is_digit(ch)) {
+        if (ch == 48 && (getbyte(asm_expr, asm_expr_pos + 1) == 120 ||
+                         getbyte(asm_expr, asm_expr_pos + 1) == 88)) {
+            asm_expr_pos += 2;
+            return asm_expr_read_number(16);
+        }
+        if (ch == 48 && (getbyte(asm_expr, asm_expr_pos + 1) == 98 ||
+                         getbyte(asm_expr, asm_expr_pos + 1) == 66)) {
+            asm_expr_pos += 2;
+            return asm_expr_read_number(2);
+        }
+        start = asm_expr_pos;
+        end = start;
+        while (asm_is_ident_part(getbyte(asm_expr, end))) {
+            end++;
+        }
+        if (end > start + 1 && asm_upper(getbyte(asm_expr, end - 1)) == 72) {
+            i = start;
+            while (i < end - 1) {
+                if (asm_hex_value(getbyte(asm_expr, i)) == 0xFFFF) {
+                    is_hex = 0;
+                }
+                i++;
+            }
+            if (is_hex != 0) {
+                i = start;
+                while (i < end - 1) {
+                    value = value * 16 + asm_hex_value(getbyte(asm_expr, i));
+                    i++;
+                }
+                asm_expr_pos = end;
+                return value;
+            }
+        }
+        return asm_expr_read_number(10);
+    }
+    if (asm_is_ident_start(ch)) {
+        start = asm_expr_pos;
+        while (asm_is_ident_part(getbyte(asm_expr, asm_expr_pos))) {
+            asm_expr_pos++;
+        }
+        end = asm_expr_pos;
+        if (end > start && asm_upper(getbyte(asm_expr, end - 1)) == 72) {
+            i = start;
+            while (i < end - 1) {
+                ch = asm_hex_value(getbyte(asm_expr, i));
+                if (ch == 0xFFFF) {
+                    is_hex = 0;
+                }
+                i++;
+            }
+            if (is_hex != 0) {
+                i = start;
+                while (i < end - 1) {
+                    value = value * 16 + asm_hex_value(getbyte(asm_expr, i));
+                    i++;
+                }
+                return value;
+            }
+        }
+        asm_copy_range(asm_token, asm_expr, start, end, ASM_NAME_BYTES);
+        value = asm_symbol_value(asm_token);
+        return value;
+    }
+    asm_fail("expected expression value");
+    return 0;
+}
+
+u16 asm_eval(u16 *text) {
+    u16 ch = 0;
+    u16 next = 0;
+    u16 op = 0;
+    u16 base = 0;
+    u16 value = 0;
+    u16 paren = 0;
+    asm_expr = text;
+    asm_expr_pos = 0;
+    asm_expr_value_count = 0;
+    asm_expr_op_count = 0;
+    asm_expr_want_value = 1;
+    while (true) {
+        ch = getbyte(asm_expr, asm_expr_pos);
+        if (ch == 0) {
+            break;
+        }
+        if (asm_is_space(ch)) {
+            asm_expr_pos++;
+            continue;
+        }
+        if (asm_expr_want_value != 0) {
+            if (ch == 40) {
+                if (asm_expr_push_op(0) == 0) {
+                    return 0;
+                }
+                asm_expr_pos++;
+                continue;
+            }
+            if (ch == 43 || ch == 45 || ch == 126 || ch == 60 || ch == 62) {
+                op = 12;
+                if (ch == 45) {
+                    op = 11;
+                } else if (ch == 126) {
+                    op = 13;
+                } else if (ch == 60) {
+                    op = 14;
+                } else if (ch == 62) {
+                    op = 15;
+                }
+                asm_expr_pos++;
+                if (asm_expr_push_op(op) == 0) {
+                    return 0;
+                }
+                continue;
+            }
+            value = asm_expr_read_atom();
+            if (asm_error != 0) {
+                return 0;
+            }
+            if (asm_expr_value_count >= ASM_EXPR_DEPTH) {
+                asm_fail("expression too complex");
+                return 0;
+            }
+            asm_expr_values[asm_expr_value_count] = value;
+            asm_expr_value_count++;
+            asm_expr_want_value = 0;
+            continue;
+        }
+        if (ch == 41) {
+            paren = 0;
+            while (asm_expr_op_count > 0) {
+                op = asm_expr_ops[asm_expr_op_count - 1];
+                if (op == 0) {
+                    asm_expr_op_count--;
+                    paren = 1;
+                    break;
+                }
+                asm_expr_op_count--;
+                asm_expr_apply(op);
+                if (asm_error != 0) {
+                    return 0;
+                }
+            }
+            if (paren == 0) {
+                asm_fail("unmatched closing parenthesis");
+                return 0;
+            }
+            asm_expr_pos++;
+            while (asm_expr_op_count > 0) {
+                op = asm_expr_ops[asm_expr_op_count - 1];
+                if (op < 11) {
+                    break;
+                }
+                asm_expr_op_count--;
+                asm_expr_apply(op);
+            }
+            continue;
+        }
+        next = getbyte(asm_expr, asm_expr_pos + 1);
+        op = 0;
+        base = 1;
+        if (ch == 124) {
+            op = 1;
+        } else if (ch == 94) {
+            op = 2;
+        } else if (ch == 38) {
+            op = 3;
+        } else if (ch == 60 && next == 60) {
+            op = 4;
+            base = 2;
+        } else if (ch == 62 && next == 62) {
+            op = 5;
+            base = 2;
+        } else if (ch == 43) {
+            op = 6;
+        } else if (ch == 45) {
+            op = 7;
+        } else if (ch == 42) {
+            op = 8;
+        } else if (ch == 47) {
+            op = 9;
+            if (next == 47) {
+                base = 2;
+            }
+        } else if (ch == 37) {
+            op = 10;
+        } else {
+            asm_fail("invalid expression operator");
+            return 0;
+        }
+        asm_expr_pos += base;
+        if (asm_expr_push_op(op) == 0) {
+            return 0;
+        }
+        asm_expr_want_value = 1;
+    }
+    if (asm_expr_want_value != 0) {
+        asm_fail("incomplete expression");
+        return 0;
+    }
+    while (asm_expr_op_count > 0) {
+        op = asm_expr_ops[asm_expr_op_count - 1];
+        if (op == 0) {
+            asm_fail("unmatched opening parenthesis");
+            return 0;
+        }
+        asm_expr_op_count--;
+        asm_expr_apply(op);
+        if (asm_error != 0) {
+            return 0;
+        }
+    }
+    if (asm_expr_value_count != 1) {
+        asm_fail("invalid expression");
+        return 0;
+    }
+    return asm_expr_values[0];
+}
+
+u16 asm_next_operand(u16 *text, u16 *position, u16 *out) {
+    u16 start = *position;
+    u16 i = start;
+    u16 depth = 0;
+    u16 quote = 0;
+    u16 escape = 0;
+    u16 ch = 0;
+    u16 end = 0;
+    while (asm_is_space(getbyte(text, i))) {
+        i++;
+    }
+    if (getbyte(text, i) == 0) {
+        *position = i;
+        return 0;
+    }
+    start = i;
+    while (true) {
+        ch = getbyte(text, i);
+        if (ch == 0) {
+            end = i;
+            *position = i;
+            break;
+        }
+        if (escape != 0) {
+            escape = 0;
+        } else if (quote != 0 && ch == 92) {
+            escape = 1;
+        } else if (ch == 34 || ch == 39) {
+            if (quote == 0) {
+                quote = ch;
+            } else if (quote == ch) {
+                quote = 0;
+            }
+        } else if (quote == 0) {
+            if (ch == 40) {
+                depth++;
+            } else if (ch == 41 && depth != 0) {
+                depth--;
+            } else if (ch == 44 && depth == 0) {
+                end = i;
+                *position = i + 1;
+                break;
+            }
+        }
+        i++;
+    }
+    asm_copy_range(out, text, start, end, ASM_LINE_BYTES);
+    asm_trim(out);
+    return getbyte(out, 0) != 0;
+}
+
+void asm_split_macro_args(u16 *text) {
+    u16 i = 0;
+    u16 start = 0;
+    u16 depth = 0;
+    u16 quote = 0;
+    u16 escape = 0;
+    u16 ch = 0;
+    u16 arg = 0;
+    u16 target_offset = 0;
+    u16 *target = asm_macro_arg(0);
+    while (arg < 4) {
+        target = asm_macro_arg(arg);
+        setbyte(target, 0, 0);
+        arg++;
+    }
+    asm_macro_arg_count = 0;
+    while (asm_is_space(getbyte(text, i))) {
+        i++;
+    }
+    if (getbyte(text, i) == 0) {
+        return;
+    }
+    start = i;
+    arg = 0;
+    while (true) {
+        ch = getbyte(text, i);
+        if (ch == 0 || (ch == 44 && depth == 0 && quote == 0)) {
+            if (arg >= 4) {
+                asm_fail("too many macro arguments");
+                return;
+            }
+            target_offset = i;
+            if (target_offset - start >= ASM_LINE_BYTES) {
+                asm_fail("macro argument too long");
+                return;
+            }
+            asm_copy_range(asm_macro_arg(arg), text, start, target_offset,
+                           ASM_LINE_BYTES);
+            asm_trim(asm_macro_arg(arg));
+            asm_macro_arg_count++;
+            arg++;
+            if (ch == 0) {
+                break;
+            }
+            i++;
+            start = i;
+            continue;
+        }
+        if (escape != 0) {
+            escape = 0;
+        } else if (quote != 0 && ch == 92) {
+            escape = 1;
+        } else if (ch == 34 || ch == 39) {
+            if (quote == 0) {
+                quote = ch;
+            } else if (quote == ch) {
+                quote = 0;
+            }
+        } else if (quote == 0) {
+            if (ch == 40) {
+                depth++;
+            } else if (ch == 41 && depth != 0) {
+                depth--;
+            }
+        }
+        i++;
+    }
+}
+
+u16 asm_reg(u16 *name) {
+    if (asm_equal_ci(name, "R0") == 1) {
+        return 0;
+    }
+    if (asm_equal_ci(name, "R1") == 1) {
+        return 1;
+    }
+    if (asm_equal_ci(name, "R2") == 1) {
+        return 2;
+    }
+    if (asm_equal_ci(name, "R3") == 1) {
+        return 3;
+    }
+    asm_fail("invalid register");
+    return 0;
+}
+
+u16 asm_indirect_reg(u16 *text, u16 mode) {
+    u16 len = 0;
+    u16 start = 0;
+    u16 end = 0;
+    while (getbyte(text, len) != 0) {
+        len++;
+    }
+    if (len < 4 || getbyte(text, 0) != 40 ||
+        getbyte(text, len - 1) != 41) {
+        return 0xFFFF;
+    }
+    if (mode == 1) {
+        if (getbyte(text, 1) != 45 || getbyte(text, 2) != 45) {
+            return 0xFFFF;
+        }
+        start = 3;
+        end = len - 1;
+    } else if (mode == 2) {
+        if (len < 6 || getbyte(text, len - 2) != 43 ||
+            getbyte(text, len - 3) != 43) {
+            return 0xFFFF;
+        }
+        start = 1;
+        end = len - 3;
+    } else {
+        start = 1;
+        end = len - 1;
+    }
+    asm_copy_range(asm_token, text, start, end, ASM_NAME_BYTES);
+    return asm_reg(asm_token);
+}
+
+void asm_emit_byte(u16 value) {
+    u16 index = 0;
+    if (asm_pass == 1) {
+        if (asm_has_output == 0) {
+            asm_min_addr = asm_pc;
+            asm_max_addr = asm_pc;
+            asm_has_output = 1;
+        } else {
+            if (asm_pc < asm_min_addr) {
+                asm_min_addr = asm_pc;
+            }
+            if (asm_pc > asm_max_addr) {
+                asm_max_addr = asm_pc;
+            }
+        }
+    } else if (asm_pc >= asm_chunk_base &&
+               asm_pc - asm_chunk_base < asm_chunk_count) {
+        index = asm_pc - asm_chunk_base;
+        if (asm_slot == 0) {
+            asm_image[index] = (asm_image[index] & 0xFF00) | (value & 0x00FF);
+        } else {
+            asm_image[index] = (asm_image[index] & 0x00FF) |
+                               ((value & 0x00FF) << 8);
+        }
+    }
+    if (asm_slot == 0) {
+        asm_slot = 1;
+    } else {
+        asm_slot = 0;
+        asm_pc++;
+    }
+}
+
+void asm_align(u16 nop) {
+    if (asm_slot != 0) {
+        asm_emit_byte(nop);
+    }
+}
+
+void asm_define_label(u16 *name) {
+    asm_align(0);
+    if (asm_pass == 1) {
+        asm_symbol_set(name, asm_pc, 0);
+    }
+}
+
+void asm_instruction(u16 *mnemonic, u16 *arg0, u16 *arg1, u16 count) {
+    u16 r0 = 0;
+    u16 r1 = 0;
+    u16 value = 0;
+    u16 mode = 0;
+    u16 opcode = 0;
+    if (asm_error != 0) {
+        return;
+    }
+    if (asm_equal_ci(mnemonic, "NOP") == 1) {
+        if (count != 0) {
+            asm_fail("NOP takes no operands");
+        } else {
+            asm_emit_byte(0x00);
+        }
+        return;
+    }
+    if (asm_equal_ci(mnemonic, "ERET") == 1) {
+        if (count != 0) {
+            asm_fail("ERET takes no operands");
+        } else {
+            asm_emit_byte(0x0F);
+        }
+        return;
+    }
+    if (asm_equal_ci(mnemonic, "LD") == 1) {
+        if (count != 2) {
+            asm_fail("LD expects two operands");
+            return;
+        }
+        r0 = asm_indirect_reg(arg0, 1);
+        if (r0 != 0xFFFF) {
+            r1 = asm_reg(arg1);
+            asm_emit_byte(0x50 | (r0 << 2) | r1);
+            return;
+        }
+        if (asm_error != 0) {
+            asm_error = 0;
+        }
+        r1 = asm_indirect_reg(arg1, 2);
+        if (r1 != 0xFFFF) {
+            r0 = asm_reg(arg0);
+            asm_emit_byte(0x40 | (r0 << 2) | r1);
+            return;
+        }
+        if (asm_error != 0) {
+            asm_error = 0;
+        }
+        r1 = asm_indirect_reg(arg1, 0);
+        if (r1 != 0xFFFF) {
+            r0 = asm_reg(arg0);
+            asm_emit_byte(0x20 | (r0 << 2) | r1);
+            return;
+        }
+        if (asm_error != 0) {
+            asm_error = 0;
+        }
+        r0 = asm_indirect_reg(arg0, 0);
+        if (r0 != 0xFFFF) {
+            r1 = asm_reg(arg1);
+            asm_emit_byte(0x30 | (r0 << 2) | r1);
+            return;
+        }
+        if (asm_error != 0) {
+            asm_error = 0;
+        }
+        if ((asm_equal_ci(arg0, "R0") == 1 ||
+             asm_equal_ci(arg0, "R1") == 1 ||
+             asm_equal_ci(arg0, "R2") == 1 ||
+             asm_equal_ci(arg0, "R3") == 1) &&
+            (asm_equal_ci(arg1, "R0") == 1 ||
+             asm_equal_ci(arg1, "R1") == 1 ||
+             asm_equal_ci(arg1, "R2") == 1 ||
+             asm_equal_ci(arg1, "R3") == 1)) {
+            r0 = asm_reg(arg0);
+            r1 = asm_reg(arg1);
+            asm_emit_byte((r0 << 2) | r1);
+            return;
+        }
+        if (asm_equal_ci(arg0, "R0") == 1) {
+            value = asm_eval(arg1);
+            if (asm_error == 0 && value <= 15) {
+                asm_emit_byte(0x10 | value);
+            } else if (asm_error == 0) {
+                asm_fail("LD R0 immediate out of range");
+            }
+            return;
+        }
+        r0 = asm_reg(arg0);
+        r1 = asm_reg(arg1);
+        asm_emit_byte((r0 << 2) | r1);
+        return;
+    }
+    if (asm_equal_ci(mnemonic, "ADD") == 1 ||
+        asm_equal_ci(mnemonic, "SUB") == 1 ||
+        asm_equal_ci(mnemonic, "OR") == 1 ||
+        asm_equal_ci(mnemonic, "XOR") == 1 ||
+        asm_equal_ci(mnemonic, "AND") == 1) {
+        if (count != 2) {
+            asm_fail("ALU instruction expects two registers");
+            return;
+        }
+        r0 = asm_reg(arg0);
+        r1 = asm_reg(arg1);
+        if (asm_equal_ci(mnemonic, "ADD") == 1) {
+            opcode = 6;
+        } else if (asm_equal_ci(mnemonic, "SUB") == 1) {
+            opcode = 7;
+        } else if (asm_equal_ci(mnemonic, "OR") == 1) {
+            opcode = 8;
+        } else if (asm_equal_ci(mnemonic, "XOR") == 1) {
+            opcode = 9;
+        } else {
+            opcode = 10;
+        }
+        asm_emit_byte((opcode << 4) | (r0 << 2) | r1);
+        return;
+    }
+    if (asm_equal_ci(mnemonic, "SHIFT.L") == 1 ||
+        asm_equal_ci(mnemonic, "SHIFT.R") == 1 ||
+        asm_equal_ci(mnemonic, "SHIFT.AR") == 1 ||
+        asm_equal_ci(mnemonic, "XCHG") == 1) {
+        if (count != 1) {
+            asm_fail("shift instruction expects one register");
+            return;
+        }
+        r0 = asm_reg(arg0);
+        if (asm_equal_ci(mnemonic, "SHIFT.L") == 1) {
+            mode = 0;
+        } else if (asm_equal_ci(mnemonic, "SHIFT.R") == 1) {
+            mode = 1;
+        } else if (asm_equal_ci(mnemonic, "SHIFT.AR") == 1) {
+            mode = 2;
+        } else {
+            mode = 3;
+        }
+        asm_emit_byte(0xB0 | (mode << 2) | r0);
+        return;
+    }
+    if (asm_equal_ci(mnemonic, "ROT.L") == 1 ||
+        asm_equal_ci(mnemonic, "ROT.R") == 1 ||
+        asm_equal_ci(mnemonic, "INC") == 1 ||
+        asm_equal_ci(mnemonic, "DEC") == 1) {
+        if (count != 1) {
+            asm_fail("rotate/increment instruction expects one register");
+            return;
+        }
+        r0 = asm_reg(arg0);
+        if (asm_equal_ci(mnemonic, "ROT.L") == 1) {
+            mode = 0;
+        } else if (asm_equal_ci(mnemonic, "ROT.R") == 1) {
+            mode = 1;
+        } else if (asm_equal_ci(mnemonic, "INC") == 1) {
+            mode = 2;
+        } else {
+            mode = 3;
+        }
+        asm_emit_byte(0xC0 | (mode << 2) | r0);
+        return;
+    }
+    if (asm_equal_ci(mnemonic, "JMP.Z") == 1 ||
+        asm_equal_ci(mnemonic, "JMP.M") == 1) {
+        if (count != 2) {
+            asm_fail("conditional jump expects two registers");
+            return;
+        }
+        r0 = asm_reg(arg0);
+        r1 = asm_reg(arg1);
+        if (asm_equal_ci(mnemonic, "JMP.Z") == 1) {
+            opcode = 0xD0;
+        } else {
+            opcode = 0xE0;
+        }
+        asm_emit_byte(opcode | (r0 << 2) | r1);
+        return;
+    }
+    if (asm_equal_ci(mnemonic, "JMP") == 1) {
+        if (count != 1) {
+            asm_fail("JMP expects one register");
+            return;
+        }
+        r0 = asm_reg(arg0);
+        asm_emit_byte(0xF0 | r0);
+        return;
+    }
+    if (asm_equal_ci(mnemonic, "LINK") == 1) {
+        if (count == 1) {
+            r0 = asm_reg(arg0);
+        } else if (count == 2 && asm_equal_ci(arg1, "R0") == 1) {
+            r0 = asm_reg(arg0);
+        } else {
+            asm_fail("LINK expects Rr or Rr, R0");
+            return;
+        }
+        asm_align(0);
+        asm_emit_byte(0xF4 | r0);
+        asm_emit_byte(0x00);
+        return;
+    }
+    if (asm_equal_ci(mnemonic, "PUSH8") == 1) {
+        if (count != 2) {
+            asm_fail("PUSH8 expects a register and byte");
+            return;
+        }
+        r0 = asm_reg(arg0);
+        value = asm_eval(arg1);
+        if (asm_error != 0) {
+            return;
+        }
+        if (value > 255) {
+            asm_fail("PUSH8 byte out of range");
+            return;
+        }
+        asm_align(0);
+        asm_emit_byte(0xF8 | r0);
+        asm_emit_byte(value);
+        return;
+    }
+    if (asm_equal_ci(mnemonic, "TRAP") == 1) {
+        if (count == 0) {
+            r0 = 0;
+            value = 0;
+        } else if (count == 1) {
+            r0 = asm_reg(arg0);
+            value = 0;
+        } else if (count == 2) {
+            r0 = asm_reg(arg0);
+            value = asm_eval(arg1);
+            if (asm_error != 0) {
+                return;
+            }
+            if (value > 255) {
+                asm_fail("TRAP byte out of range");
+                return;
+            }
+        } else {
+            asm_fail("TRAP expects zero, one, or two operands");
+            return;
+        }
+        asm_align(0);
+        asm_emit_byte(0xFC | r0);
+        asm_emit_byte(value);
+        return;
+    }
+    asm_fail("unknown instruction or directive");
+}
+
+void asm_ins0(u16 *mnemonic) {
+    asm_instruction(mnemonic, "", "", 0);
+}
+
+void asm_ins1(u16 *mnemonic, u16 *arg0) {
+    asm_instruction(mnemonic, arg0, "", 1);
+}
+
+void asm_ins2(u16 *mnemonic, u16 *arg0, u16 *arg1) {
+    asm_instruction(mnemonic, arg0, arg1, 2);
+}
+
+void asm_process_directive(u16 *mnemonic, u16 *operands) {
+    u16 value = 0;
+    u16 count = 0;
+    u16 pos = 0;
+    u16 i = 0;
+    u16 j = 0;
+    u16 start = 0;
+    u16 end = 0;
+    u16 ch = 0;
+    u16 digit = 0;
+    u16 *arg = asm_macro_arg(0);
+    if (asm_equal_ci(mnemonic, ".ORG") == 1) {
+        value = asm_eval(operands);
+        if (asm_error == 0) {
+            asm_align(0);
+            asm_pc = value;
+            asm_slot = 0;
+        }
+        return;
+    }
+    if (asm_equal_ci(mnemonic, ".DEFINE") == 1 ||
+        asm_equal_ci(mnemonic, ".EQU") == 1) {
+        i = 0;
+        while (asm_is_space(getbyte(operands, i))) {
+            i++;
+        }
+        start = i;
+        while (asm_is_ident_part(getbyte(operands, i))) {
+            i++;
+        }
+        if (i == start) {
+            asm_fail(".DEFINE expects a name and value");
+            return;
+        }
+        asm_copy_range(asm_token, operands, start, i, ASM_NAME_BYTES);
+        while (asm_is_space(getbyte(operands, i))) {
+            i++;
+        }
+        if (getbyte(operands, i) == 0) {
+            asm_fail(".DEFINE expects a name and value");
+            return;
+        }
+        asm_copy_range(arg, operands, i, ASM_LINE_BYTES, ASM_LINE_BYTES);
+        value = asm_eval(arg);
+        if (asm_error == 0 && asm_pass == 1) {
+            asm_symbol_set(asm_token, value, 1);
+        }
+        return;
+    }
+    if (asm_equal_ci(mnemonic, ".ALIGN") == 1) {
+        asm_align(0);
+        return;
+    }
+    if (asm_equal_ci(mnemonic, ".WORD") == 1 ||
+        asm_equal_ci(mnemonic, ".HEXW") == 1) {
+        asm_align(0);
+        pos = 0;
+        while (asm_next_operand(operands, &pos, arg) != 0) {
+            value = asm_eval(arg);
+            if (asm_error != 0) {
+                return;
+            }
+            asm_emit_byte(value & 0x00FF);
+            asm_emit_byte((value >> 8) & 0x00FF);
+        }
+        return;
+    }
+    if (asm_equal_ci(mnemonic, ".RESW") == 1) {
+        asm_align(0);
+        value = asm_eval(operands);
+        if (asm_error != 0) {
+            return;
+        }
+        if (value > 65535 - asm_pc) {
+            asm_fail(".RESW exceeds memory range");
+            return;
+        }
+        asm_pc = asm_pc + value;
+        asm_slot = 0;
+        return;
+    }
+    if (asm_equal_ci(mnemonic, ".BYTE") == 1) {
+        pos = 0;
+        while (asm_next_operand(operands, &pos, arg) != 0) {
+            value = asm_eval(arg);
+            if (asm_error != 0) {
+                return;
+            }
+            if (value > 255) {
+                asm_fail(".BYTE value out of range");
+                return;
+            }
+            asm_emit_byte(value);
+        }
+        return;
+    }
+    if (asm_equal_ci(mnemonic, ".ASCIZ") == 1) {
+        i = 0;
+        while (asm_is_space(getbyte(operands, i))) {
+            i++;
+        }
+        if (getbyte(operands, i) != 34) {
+            asm_fail(".ASCIZ expects a quoted string");
+            return;
+        }
+        i++;
+        while (true) {
+            ch = getbyte(operands, i);
+            if (ch == 0) {
+                asm_fail("unterminated .ASCIZ string");
+                return;
+            }
+            if (ch == 34) {
+                break;
+            }
+            if (ch == 92) {
+                i++;
+                ch = getbyte(operands, i);
+                if (ch == 110) {
+                    ch = 10;
+                } else if (ch == 114) {
+                    ch = 13;
+                } else if (ch == 116) {
+                    ch = 9;
+                } else if (ch == 48) {
+                    ch = 0;
+                } else if (ch == 120) {
+                    digit = asm_hex_value(getbyte(operands, i + 1));
+                    if (digit == 0xFFFF) {
+                        asm_fail("invalid .ASCIZ hex escape");
+                        return;
+                    }
+                    ch = digit << 4;
+                    digit = asm_hex_value(getbyte(operands, i + 2));
+                    if (digit == 0xFFFF) {
+                        asm_fail("invalid .ASCIZ hex escape");
+                        return;
+                    }
+                    ch = ch | digit;
+                    i += 2;
+                }
+            }
+            asm_emit_byte(ch);
+            i++;
+        }
+        asm_emit_byte(0);
+        return;
+    }
+    if (asm_equal_ci(mnemonic, ".HEX") == 1) {
+        i = 0;
+        while (getbyte(operands, i) != 0) {
+            while (asm_is_space(getbyte(operands, i))) {
+                i++;
+            }
+            if (getbyte(operands, i) == 0) {
+                break;
+            }
+            start = i;
+            while (getbyte(operands, i) != 0 &&
+                   !asm_is_space(getbyte(operands, i))) {
+                i++;
+            }
+            end = i;
+            count = end - start;
+            if (count == 0) {
+                continue;
+            }
+            if ((count & 1) != 0) {
+                digit = asm_hex_value(getbyte(operands, start));
+                if (digit == 0xFFFF) {
+                    asm_fail("invalid .HEX data");
+                    return;
+                }
+                asm_emit_byte(digit);
+                start++;
+                count--;
+            }
+            while (count != 0) {
+                digit = asm_hex_value(getbyte(operands, start));
+                value = asm_hex_value(getbyte(operands, start + 1));
+                if (digit == 0xFFFF || value == 0xFFFF) {
+                    asm_fail("invalid .HEX data");
+                    return;
+                }
+                asm_emit_byte((digit << 4) | value);
+                start += 2;
+                count -= 2;
+            }
+        }
+        return;
+    }
+    if (asm_equal_ci(mnemonic, ".INCLUDE") == 1) {
+        i = 0;
+        while (getbyte(operands, i) != 34 && getbyte(operands, i) != 0) {
+            i++;
+        }
+        if (getbyte(operands, i) != 34) {
+            asm_fail(".INCLUDE only accepts common.inc");
+            return;
+        }
+        i++;
+        start = i;
+        while (getbyte(operands, i) != 34 && getbyte(operands, i) != 0) {
+            i++;
+        }
+        if (getbyte(operands, i) != 34) {
+            asm_fail(".INCLUDE only accepts common.inc");
+            return;
+        }
+        end = i;
+        j = start;
+        while (j < end) {
+            if (getbyte(operands, j) == 47 || getbyte(operands, j) == 92) {
+                start = j + 1;
+            }
+            j++;
+        }
+        asm_copy_range(asm_token, operands, start, end, ASM_NAME_BYTES);
+        if (asm_equal_ci(asm_token, "common.inc") != 1) {
+            asm_fail("general .INCLUDE preprocessing is not supported");
+        }
+        return;
+    }
+    if (asm_equal_ci(mnemonic, ".MACRO") == 1 ||
+        asm_equal_ci(mnemonic, ".ENDMACRO") == 1 ||
+        asm_equal_ci(mnemonic, ".IF") == 1 ||
+        asm_equal_ci(mnemonic, ".IFDEF") == 1 ||
+        asm_equal_ci(mnemonic, ".IFNDEF") == 1 ||
+        asm_equal_ci(mnemonic, ".ELIF") == 1 ||
+        asm_equal_ci(mnemonic, ".ELSEIF") == 1 ||
+        asm_equal_ci(mnemonic, ".ELSE") == 1 ||
+        asm_equal_ci(mnemonic, ".ENDIF") == 1) {
+        asm_fail("general preprocessor directives are not supported");
+        return;
+    }
+    asm_fail("unknown directive");
+}
+
+void asm_macro_load16(u16 *reg, u16 *value_text) {
+    u16 reg_num = asm_reg(reg);
+    u16 value = asm_eval(value_text);
+    if (asm_error != 0) {
+        return;
+    }
+    asm_align(0);
+    asm_emit_byte(0xF8 | reg_num);
+    asm_emit_byte((value >> 8) & 0x00FF);
+    asm_align(0);
+    asm_emit_byte(0xF8 | reg_num);
+    asm_emit_byte(value & 0x00FF);
+}
+
+void asm_macro_stpush(u16 *ptr_addr, u16 *reg) {
+    asm_ins1("XCHG", "R0");
+    asm_ins1("XCHG", "R1");
+    asm_ins1("XCHG", "R2");
+    asm_ins1("XCHG", "R3");
+    asm_ins1("XCHG", reg);
+    asm_ins2("LD", "R1", reg);
+    asm_ins2("LD", "R0", ptr_addr);
+    asm_ins2("LD", "R2", "(R0)");
+    asm_ins2("LD", "(--R2)", "R1");
+    asm_ins2("LD", "(R0)", "R2");
+    asm_ins2("LD", reg, "R1");
+    asm_ins1("XCHG", reg);
+    asm_ins1("XCHG", "R0");
+    asm_ins1("XCHG", "R1");
+    asm_ins1("XCHG", "R2");
+    asm_ins1("XCHG", "R3");
+}
+
+void asm_macro_stpop(u16 *ptr_addr, u16 *reg) {
+    asm_ins1("XCHG", "R0");
+    asm_ins1("XCHG", "R1");
+    asm_ins1("XCHG", "R2");
+    asm_ins1("XCHG", "R3");
+    asm_ins2("LD", "R0", ptr_addr);
+    asm_ins2("LD", "R2", "(R0)");
+    asm_ins2("LD", "R1", "(R2++)");
+    asm_ins2("LD", "(R0)", "R2");
+    asm_ins2("LD", reg, "R1");
+    asm_ins1("XCHG", reg);
+    asm_ins1("XCHG", "R0");
+    asm_ins1("XCHG", "R1");
+    asm_ins1("XCHG", "R2");
+    asm_ins1("XCHG", "R3");
+}
+
+void asm_format_macro_label(u16 *prefix, u16 tag, u16 *out) {
+    u16 i = 0;
+    u16 count = 0;
+    u16 value = tag;
+    u16 tmp = 0;
+    asm_copy(out, prefix, ASM_NAME_BYTES);
+    while (getbyte(out, i) != 0) {
+        i++;
+    }
+    if (value == 0) {
+        setbyte(out, i, 48);
+        i++;
+    } else {
+        while (value != 0 && count < 6) {
+            asm_number_buf[count] = value % 10;
+            value = value / 10;
+            count++;
+        }
+        while (count != 0) {
+            count--;
+            tmp = asm_number_buf[count];
+            setbyte(out, i, 48 + tmp);
+            i++;
+        }
+    }
+    setbyte(out, i, 0);
+}
+
+u16 asm_is_macro(u16 *mnemonic) {
+    return asm_equal_ci(mnemonic, "GET_CPUID") ||
+           asm_equal_ci(mnemonic, "FIFO_POP") ||
+           asm_equal_ci(mnemonic, "FIFO_PUSH") ||
+           asm_equal_ci(mnemonic, "TRIGGER_TRAP") ||
+           asm_equal_ci(mnemonic, "START_PROGRAM") ||
+           asm_equal_ci(mnemonic, "SWAP") ||
+           asm_equal_ci(mnemonic, "LOAD16") ||
+           asm_equal_ci(mnemonic, "LD0") ||
+           asm_equal_ci(mnemonic, "NOT") ||
+           asm_equal_ci(mnemonic, "NEG") ||
+           asm_equal_ci(mnemonic, "XCHGALL") ||
+           asm_equal_ci(mnemonic, "SAVEALL") ||
+           asm_equal_ci(mnemonic, "LOADALL") ||
+           asm_equal_ci(mnemonic, "STPUSH") ||
+           asm_equal_ci(mnemonic, "STPOP") ||
+           asm_equal_ci(mnemonic, "RPUSH") ||
+           asm_equal_ci(mnemonic, "RPOP") ||
+           asm_equal_ci(mnemonic, "APUSH") ||
+           asm_equal_ci(mnemonic, "APOP") ||
+           asm_equal_ci(mnemonic, "PUSHALL") ||
+           asm_equal_ci(mnemonic, "POPALL") ||
+           asm_equal_ci(mnemonic, "RCALL") ||
+           asm_equal_ci(mnemonic, "RRET") ||
+           asm_equal_ci(mnemonic, "BYTE_GET_LO") ||
+           asm_equal_ci(mnemonic, "BYTE_GET_HI") ||
+           asm_equal_ci(mnemonic, "BYTE_SET_LO") ||
+           asm_equal_ci(mnemonic, "BYTE_SET_HI");
+}
+
+u16 asm_macro_arg_total(u16 minimum, u16 maximum) {
+    if (asm_macro_arg_count < minimum || asm_macro_arg_count > maximum) {
+        asm_fail("wrong number of macro arguments");
+        return 0;
+    }
+    return 1;
+}
+
+void asm_expand_macro(u16 *mnemonic, u16 *operands) {
+    u16 *a0 = asm_macro_arg(0);
+    u16 *a1 = asm_macro_arg(1);
+    u16 value0 = 0;
+    u16 value1 = 0;
+    u16 reg0 = 0;
+    if (asm_error != 0) {
+        return;
+    }
+    asm_split_macro_args(operands);
+    if (asm_error != 0) {
+        return;
+    }
+    if (asm_equal_ci(mnemonic, "START_PROGRAM") == 1 ||
+        asm_equal_ci(mnemonic, "XCHGALL") == 1 ||
+        asm_equal_ci(mnemonic, "SAVEALL") == 1 ||
+        asm_equal_ci(mnemonic, "LOADALL") == 1 ||
+        asm_equal_ci(mnemonic, "PUSHALL") == 1 ||
+        asm_equal_ci(mnemonic, "POPALL") == 1 ||
+        asm_equal_ci(mnemonic, "RRET") == 1) {
+        if (asm_macro_arg_total(0, 0) == 0) {
+            return;
+        }
+    } else if (asm_equal_ci(mnemonic, "TRIGGER_TRAP") == 1 ||
+               asm_equal_ci(mnemonic, "SWAP") == 1 ||
+               asm_equal_ci(mnemonic, "LOAD16") == 1 ||
+               asm_equal_ci(mnemonic, "STPUSH") == 1 ||
+               asm_equal_ci(mnemonic, "STPOP") == 1 ||
+               asm_equal_ci(mnemonic, "BYTE_GET_LO") == 1 ||
+               asm_equal_ci(mnemonic, "BYTE_GET_HI") == 1 ||
+               asm_equal_ci(mnemonic, "BYTE_SET_LO") == 1 ||
+               asm_equal_ci(mnemonic, "BYTE_SET_HI") == 1) {
+        if (asm_macro_arg_total(2, 2) == 0) {
+            return;
+        }
+    } else if (asm_equal_ci(mnemonic, "GET_CPUID") == 1 ||
+               asm_equal_ci(mnemonic, "FIFO_POP") == 1 ||
+               asm_equal_ci(mnemonic, "FIFO_PUSH") == 1 ||
+               asm_equal_ci(mnemonic, "LD0") == 1 ||
+               asm_equal_ci(mnemonic, "NOT") == 1 ||
+               asm_equal_ci(mnemonic, "NEG") == 1 ||
+               asm_equal_ci(mnemonic, "RPUSH") == 1 ||
+               asm_equal_ci(mnemonic, "RPOP") == 1 ||
+               asm_equal_ci(mnemonic, "APUSH") == 1 ||
+               asm_equal_ci(mnemonic, "APOP") == 1 ||
+               asm_equal_ci(mnemonic, "RCALL") == 1) {
+        if (asm_macro_arg_total(1, 1) == 0) {
+            return;
+        }
+    }
+    asm_expand_macro_body(mnemonic);
+}
+
+void asm_strip_comment(u16 *text) {
+        u16 i = 0;
+        u16 quote = 0;
+        u16 escape = 0;
+        u16 ch = 0;
+        while (true) {
+            ch = getbyte(text, i);
+            if (ch == 0) {
+                return;
+}
+            if (escape != 0) {
+                escape = 0;
+            } else if (quote != 0 && ch == 92) {
+                escape = 1;
+            } else if (ch == 34 || ch == 39) {
+                if (quote == 0) {
+                    quote = ch;
+                } else if (quote == ch) {
+                    quote = 0;
+                }
+            } else if (quote == 0 && ch == 59) {
+                setbyte(text, i, 0);
+                return;
+            }
+            i++;
+        }
+    }
+
+void asm_process_line(u16 *text) {
+        u16 i = 0;
+        u16 start = 0;
+        u16 end = 0;
+        u16 ch = 0;
+        u16 count = 0;
+        u16 *arg0 = asm_macro_arg(0);
+        u16 *arg1 = asm_macro_arg(1);
+        asm_strip_comment(text);
+        asm_trim(text);
+        if (getbyte(text, 0) == 0) {
+            return;
+}
+        while (asm_is_ident_start(getbyte(text, 0))) {
+            start = 0;
+            i = 0;
+            while (asm_is_ident_part(getbyte(text, i))) {
+                i++;
+            }
+            end = i;
+            while (asm_is_space(getbyte(text, i))) {
+                i++;
+            }
+            if (getbyte(text, i) != 58) {
+                break;
+            }
+            if (end >= ASM_NAME_BYTES) {
+                asm_fail("label name too long");
+                return;
+            }
+            asm_copy_range(asm_token, text, start, end, ASM_NAME_BYTES);
+            asm_define_label(asm_token);
+            asm_copy_range(text, text, i + 1, ASM_LINE_BYTES, ASM_LINE_BYTES);
+            asm_trim(text);
+            if (getbyte(text, 0) == 0) {
+                return;
+            }
+        }
+        i = 0;
+        while (!asm_is_space(getbyte(text, i)) && getbyte(text, i) != 0) {
+            i++;
+        }
+        if (i == 0) {
+            return;
+        }
+        if (i >= ASM_NAME_BYTES) {
+            asm_fail("mnemonic too long");
+            return;
+        }
+        asm_copy_range(asm_mnemonic, text, 0, i, ASM_NAME_BYTES);
+        while (asm_is_space(getbyte(text, i))) {
+            i++;
+        }
+        asm_copy_range(asm_operands, text, i, ASM_LINE_BYTES, ASM_LINE_BYTES);
+        asm_trim(asm_operands);
+        if (asm_is_macro(asm_mnemonic) != 0) {
+            asm_expand_macro(asm_mnemonic, asm_operands);
+            return;
+        }
+        if (getbyte(asm_mnemonic, 0) == 46) {
+            asm_process_directive(asm_mnemonic, asm_operands);
+            return;
+        }
+        asm_split_macro_args(asm_operands);
+        if (asm_error != 0) {
+            return;
+        }
+        count = asm_macro_arg_count;
+        if (count > 2) {
+            asm_fail("instruction has too many operands");
+            return;
+        }
+        if (count == 0) {
+            asm_instruction(asm_mnemonic, "", "", 0);
+        } else if (count == 1) {
+            asm_instruction(asm_mnemonic, arg0, "", 1);
+        } else {
+            asm_instruction(asm_mnemonic, arg0, arg1, 2);
+        }
+        ch = getbyte(asm_line, 0);
+    }
+
+u16 asm_read_char(void) {
+        u16 status = 0;
+        u16 ch = 0;
+        if (asm_read_eof != 0) {
+            return 0xFFFF;
+}
+        if (asm_read_pos >= asm_read_end) {
+            status = sys_read(asm_source_fd, asm_read_buf, ASM_READ_WORDS,
+                              &asm_read_words);
+            if (status == 3 || asm_read_words == 0) {
+                asm_read_eof = 1;
+                return 0xFFFF;
+            }
+            if (status != 0) {
+                asm_fail("source read failed");
+                return 0xFFFF;
+            }
+            asm_read_pos = 0;
+            asm_read_end = asm_read_words << 1;
+        }
+        ch = getbyte(asm_read_buf, asm_read_pos);
+        asm_read_pos++;
+        if (ch == 0) {
+            asm_read_eof = 1;
+            return 0xFFFF;
+        }
+        return ch;
+    }
+
+u16 asm_read_line(void) {
+        u16 length = 0;
+        u16 ch = 0;
+        u16 eof = 0;
+        while (true) {
+            ch = asm_read_char();
+            if (ch == 0xFFFF) {
+                eof = 1;
+                if (length == 0) {
+                    return 0;
+}
+                break;
+            }
+            if (ch == 10) {
+                break;
+            }
+            if (ch == 13) {
+                continue;
+            }
+            if (length >= ASM_LINE_BYTES - 1) {
+                asm_fail("source line exceeds 127 bytes");
+                return 0;
+            }
+            setbyte(asm_line, length, ch);
+            length++;
+        }
+        setbyte(asm_line, length, 0);
+        asm_line_no++;
+        asm_process_line(asm_line);
+        if (eof != 0) {
+            asm_read_eof = 1;
+        }
+        return 1;
+    }
+
+void asm_reset_reader(void) {
+        asm_read_pos = 0;
+        asm_read_end = 0;
+        asm_read_eof = 0;
+        asm_line_no = 0;
+        asm_macro_id = 0;
+}
+
+u16 asm_open_source(void) {
+        if (sys_open(asm_input_path, O_RDONLY, &asm_source_fd) != 0) {
+            asm_fail("cannot open source file");
+            return 0;
+}
+        asm_source_open = 1;
+        asm_reset_reader();
+        return 1;
+    }
+
+void asm_process_source(void) {
+        u16 result = 0;
+        if (asm_open_source() == 0) {
+            return;
+}
+        while (asm_error == 0) {
+            result = asm_read_line();
+            if (result == 0) {
+                break;
+            }
+        }
+        sys_close(asm_source_fd);
+        asm_source_open = 0;
+    }
+
+void asm_seed_symbols(void) {
+        asm_symbol_count = 0;
+        asm_symbol_set("TRAP_BASE", 0x0100, 1);
+        asm_symbol_set("CPUID_ADDR", 0x000D, 1);
+        asm_symbol_set("CPUID", 0x000D, 1);
+        asm_symbol_set("FIFO_IN_ADDR", 0x000A, 1);
+        asm_symbol_set("FIFO_OUT_ADDR", 0x000B, 1);
+        asm_symbol_set("MAILBOX_ADDR", 0x000C, 1);
+        asm_symbol_set("UART_RX_ADDR", 0x000E, 1);
+        asm_symbol_set("UART_TX_ADDR", 0x000F, 1);
+        asm_symbol_set("MEM_WORDS", 0x0000, 1);
+        asm_symbol_set("MEM_TOP", 0xFFFF, 1);
+        asm_symbol_set("RSP_INIT", 0xFEFF, 1);
+        asm_symbol_set("ASP_INIT", 0xFAFF, 1);
+        asm_symbol_set("TRAP_STRIDE", 16, 1);
+        asm_symbol_set("TRAP_RESET_ADDR", 0x0100, 1);
+        asm_symbol_set("TRAP_FAULT_ADDR", 0x010F, 1);
+}
+
+void asm_put_decimal(u16 value) {
+        u16 count = 0;
+        u16 digit = 0;
+        u16 i = 0;
+        if (value == 0) {
+            sys_putc(48);
+            return;
+}
+        while (value != 0 && count < 6) {
+            asm_number_buf[count] = value % 10;
+            value = value / 10;
+            count++;
+        }
+        i = count;
+        while (i != 0) {
+            i--;
+            digit = asm_number_buf[i];
+            sys_putc(48 + digit);
+        }
+    }
+
+void asm_report_error(void) {
+        sys_puts("asm: line ");
+        asm_put_decimal(asm_error_line);
+        sys_puts(": ");
+        if (asm_error_text != 0) {
+            sys_puts(asm_error_text);
+        } else {
+            sys_puts("assembly failed");
+}
+        sys_puts("\r\n");
+    }
+
+u16 asm_parse_args(void) {
+        u16 i = 0;
+        u16 arg = 0;
+        u16 start = 0;
+        u16 end = 0;
+        while (true) {
+            while (asm_is_space(getbyte(asm_args, i))) {
+                i++;
+}
+            if (getbyte(asm_args, i) == 0) {
+                break;
+            }
+            start = i;
+            while (getbyte(asm_args, i) != 0 && !asm_is_space(getbyte(asm_args, i))) {
+                i++;
+            }
+            end = i;
+            if (arg == 0) {
+                if (end - start >= ASM_NAME_BYTES) {
+                    asm_fail("source path too long");
+                    return 0;
+                }
+                asm_copy_range(asm_input_path, asm_args, start, end, ASM_NAME_BYTES);
+            } else if (arg == 1) {
+                if (end - start >= ASM_NAME_BYTES) {
+                    asm_fail("output path too long");
+                    return 0;
+                }
+                asm_copy_range(asm_output_path, asm_args, start, end, ASM_NAME_BYTES);
+            } else {
+                asm_fail("expected source and output paths");
+                return 0;
+            }
+            arg++;
+        }
+        if (arg != 2) {
+            asm_fail("usage: ASM.PRG <source.asm> <output.prg>");
+            return 0;
+        }
+        if (asm_equal_ci(asm_input_path, asm_output_path) == 1) {
+            asm_fail("source and output paths must differ");
+            return 0;
+        }
+        return 1;
+    }
+
+u16 asm_write_chunk(void) {
+        u16 byte_offset = 0;
+        u16 remaining = asm_chunk_count << 1;
+        u16 byte_count = 0;
+        u16 written = 0;
+        u16 i = 0;
+        u16 status = 0;
+        while (remaining != 0) {
+            byte_count = remaining;
+            if (byte_count > 128) {
+                byte_count = 128;
+}
+            i = 0;
+            while (i < byte_count) {
+                setbyte(asm_write_buf, i, getbyte(asm_image, byte_offset + i));
+                i++;
+            }
+            status = sys_write(asm_output_fd, asm_write_buf, byte_count, &written);
+            if (status != 0 || written != byte_count) {
+                asm_fail("output write failed");
+                return 0;
+            }
+            byte_offset += byte_count;
+            remaining -= byte_count;
+        }
+        return 1;
+    }
+
+u16 asm_write_image(void) {
+        u16 base = asm_min_addr;
+        u16 count = 0;
+        u16 remaining = 0;
+        u16 end = 0;
+        u16 i = 0;
+        u16 last = 0;
+        if (asm_has_output == 0) {
+            asm_min_addr = 0;
+            asm_max_addr = 0;
+}
+        while (true) {
+            remaining = asm_max_addr - base + 1;
+            count = ASM_CHUNK_WORDS;
+            if (remaining < count) {
+                count = remaining;
+            }
+            if (count == 0) {
+                count = 1;
+            }
+            asm_chunk_base = base;
+            asm_chunk_count = count;
+            i = 0;
+            while (i < ASM_CHUNK_WORDS) {
+                asm_image[i] = 0;
+                i++;
+            }
+            asm_pass = 2;
+            asm_pc = 0;
+            asm_slot = 0;
+            asm_macro_id = 0;
+            asm_error_line = 0;
+            asm_process_source();
+            if (asm_error != 0) {
+                return 0;
+            }
+            if (asm_write_chunk() == 0) {
+                return 0;
+            }
+            end = base + count - 1;
+            last = end == asm_max_addr;
+            if (last != 0) {
+                break;
+            }
+            base = base + count;
+        }
+        return 1;
+    }
+
+void main(void) {
+        u16 i = 0;
+        u16 status = 0;
+        asm_args[0] = 0;
+        sys_getargs(asm_args, 32);
+        if (asm_parse_args() == 0) {
+            asm_report_error();
+            sys_exit(1);
+}
+        asm_seed_symbols();
+        asm_pass = 1;
+        asm_pc = 0;
+        asm_slot = 0;
+        asm_has_output = 0;
+        asm_error = 0;
+        asm_error_line = 0;
+        asm_process_source();
+        if (asm_error != 0) {
+            asm_report_error();
+            sys_exit(1);
+        }
+        if (sys_open(asm_output_path, O_WRONLY, &asm_output_fd) != 0) {
+            asm_fail("cannot open output file");
+            asm_report_error();
+            sys_exit(1);
+        }
+        asm_output_open = 1;
+        if (asm_has_output == 0) {
+            asm_min_addr = 0;
+            asm_max_addr = 0;
+        }
+        status = asm_write_image();
+        if (asm_error != 0 || status == 0) {
+            if (asm_output_open != 0) {
+                sys_close(asm_output_fd);
+                asm_output_open = 0;
+            }
+            asm_report_error();
+            sys_exit(1);
+        }
+        sys_close(asm_output_fd);
+        asm_output_open = 0;
+        sys_puts("asm: wrote ");
+        sys_puts(asm_output_path);
+        sys_puts("\r\n");
+        sys_exit(0);
+    }
+void asm_expand_macro_body(u16 *mnemonic) {
+    u16 *a0 = asm_macro_arg(0);
+    u16 *a1 = asm_macro_arg(1);
+    u16 value0 = 0;
+    u16 value1 = 0;
+    u16 reg0 = 0;
+    asm_macro_id++;
+    if (asm_equal_ci(mnemonic, "GET_CPUID") == 1) {
+        asm_ins2("LD", "R0", "13");
+        asm_ins2("LD", a0, "(R0)");
+    } else if (asm_equal_ci(mnemonic, "FIFO_POP") == 1) {
+        asm_ins2("LD", "R0", "10");
+        asm_ins2("LD", a0, "(R0)");
+    } else if (asm_equal_ci(mnemonic, "FIFO_PUSH") == 1) {
+        asm_ins2("LD", "R0", "11");
+        asm_ins2("LD", "(R0)", a0);
+    } else if (asm_equal_ci(mnemonic, "TRIGGER_TRAP") == 1) {
+        value0 = asm_eval(a0);
+        value1 = asm_eval(a1);
+        if (asm_error != 0) {
+            return;
+        }
+        value0 = (value0 << 8) | (value1 & 0x000F);
+        reg0 = asm_reg("R0");
+        asm_align(0);
+        asm_emit_byte(0xF8 | reg0);
+        asm_emit_byte((value0 >> 8) & 0x00FF);
+        asm_align(0);
+        asm_emit_byte(0xF8 | reg0);
+        asm_emit_byte(value0 & 0x00FF);
+        asm_macro_load16("R1", "12");
+        asm_ins2("LD", "(R1)", "R0");
+    } else if (asm_equal_ci(mnemonic, "START_PROGRAM") == 1) {
+        asm_macro_load16("R1", "RSP_INIT");
+        asm_ins2("LD", "R0", "4");
+        asm_ins2("LD", "(R0)", "R1");
+        asm_macro_load16("R1", "ASP_INIT");
+        asm_ins1("INC", "R0");
+        asm_ins2("LD", "(R0)", "R1");
+        asm_macro_load16("R0", "_main");
+        asm_ins1("JMP", "R0");
+    } else if (asm_equal_ci(mnemonic, "SWAP") == 1) {
+        asm_ins2("XOR", a0, a1);
+        asm_ins2("XOR", a1, a0);
+        asm_ins2("XOR", a0, a1);
+    } else if (asm_equal_ci(mnemonic, "LOAD16") == 1) {
+        asm_macro_load16(a0, a1);
+    } else if (asm_equal_ci(mnemonic, "LD0") == 1) {
+        asm_ins2("XOR", a0, a0);
+    } else if (asm_equal_ci(mnemonic, "NOT") == 1) {
+        asm_ins1("XCHG", "R0");
+        asm_ins2("XOR", "R0", "R0");
+        asm_ins1("DEC", "R0");
+        asm_ins2("XOR", a0, "R0");
+        asm_ins1("XCHG", "R0");
+    } else if (asm_equal_ci(mnemonic, "NEG") == 1) {
+        asm_ins1("XCHG", "R0");
+        asm_ins2("XOR", "R0", "R0");
+        asm_ins1("DEC", "R0");
+        asm_ins2("XOR", a0, "R0");
+        asm_ins1("XCHG", "R0");
+        asm_ins1("INC", a0);
+    } else if (asm_equal_ci(mnemonic, "XCHGALL") == 1) {
+        asm_ins1("XCHG", "R0");
+        asm_ins1("XCHG", "R1");
+        asm_ins1("XCHG", "R2");
+        asm_ins1("XCHG", "R3");
+    } else if (asm_equal_ci(mnemonic, "SAVEALL") == 1) {
+        asm_ins1("XCHG", "R0");
+        asm_ins2("LD", "R0", "4");
+        asm_ins2("LD", "(--R0)", "R3");
+        asm_ins2("LD", "(--R0)", "R2");
+        asm_ins1("XCHG", "R2");
+        asm_ins2("LD", "R2", "R0");
+        asm_ins1("XCHG", "R0");
+        asm_ins2("LD", "(--R2)", "R1");
+        asm_ins2("LD", "(--R2)", "R0");
+        asm_ins1("XCHG", "R2");
+    } else if (asm_equal_ci(mnemonic, "LOADALL") == 1) {
+        asm_ins2("LD", "R0", "0");
+        asm_ins2("LD", "R3", "R0");
+        asm_ins2("LD", "R0", "(R3++)");
+        asm_ins2("LD", "R1", "(R3++)");
+        asm_ins2("LD", "R2", "(R3++)");
+        asm_ins2("LD", "R3", "(R3)");
+    } else if (asm_equal_ci(mnemonic, "STPUSH") == 1) {
+        asm_macro_stpush(a0, a1);
+    } else if (asm_equal_ci(mnemonic, "STPOP") == 1) {
+        asm_macro_stpop(a0, a1);
+    } else if (asm_equal_ci(mnemonic, "RPUSH") == 1) {
+        asm_macro_stpush("4", a0);
+    } else if (asm_equal_ci(mnemonic, "RPOP") == 1) {
+        asm_macro_stpop("4", a0);
+    } else if (asm_equal_ci(mnemonic, "APUSH") == 1) {
+        asm_macro_stpush("5", a0);
+    } else if (asm_equal_ci(mnemonic, "APOP") == 1) {
+        asm_macro_stpop("5", a0);
+    } else if (asm_equal_ci(mnemonic, "PUSHALL") == 1) {
+        asm_macro_stpush("5", "R0");
+        asm_macro_stpush("5", "R1");
+        asm_macro_stpush("5", "R2");
+        asm_macro_stpush("5", "R3");
+    } else if (asm_equal_ci(mnemonic, "POPALL") == 1) {
+        asm_macro_stpop("5", "R3");
+        asm_macro_stpop("5", "R2");
+        asm_macro_stpop("5", "R1");
+        asm_macro_stpop("5", "R0");
+    } else if (asm_equal_ci(mnemonic, "RCALL") == 1) {
+        asm_macro_load16("R0", a0);
+        asm_ins2("LINK", "R0", "R0");
+    } else if (asm_equal_ci(mnemonic, "RRET") == 1) {
+        asm_macro_stpop("4", "R0");
+        asm_ins1("JMP", "R0");
+    } else if (asm_equal_ci(mnemonic, "BYTE_GET_LO") == 1) {
+        asm_ins2("LD", a0, a1);
+        asm_ins1("XCHG", "R0");
+        asm_macro_load16("R0", "0x00FF");
+        asm_ins2("AND", a0, "R0");
+        asm_ins1("XCHG", "R0");
+    } else if (asm_equal_ci(mnemonic, "BYTE_GET_HI") == 1) {
+        asm_ins2("LD", a0, a1);
+        asm_ins1("SHIFT.R", a0);
+        asm_ins1("SHIFT.R", a0);
+        asm_ins1("SHIFT.R", a0);
+        asm_ins1("SHIFT.R", a0);
+        asm_ins1("SHIFT.R", a0);
+        asm_ins1("SHIFT.R", a0);
+        asm_ins1("SHIFT.R", a0);
+        asm_ins1("SHIFT.R", a0);
+    } else if (asm_equal_ci(mnemonic, "BYTE_SET_LO") == 1) {
+        asm_ins1("XCHG", "R0");
+        asm_macro_load16("R0", "0xFF00");
+        asm_ins2("AND", a0, "R0");
+        asm_ins2("LD", "R0", a1);
+        asm_ins1("XCHG", "R3");
+        asm_macro_load16("R3", "0x00FF");
+        asm_ins2("AND", "R0", "R3");
+        asm_ins1("XCHG", "R3");
+        asm_ins2("OR", a0, "R0");
+        asm_ins1("XCHG", "R0");
+    } else if (asm_equal_ci(mnemonic, "BYTE_SET_HI") == 1) {
+        asm_ins1("XCHG", "R0");
+        asm_macro_load16("R0", "0x00FF");
+        asm_ins2("AND", a0, "R0");
+        asm_ins2("LD", "R0", a1);
+        asm_align(0);
+        asm_emit_byte(0xF8);
+        asm_emit_byte(0x00);
+        asm_ins2("OR", a0, "R0");
+        asm_ins1("XCHG", "R0");
+    }
+}

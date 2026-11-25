@@ -32,8 +32,12 @@
 .endmacro
 
 .macro TRIGGER_TRAP target_core, trap_num
-    LOAD16  R0, ((%target_core << 8) | (%trap_num & 0x0F))
-    LD      R1, 12                  ; Slot 0: R1 = 0x000C (Opcode 0x1)
+    ; Build the mailbox word as (target_core << 8) | (trap_num & 0x0F).
+    ; Two PUSH8s replace both bytes of R0, regardless of its prior value.
+    PUSH8   R0, %target_core
+    PUSH8   R0, (%trap_num & 0x0F)
+    ; LD's immediate form only targets R0, so use LOAD16 for the mailbox address.
+    LOAD16  R1, 12
     LD      (R1), R0                ; Slot 1: Write to MAILBOX_ADDR
 .endmacro
 

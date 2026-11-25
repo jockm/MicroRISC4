@@ -296,7 +296,8 @@ python3 tools/mr4sim.py --enable-math build/my_app.bin
    ```
 
 2. Copy the contents of `build/sd_root/` (`BIN/` with `LS.PRG`, `CAT.PRG`,
-   `PS.PRG`, `MUL.PRG`, `XI.PRG`, `FIBERS.PRG`, plus `WORK/` and `README.TXT`)
+   `PS.PRG`, `MUL.PRG`, `XI.PRG`, `FIBERS.PRG`, `ASM.PRG`, plus
+   `WORK/HELLO.ASM` and `README.TXT`)
    to the root of a FAT32-formatted microSD card (standard MBR partition 1) and
    insert it into the ULX3S onboard microSD slot.
 3. Load the bitstream into ULX3S SRAM and open the 3 Mbaud serial terminal:
@@ -309,6 +310,13 @@ python3 tools/mr4sim.py --enable-math build/my_app.bin
    Press **PWR** on the board to see `MiniRISC4 OS v0.1 (Core 0)`,
    `FAT32 mounted OK`, and the `mr4> ` prompt (`! ls`, `! cat README.TXT`,
    `! ps`, `&fibers`, `! mul`).
+
+   From `/WORK`, assemble and run the included example:
+
+   ```text
+   ! ASM.PRG HELLO.ASM HELLO.PRG
+   ! HELLO.PRG
+   ```
 
 ### Custom ULX3S configurations
 

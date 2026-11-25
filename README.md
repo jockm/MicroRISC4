@@ -14,7 +14,7 @@ The idea of using small risc cores to emulate larger architectures is being carr
 
 ## Hardware & ASIC Verification
 
-MicroRISC4 has been synthesized, timed, and tested on both live **Lattice ECP5-85F FPGA hardware (ULX3S-85F)** — including 96 MHz SDRAM with ODDR clock forwarding, onboard microSD SPI, the optional 1-DSP Math Accelerator, and multi-core Lean Ring configurations — and end-to-end through **OpenROAD-flow-scripts (RTL-to-GDSII)** on public **Nangate45 (45 nm)** and **ASAP7 (7 nm)** reference PDKs (both standalone `mr4_asic_top` and a hierarchical 4-tile `mr4_quad_top` macro layout). See [GettingStarted.md](GettingStarted.md) to build, simulate, program the ULX3S, or run the Dockerized OpenROAD flow.
+MicroRISC4 has been synthesized, timed, and verified on both live **Lattice ECP5-85F FPGA hardware (ULX3S-85F)** — including 96 MHz SDRAM with ODDR clock forwarding, onboard microSD SPI, the optional 1-DSP Math Accelerator, live 4-core MR4OS with FAT32 userland apps, and a live 32-core Lean Ring stress test — and end-to-end through **OpenROAD-flow-scripts (RTL-to-GDSII)** on public **Nangate45 (45 nm)** and **ASAP7 (7 nm)** reference PDKs (both standalone `mr4_asic_top` and a hierarchical 4-tile `mr4_quad_top` macro layout). See [GettingStarted.md](GettingStarted.md) to build, simulate, program the ULX3S, or run the Dockerized OpenROAD flow.
 
 ### Measured Speeds & Configurations
 
@@ -22,13 +22,17 @@ MicroRISC4 has been synthesized, timed, and tested on both live **Lattice ECP5-8
 |---|---|---|---|---|
 | **ULX3S-85F (ECP5 FPGA)** | 1-Core 2K BRAM (4-stage pipeline) | **132.49 MHz** | 1,464 LUT4, 546 FF, 2 DP16KD | Timing-driven FPGA ceiling (`nextpnr-ecp5`) |
 | **ULX3S-85F (ECP5 FPGA)** | 1-Core + I/D Cache + 32 MB SDRAM | **114.89 MHz** | 2,268 LUT4, 1,198 FF, 4 DP16KD | Live HW verified at **96 MHz** (`0` errors) |
-| **ULX3S-85F (ECP5 FPGA)** | 4-Core MR4OS + SDRAM + Lean Ring + SPI + 4× Math | **104.74 MHz** | 14,617 LUT4 (17%), 5,318 FF, 4 DSP, 77 DP16KD | Built for 72 MHz (+32.7 MHz slack); Verilator 4-core FAT32 boot PASS |
-| **ULX3S-85F (ECP5 FPGA)** | 4-Core (`4×2K`) + Lean Ring + SDRAM | **104.00 MHz** | 9,270 LUT4, 4,428 FF, 16 DP16KD | Passes 96 MHz timing cleanly |
+| **ULX3S-85F (ECP5 FPGA)** | 4-Core MR4OS + SDRAM + Lean Ring + SPI + 4× Math | **104.74 MHz** | 14,617 LUT4 (17%), 5,318 FF, 4 DSP, 77 DP16KD | Live HW verified at **72 MHz** (`+32.7 MHz` slack; FAT32 + userland apps) |
+| **ULX3S-85F (ECP5 FPGA)** | 4-Core (`4×2K`) + Lean Ring + SDRAM | **104.00 MHz** | 9,270 LUT4, 4,428 FF, 16 DP16KD | Passes **96 MHz** timing cleanly |
+| **ULX3S-85F (ECP5 FPGA)** | 16-Core (`16×2K` BRAM) + 16-Node Lean Ring | **93.12 MHz** | 21,230 LUT4 (25%), 10,210 FF, 128 DPR16X4, 32 DP16KD | Passes **72 MHz** (`+21.1 MHz` slack); Verilator 64-round stress PASS (`0` errors) |
+| **ULX3S-85F (ECP5 FPGA)** | 32-Core (`32×2K` BRAM) + 32-Node Lean Ring | **85.06 MHz** | 41,668 LUT4 (50%), 20,561 FF, 256 DPR16X4, 64 DP16KD | Live HW verified at **60 MHz** (`42,816+` rounds, `0` errors) |
 | **OpenROAD — Nangate45 (45 nm)** | 1-Core `mr4_asic_top` (1024w flop RAM + Boot ROM + UART) | **309.0 MHz** | `0.139 mm²` stdcell (`0.349 mm²` die), `18.0 mW` @ 100 MHz | `6_final.gds` (64 MB), LEC PASS, `0` errors, `+6.76 ns` slack @ 100 MHz target |
 | **OpenROAD — Nangate45 (45 nm)** | Hierarchical 4-Tile `mr4_quad_top` (4× hardened `mr4_tile`) | **180.8 MHz** tile / **262.8 MHz** top ring | `3.09 mm²` die (4× `0.377 mm²` macros, `2` top FFs) | `6_final.gds` (83 MB), `0` warnings/errors — **flat $F_{\max}$ scaling** across core counts |
-| **OpenROAD — ASAP7 (7 nm)** | 1-Core `mr4_asic_top` (1024w flop RAM + Boot ROM + UART) | **1,001.3 MHz (1.001 GHz)** | `0.00784 mm²` stdcell (`0.0235 mm²` die), `15.7 mW` @ 500 MHz | `0` errors, `+1,001 ps` slack @ 500 MHz target (`6.0 µW` leakage) |
+| **OpenROAD — Nangate45 (45 nm)** | 1-Core `CpuCore` + Boot ROM + UART *(SRAM mocked)* | **1,048.2 MHz (1.048 GHz)** | `0.00742 mm²` stdcell (`4,179` cells), `8.82 mW` @ 1.0 GHz | `0` setup/hold violations, `0` errors (`+46 ps` slack @ 1.0 GHz even with `250 ps` uncertainty) |
+| **OpenROAD — ASAP7 (7 nm `RVt`)** | 1-Core `mr4_asic_top` (1024w flop RAM + Boot ROM + UART) | **1,001.3 MHz (1.001 GHz)** | `0.00784 mm²` stdcell (`0.0235 mm²` die), `15.7 mW` @ 500 MHz | `0` setup/hold violations, `0` errors (`+1,001 ps` slack @ 500 MHz, `6.0 µW` leakage) |
+| **OpenROAD — ASAP7 (7 nm `RVt`)** | 1-Core `CpuCore` + Boot ROM + UART *(SRAM mocked)* | **3,009.1 MHz (3.009 GHz)** | `0.000595 mm²` stdcell (`4,823` cells), `7.34 mW` @ 3.0 GHz | `0` setup/hold violations, `0` errors (`+0.68 ps` setup / `+10.5 ps` hold slack @ 3.0 GHz) |
 
-*Note: The OpenROAD runs above used conservative clock targets (100 MHz on 45 nm, 500 MHz on 7 nm) and a standalone 1024×16 flip-flop RAM (~94% of die area) with zero foundry SRAM macros. With compiled foundry SRAM macros and tightened clock targets, the current 4-stage RTL projects to ~700–900 MHz on 45 nm and ~2+ GHz on 7 nm (with 1 GHz @ 45 nm / 3 GHz @ 7 nm reachable via a 5–6 stage EX/branch split and 2-cycle pipelined SRAM).*
+*Note: The full-chip OpenROAD runs include a standalone 1024×16 flip-flop RAM (~94% of die area) so they run end-to-end without external foundry SRAM macros. The `SRAM mocked` rows (`SYNTH_MOCK_LARGE_MEMORIES=1`) isolate the true 4-stage `CpuCore` + `AsicBootRom` + `Uart` pipeline ceiling when paired with compiled foundry SRAM macros (using `CpuConfig.memReadLatency = 2` for pipelined multi-GHz SRAM reads).*
 
 ## How LLMs Are Used in This Project.
 The project makes use of LLM's in a Spec -> Revise -> Generate -> Test loop.  Normally for specific features or goals.  Each step is reviewed by a human, as is the output.

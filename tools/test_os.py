@@ -26,6 +26,7 @@ BUILD_DIR = REPO_ROOT / "build"
 OS_BUILD = BUILD_DIR / "os"
 
 sys.path.insert(0, str(TOOLS_DIR))
+import act4c  # noqa: E402
 import mr4sim  # noqa: E402
 
 
@@ -721,13 +722,37 @@ def test_os_resident_compiler_shell(_args):
         sd_root = root / "sd_root"
         bin_dir = sd_root / "BIN"
         work = sd_root / "WORK"
+        lib_dir = sd_root / "LIB"
         bin_dir.mkdir(parents=True)
         work.mkdir()
+        lib_dir.mkdir()
         shutil.copy(OS_BUILD / "act4c.prg", bin_dir / "ACT4C.PRG")
 
-        source_bytes = b"ACT4C Stage 1 source record 0123456789\r\n" * 16
-        assert len(source_bytes) > 128 and len(source_bytes) % 2 == 0
+        source_text = (
+            'import "nested.a4";\r\n'
+            'import "shared.a4";\r\n'
+            'import "EXTRA.A4";\r\n'
+            "const u16 VALUE = 0x2A;\r\n"
+            "u16 data[2] = {1, 2};\r\n"
+            "u16 letter = 'A';\r\n"
+            "void main(void) {\r\n"
+            "  u16 total = VALUE << 1;\r\n"
+            "}\r\n"
+            "// " + ("boundary-token-" * 10) + "\r\n"
+        )
+        source_bytes = source_text.encode("ascii")
+        if len(source_bytes) % 2 == 0:
+            source_text += "\n"
+            source_bytes = source_text.encode("ascii")
+        assert len(source_bytes) > 128 and len(source_bytes) % 2 == 1
         (work / "INPUT.A4").write_bytes(source_bytes)
+        (work / "INVALID.A4").write_bytes(b"void main(void) { ? }\r\n")
+        nested_text = 'import "shared.a4";\nu16 nested(void) {}\n'
+        shared_text = "const u16 SHARED = 7;\n"
+        extra_text = "u16 extra(void) {}\n"
+        (work / "nested.a4").write_text(nested_text, encoding="ascii")
+        (work / "shared.a4").write_text(shared_text, encoding="ascii")
+        (lib_dir / "EXTRA.A4").write_text(extra_text, encoding="ascii")
 
         sd_img = root / "act4c_test.img"
         subprocess.run(
@@ -764,7 +789,7 @@ def test_os_resident_compiler_shell(_args):
         procs_addr = sim.sym_to_addr["_procs"]
         pid1_state = procs_addr + 10
 
-        def run_app(command: str, max_steps: int = 10000000) -> str:
+        def run_app(command: str, max_steps: int = 35000000) -> str:
             start = len(uart_out)
             for ch in command + "\r":
                 sim.rx_queue.append(ord(ch))
@@ -774,22 +799,65 @@ def test_os_resident_compiler_shell(_args):
             return output
 
         output = run_app("! ACT4C.PRG INPUT.A4 OUTPUT.ASM")
-        assert "act4c: wrote Stage 1 smoke assembly to OUTPUT.ASM" in output, output
+        assert "act4c: wrote Stage 2 lexer listing to OUTPUT.ASM" in output, output
         assert sim.mem[pid1_state] == 0 and sim.mem[pid1_state + 1] == 0
 
-        words = [
-            int.from_bytes(source_bytes[offset : offset + 2], "little")
-            for offset in range(0, len(source_bytes), 2)
-        ]
-        word_count = len(words)
-        word_sum = sum(words) & 0xFFFF
+        token_kind = {
+            "COMMENT": 1,
+            "IDENT": 2,
+            "HEX_LIT": 3,
+            "BIN_LIT": 3,
+            "DEC_LIT": 3,
+            "STR_LIT": 4,
+            "CHAR_LIT": 5,
+            "EOF": 0,
+        }
+        operator_types = {
+            "ARROW", "LE", "GE", "EQ", "NE", "SHL_ASSIGN", "SHR_ASSIGN", "SHL",
+            "SHR", "LOG_AND", "LOG_OR", "INC", "DEC", "ADD_ASSIGN", "SUB_ASSIGN",
+            "MUL_ASSIGN", "DIV_ASSIGN", "MOD_ASSIGN", "AND_ASSIGN", "OR_ASSIGN",
+            "XOR_ASSIGN", "ASSIGN", "LT", "GT", "PLUS", "MINUS", "STAR", "SLASH",
+            "PERCENT", "AMP", "PIPE", "CARET", "TILDE", "BANG", "AT",
+        }
+        punctuation_types = {
+            "DOT", "LPAREN", "RPAREN", "LBRACE", "RBRACE", "LBRACKET",
+            "RBRACKET", "COMMA", "COLON", "SEMI",
+        }
+        host_sources = [source_text, nested_text, shared_text, extra_text]
+        token_records = []
+        token_count = 0
+        token_file_offset = 0
+        source_total_bytes = sum(len(text.encode("ascii")) for text in host_sources)
+        for file_id, file_source in enumerate(host_sources):
+            token_offset = 0
+            for token in act4c.tokenize(file_source, f"source-{file_id}.a4"):
+                if token.type == "EOF":
+                    token_start = len(file_source.encode("ascii"))
+                else:
+                    token_start = file_source.find(token.value, token_offset)
+                    assert token_start >= 0, token
+                    token_offset = token_start + len(token.value)
+                if token.type in token_kind:
+                    kind = token_kind[token.type]
+                elif token.type in operator_types:
+                    kind = 7
+                elif token.type in punctuation_types:
+                    kind = 8
+                else:
+                    kind = 6
+                token_records.append(
+                    f";T:{file_id:04X}:{kind:04X}:{token.line:04X}:{token.col:04X}:"
+                    f"{token_file_offset + token_start:04X}:{len(token.value):04X}\r\n"
+                )
+                token_count += 1
+            token_file_offset += len(file_source.encode("ascii")) + 1
         expected = (
-            b"; ACT4C resident compiler shell (Stage 1)\r\n"
-            b"; This is an I/O smoke output; ACT4 source has not been compiled.\r\n"
-            + f"; Source words read: 0x{word_count:04X}\r\n".encode("ascii")
-            + f"; Source word checksum: 0x{word_sum:04X}\r\n".encode("ascii")
-            + b'.include "common.inc"\r\n.org 0x0400\r\nNOP\r\n'
-        )
+            f"; ACT4C lexer listing; not compiled assembly.\r\n; bytes=0x{source_total_bytes:04X}"
+            f"; tokens=0x{token_count:04X}\r\n"
+            + "".join(token_records)
+            + '; Token fields are file,kind,line,column,offset,length in hex.\r\n'
+            + '.include "common.inc"\r\n.org 0x0400\r\nNOP\r\n'
+        ).encode("ascii")
         actual = read_fat32_file(sim.sd_card.image, "WORK/OUTPUT.ASM")
         assert len(expected) > 128 and actual == expected, (
             f"Resident compiler shell output mismatch ({len(actual)} vs "
@@ -818,7 +886,7 @@ def test_os_resident_compiler_shell(_args):
         assert expected_prg.is_file() and expected_prg.stat().st_size > 0
 
         output = run_app("! ACT4C.PRG INPUT.A4 OUTPUT.ASM")
-        assert "act4c: wrote Stage 1 smoke assembly to OUTPUT.ASM" in output, output
+        assert "act4c: wrote Stage 2 lexer listing to OUTPUT.ASM" in output, output
         assert read_fat32_file(sim.sd_card.image, "WORK/OUTPUT.ASM") == expected
 
         output = run_app("! ACT4C.PRG INPUT.A4")
@@ -843,6 +911,15 @@ def test_os_resident_compiler_shell(_args):
             assert "path component not found" in str(error), error
         else:
             raise AssertionError("Output was created after source-open failure")
+
+        output = run_app("! ACT4C.PRG INVALID.A4 INVALID.ASM")
+        assert "lexical error at line 1, column 19" in output, output
+        try:
+            read_fat32_file(sim.sd_card.image, "WORK/INVALID.ASM")
+        except AssertionError as error:
+            assert "path component not found" in str(error), error
+        else:
+            raise AssertionError("Output was created after a lexical error")
         assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
 
 

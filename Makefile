@@ -763,10 +763,11 @@ $(OS_BUILD)/%.prg: $(OS_BUILD)/%.asm
 
 os-build: $(OS_MAIN_BIN) $(OS_APP_PRGS) $(BUILD_DIR)/worker_stub.bin
 
-$(SD_SRC_DIR): $(OS_APP_PRGS) $(SD_DATA_FILES)
+$(SD_SRC_DIR): $(OS_APP_PRGS) $(SD_DATA_FILES) $(wildcard $(LIB_DIR)/*.a4)
 	rm -rf $(SD_SRC_DIR)
-	mkdir -p $(SD_SRC_DIR)/BIN
+	mkdir -p $(SD_SRC_DIR)/BIN $(SD_SRC_DIR)/LIB
 	cp -R $(SD_DATA_DIR)/. $(SD_SRC_DIR)/
+	cp $(LIB_DIR)/*.a4 $(SD_SRC_DIR)/LIB/
 	cp $(LS_PRG) $(SD_SRC_DIR)/BIN/LS.PRG
 	cp $(PS_PRG) $(SD_SRC_DIR)/BIN/PS.PRG
 	cp $(CAT_PRG) $(SD_SRC_DIR)/BIN/CAT.PRG

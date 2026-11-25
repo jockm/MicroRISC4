@@ -1,7 +1,7 @@
 // HI.A4 - Your classic Hello World example, only briefer
 // From /WORK, compile, assemble and run it with:
-//   ! ACT HI.ASM HI.PRG
-//   ! ASM.PRG HI.ASM HI.PRG
+//   ! ACT4C HI.A4 HI.ASM
+//   ! ASM HI.ASM HI.PRG
 //   ! HI.PRG
 
 import "sys.a4";

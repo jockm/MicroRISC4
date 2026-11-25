@@ -1,19 +1,51 @@
-// Resident ACT4 compiler shell.
-// Stage 1 verifies bounded OS file I/O; it does not parse or compile ACT4 yet.
+// Resident ACT4 compiler frontend.
+// Stage 2 adds bounded tokenization; declarations and code generation follow.
 // Usage: ACT4C.PRG <source.a4> <output.asm>
 import "sys.a4";
 
 const u16 ACT4C_ARG_WORDS = 32;
 const u16 ACT4C_PATH_BYTES = 64;
 const u16 ACT4C_IO_WORDS = 64;
-const u16 ACT4C_OUTPUT_BYTES = 384;
+const u16 ACT4C_SOURCE_BYTES = 16384;
+const u16 ACT4C_MAX_TOKENS = 2048;
+const u16 ACT4C_MAX_FILES = 16;
+const u16 ACT4C_OUTPUT_BYTES = 128;
+
+const u16 ACT4C_T_EOF = 0;
+const u16 ACT4C_T_COMMENT = 1;
+const u16 ACT4C_T_IDENT = 2;
+const u16 ACT4C_T_NUMBER = 3;
+const u16 ACT4C_T_STRING = 4;
+const u16 ACT4C_T_CHAR = 5;
+const u16 ACT4C_T_KEYWORD = 6;
+const u16 ACT4C_T_OPERATOR = 7;
+const u16 ACT4C_T_PUNCT = 8;
 
 u16 act4c_args[ACT4C_ARG_WORDS];
 u16 act4c_input_path[ACT4C_PATH_BYTES >> 1];
 u16 act4c_output_path[ACT4C_PATH_BYTES >> 1];
+DirEntry act4c_source_stat;
 u16 act4c_read_buf[ACT4C_IO_WORDS];
+u16 act4c_source[ACT4C_SOURCE_BYTES >> 1];
+u16 act4c_token_type[ACT4C_MAX_TOKENS];
+u16 act4c_token_file[ACT4C_MAX_TOKENS];
+u16 act4c_token_start[ACT4C_MAX_TOKENS];
+u16 act4c_token_length[ACT4C_MAX_TOKENS];
+u16 act4c_token_line[ACT4C_MAX_TOKENS];
+u16 act4c_token_column[ACT4C_MAX_TOKENS];
+u16 act4c_file_start[ACT4C_MAX_FILES];
+u16 act4c_file_length[ACT4C_MAX_FILES];
+u16 act4c_file_token_start[ACT4C_MAX_FILES];
+u16 act4c_file_token_end[ACT4C_MAX_FILES];
+u16 act4c_file_paths[ACT4C_MAX_FILES * (ACT4C_PATH_BYTES >> 1)];
+u16 act4c_cwd[ACT4C_PATH_BYTES >> 1];
+u16 act4c_main_path[ACT4C_PATH_BYTES >> 1];
+u16 act4c_local_import[ACT4C_PATH_BYTES >> 1];
+u16 act4c_lib_import[ACT4C_PATH_BYTES >> 1];
+u16 act4c_import_name[ACT4C_PATH_BYTES >> 1];
 u16 act4c_output_buf[ACT4C_OUTPUT_BYTES >> 1];
 u16 act4c_write_buf[ACT4C_IO_WORDS];
+u16 act4c_number_digits[5];
 
 u16 act4c_arg_pos = 0;
 u16 act4c_input_fd = 0;
@@ -23,10 +55,333 @@ u16 act4c_output_open = 0;
 u16 act4c_words_read = 0;
 u16 act4c_word_sum = 0;
 u16 act4c_output_len = 0;
+u16 act4c_output_offset = 0;
 u16 act4c_arg_error = 0;
+u16 act4c_source_len = 0;
+u16 act4c_source_used = 0;
+u16 act4c_source_bytes = 0;
+u16 act4c_token_count = 0;
+u16 act4c_file_count = 0;
+u16 act4c_lex_error_file = 0;
+u16 act4c_lex_pos = 0;
+u16 act4c_lex_end = 0;
+u16 act4c_lex_line = 1;
+u16 act4c_lex_column = 1;
+u16 act4c_lex_error = 0;
+u16 act4c_lex_error_line = 0;
+u16 act4c_lex_error_column = 0;
 
 u16 act4c_is_space(u16 ch) {
     return ch == 32 || ch == 9 || ch == 10 || ch == 13;
+}
+
+u16 act4c_is_alpha(u16 ch) {
+    return (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) || ch == 95;
+}
+
+u16 act4c_is_digit(u16 ch) {
+    return ch >= 48 && ch <= 57;
+}
+
+u16 act4c_is_hex(u16 ch) {
+    return act4c_is_digit(ch) || (ch >= 65 && ch <= 70) || (ch >= 97 && ch <= 102);
+}
+
+u16 act4c_is_ident_part(u16 ch) {
+    return act4c_is_alpha(ch) || act4c_is_digit(ch);
+}
+
+u16 act4c_source_char(u16 pos) {
+    if (pos >= act4c_source_used) {
+        return 0;
+    }
+    if (getbyte(act4c_source, pos) == 0) {
+        return 0;
+    }
+    return getbyte(act4c_source, pos);
+}
+
+void act4c_lex_advance(void) {
+    if (act4c_source_char(act4c_lex_pos) == 10) {
+        act4c_lex_line++;
+        act4c_lex_column = 1;
+    } else {
+        act4c_lex_column++;
+    }
+    act4c_lex_pos++;
+}
+
+u16 act4c_add_token(u16 kind, u16 file_id, u16 start, u16 length, u16 line, u16 column) {
+    if (act4c_token_count >= ACT4C_MAX_TOKENS) {
+        act4c_lex_error = 2;
+        act4c_lex_error_line = line;
+        act4c_lex_error_column = column;
+        return 0;
+    }
+    act4c_token_type[act4c_token_count] = kind;
+    act4c_token_file[act4c_token_count] = file_id;
+    act4c_token_start[act4c_token_count] = start;
+    act4c_token_length[act4c_token_count] = length;
+    act4c_token_line[act4c_token_count] = line;
+    act4c_token_column[act4c_token_count] = column;
+    act4c_token_count++;
+    return 1;
+}
+
+u16 act4c_matches(u16 pos, u16 first, u16 second) {
+    return act4c_source_char(pos) == first && act4c_source_char(pos + 1) == second;
+}
+
+u16 act4c_keyword(u16 start, u16 length) {
+    if (length == 3 && act4c_source_char(start) == 117
+        && act4c_source_char(start + 1) == 49 && act4c_source_char(start + 2) == 54) {
+        return 1;
+    }
+    if (length == 4 && act4c_source_char(start) == 118
+        && act4c_source_char(start + 1) == 111 && act4c_source_char(start + 2) == 105
+        && act4c_source_char(start + 3) == 100) {
+        return 1;
+    }
+    if (length == 4 && act4c_source_char(start) == 116
+        && act4c_source_char(start + 1) == 121 && act4c_source_char(start + 2) == 112
+        && act4c_source_char(start + 3) == 101) {
+        return 1;
+    }
+    if (length == 5 && act4c_source_char(start) == 99
+        && act4c_source_char(start + 1) == 111 && act4c_source_char(start + 2) == 110
+        && act4c_source_char(start + 3) == 115 && act4c_source_char(start + 4) == 116) {
+        return 1;
+    }
+    if ((length == 2 && act4c_source_char(start) == 105
+        && act4c_source_char(start + 1) == 102)
+        || (length == 4 && act4c_source_char(start) == 101
+        && act4c_source_char(start + 1) == 108 && act4c_source_char(start + 2) == 115
+        && act4c_source_char(start + 3) == 101)
+        || (length == 5 && act4c_source_char(start) == 119
+        && act4c_source_char(start + 1) == 104 && act4c_source_char(start + 2) == 105
+        && act4c_source_char(start + 3) == 108 && act4c_source_char(start + 4) == 101)
+        || (length == 6 && act4c_source_char(start) == 114
+        && act4c_source_char(start + 1) == 101 && act4c_source_char(start + 2) == 116
+        && act4c_source_char(start + 3) == 117 && act4c_source_char(start + 4) == 114
+        && act4c_source_char(start + 5) == 110)
+        || (length == 5 && act4c_source_char(start) == 98
+        && act4c_source_char(start + 1) == 114 && act4c_source_char(start + 2) == 101
+        && act4c_source_char(start + 3) == 97 && act4c_source_char(start + 4) == 107)
+        || (length == 8 && act4c_source_char(start) == 99
+        && act4c_source_char(start + 1) == 111 && act4c_source_char(start + 2) == 110
+        && act4c_source_char(start + 3) == 116 && act4c_source_char(start + 4) == 105
+        && act4c_source_char(start + 5) == 110 && act4c_source_char(start + 6) == 117
+        && act4c_source_char(start + 7) == 101)) {
+        return 1;
+    }
+    if (length == 3 && act4c_source_char(start) == 102
+        && act4c_source_char(start + 1) == 117 && act4c_source_char(start + 2) == 110) {
+        return 1;
+    }
+    if (length == 3 && act4c_source_char(start) == 97
+        && act4c_source_char(start + 1) == 115 && act4c_source_char(start + 2) == 109) {
+        return 1;
+    }
+    if (length == 4 && act4c_source_char(start) == 116
+        && act4c_source_char(start + 1) == 114 && act4c_source_char(start + 2) == 97
+        && act4c_source_char(start + 3) == 112) {
+        return 1;
+    }
+    if (length == 6 && act4c_source_char(start) == 115
+        && act4c_source_char(start + 1) == 105 && act4c_source_char(start + 2) == 122
+        && act4c_source_char(start + 3) == 101 && act4c_source_char(start + 4) == 111
+        && act4c_source_char(start + 5) == 102) {
+        return 1;
+    }
+    if (length == 6 && act4c_source_char(start) == 105
+        && act4c_source_char(start + 1) == 109 && act4c_source_char(start + 2) == 112
+        && act4c_source_char(start + 3) == 111 && act4c_source_char(start + 4) == 114
+        && act4c_source_char(start + 5) == 116) {
+        return 1;
+    }
+    if (length == 7 && act4c_source_char(start) == 103
+        && act4c_source_char(start + 1) == 101 && act4c_source_char(start + 2) == 116
+        && act4c_source_char(start + 3) == 98 && act4c_source_char(start + 4) == 121
+        && act4c_source_char(start + 5) == 116 && act4c_source_char(start + 6) == 101) {
+        return 1;
+    }
+    if (length == 7 && act4c_source_char(start) == 115
+        && act4c_source_char(start + 1) == 101 && act4c_source_char(start + 2) == 116
+        && act4c_source_char(start + 3) == 98 && act4c_source_char(start + 4) == 121
+        && act4c_source_char(start + 5) == 116 && act4c_source_char(start + 6) == 101) {
+        return 1;
+    }
+    if ((length == 4 && act4c_source_char(start) == 116
+        && act4c_source_char(start + 1) == 114 && act4c_source_char(start + 2) == 117
+        && act4c_source_char(start + 3) == 101)
+        || (length == 5 && act4c_source_char(start) == 102
+        && act4c_source_char(start + 1) == 97 && act4c_source_char(start + 2) == 108
+        && act4c_source_char(start + 3) == 115 && act4c_source_char(start + 4) == 101)) {
+        return 1;
+    }
+    return 0;
+}
+
+u16 act4c_lex_file(u16 file_id) {
+    u16 ch = 0;
+    u16 next = 0;
+    u16 start = 0;
+    u16 length = 0;
+    u16 token_line = 0;
+    u16 token_column = 0;
+    u16 kind = 0;
+    u16 quote = 0;
+    u16 escaped = 0;
+    u16 closed = 0;
+
+    act4c_lex_pos = act4c_file_start[file_id];
+    act4c_lex_end = act4c_lex_pos + act4c_file_length[file_id];
+    act4c_lex_error_file = file_id;
+    act4c_file_token_start[file_id] = act4c_token_count;
+    act4c_lex_line = 1;
+    act4c_lex_column = 1;
+    act4c_lex_error = 0;
+    while (act4c_lex_pos < act4c_lex_end) {
+        ch = act4c_source_char(act4c_lex_pos);
+        if (act4c_is_space(ch)) {
+            act4c_lex_advance();
+        } else {
+            start = act4c_lex_pos;
+            token_line = act4c_lex_line;
+            token_column = act4c_lex_column;
+            next = act4c_source_char(act4c_lex_pos + 1);
+            if (ch == 47 && next == 47) {
+                kind = ACT4C_T_COMMENT;
+                act4c_lex_advance();
+                act4c_lex_advance();
+                while (act4c_lex_pos < act4c_lex_end
+                    && act4c_source_char(act4c_lex_pos) != 10
+                    && act4c_source_char(act4c_lex_pos) != 13) {
+                    act4c_lex_advance();
+                }
+            } else if (act4c_is_alpha(ch)) {
+                act4c_lex_advance();
+                while (act4c_is_ident_part(act4c_source_char(act4c_lex_pos))) {
+                    act4c_lex_advance();
+                }
+                kind = ACT4C_T_IDENT;
+                length = act4c_lex_pos - start;
+                if (act4c_keyword(start, length) != 0) {
+                    kind = ACT4C_T_KEYWORD;
+                }
+            } else if (act4c_is_digit(ch)) {
+                kind = ACT4C_T_NUMBER;
+                act4c_lex_advance();
+                if (ch == 48 && (next == 120 || next == 88)) {
+                    act4c_lex_advance();
+                    if (act4c_is_hex(act4c_source_char(act4c_lex_pos)) == 0) {
+                        act4c_lex_error = 1;
+                    }
+                    while (act4c_is_hex(act4c_source_char(act4c_lex_pos)) != 0) {
+                        act4c_lex_advance();
+                    }
+                } else if (ch == 48 && (next == 98 || next == 66)) {
+                    act4c_lex_advance();
+                    if (act4c_source_char(act4c_lex_pos) != 48
+                        && act4c_source_char(act4c_lex_pos) != 49) {
+                        act4c_lex_error = 1;
+                    }
+                    while (act4c_source_char(act4c_lex_pos) == 48
+                        || act4c_source_char(act4c_lex_pos) == 49) {
+                        act4c_lex_advance();
+                    }
+                } else {
+                    while (act4c_is_digit(act4c_source_char(act4c_lex_pos)) != 0) {
+                        act4c_lex_advance();
+                    }
+                }
+            } else if (ch == 34 || ch == 39) {
+                quote = ch;
+                kind = ACT4C_T_STRING;
+                if (quote == 39) {
+                    kind = ACT4C_T_CHAR;
+                }
+                act4c_lex_advance();
+                escaped = 0;
+                closed = 0;
+                while (act4c_lex_pos < act4c_lex_end) {
+                    ch = act4c_source_char(act4c_lex_pos);
+                    if (ch == 10 || ch == 13) {
+                        act4c_lex_error = 1;
+                        break;
+                    }
+                    if (escaped != 0) {
+                        escaped = 0;
+                        act4c_lex_advance();
+                    } else if (ch == 92) {
+                        escaped = 1;
+                        act4c_lex_advance();
+                    } else if (ch == quote) {
+                        act4c_lex_advance();
+                        closed = 1;
+                        break;
+                    } else {
+                        act4c_lex_advance();
+                    }
+                }
+                if (closed == 0) {
+                    act4c_lex_error = 1;
+                }
+            } else {
+                kind = ACT4C_T_PUNCT;
+                if (ch == 60 || ch == 62 || ch == 61 || ch == 33
+                    || ch == 38 || ch == 124 || ch == 43 || ch == 45
+                    || ch == 42 || ch == 47 || ch == 37 || ch == 94) {
+                    kind = ACT4C_T_OPERATOR;
+                }
+                if ((ch == 60 && act4c_matches(act4c_lex_pos + 1, 60, 61))
+                    || (ch == 62 && act4c_matches(act4c_lex_pos + 1, 62, 61))) {
+                    act4c_lex_advance();
+                    act4c_lex_advance();
+                    act4c_lex_advance();
+                } else if ((ch == 45 && next == 62) || (ch == 60 && next == 61)
+                    || (ch == 62 && next == 61) || (ch == 61 && next == 61)
+                    || (ch == 33 && next == 61) || (ch == 60 && next == 60)
+                    || (ch == 62 && next == 62) || (ch == 38 && next == 38)
+                    || (ch == 124 && next == 124) || (ch == 43 && next == 43)
+                    || (ch == 45 && next == 45) || (next == 61
+                    && (ch == 43 || ch == 45 || ch == 42 || ch == 47
+                    || ch == 37 || ch == 38 || ch == 124 || ch == 94))) {
+                    kind = ACT4C_T_OPERATOR;
+                    act4c_lex_advance();
+                    act4c_lex_advance();
+                } else if (ch == 61 || ch == 60 || ch == 62 || ch == 33
+                    || ch == 43 || ch == 45 || ch == 42 || ch == 47
+                    || ch == 37 || ch == 38 || ch == 124 || ch == 94
+                    || ch == 126 || ch == 64) {
+                    kind = ACT4C_T_OPERATOR;
+                    act4c_lex_advance();
+                } else if (ch == 40 || ch == 41 || ch == 123 || ch == 125
+                    || ch == 91 || ch == 93 || ch == 44 || ch == 58
+                    || ch == 59 || ch == 46) {
+                    act4c_lex_advance();
+                } else {
+                    act4c_lex_error = 1;
+                }
+            }
+            length = act4c_lex_pos - start;
+            if (act4c_lex_error != 0) {
+                act4c_lex_error_line = token_line;
+                act4c_lex_error_column = token_column;
+                return 0;
+            }
+            if (act4c_add_token(kind, file_id, start, length,
+                token_line, token_column) == 0) {
+                return 0;
+            }
+        }
+    }
+    if (act4c_add_token(ACT4C_T_EOF, file_id, act4c_lex_end, 0,
+        act4c_lex_line, 1) == 0) {
+        return 0;
+    }
+    act4c_file_token_end[file_id] = act4c_token_count;
+    return 1;
 }
 
 u16 act4c_upper(u16 ch) {
@@ -107,6 +462,252 @@ u16 act4c_parse_args(void) {
     return 1;
 }
 
+u16 *act4c_file_path(u16 file_id) {
+    return &act4c_file_paths[file_id * (ACT4C_PATH_BYTES >> 1)];
+}
+
+void act4c_copy_path(u16 *dst, u16 *src) {
+    u16 i = 0;
+    u16 ch = 0;
+    while (i < ACT4C_PATH_BYTES - 1) {
+        ch = getbyte(src, i);
+        setbyte(dst, i, ch);
+        if (ch == 0) {
+            return;
+        }
+        i++;
+    }
+    setbyte(dst, ACT4C_PATH_BYTES - 1, 0);
+}
+
+u16 act4c_token_equals(u16 index, u16 *text) {
+    u16 i = 0;
+    u16 ch = 0;
+    while (i < act4c_token_length[index]) {
+        ch = getbyte(text, i);
+        if (ch == 0 || ch != act4c_source_char(act4c_token_start[index] + i)) {
+            return 0;
+        }
+        i++;
+    }
+    return getbyte(text, i) == 0;
+}
+
+u16 act4c_import_seen(u16 *path) {
+    u16 i = 0;
+    while (i < act4c_file_count) {
+        if (act4c_equal_ci(path, act4c_file_path(i)) != 0) {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
+u16 act4c_make_import_paths(u16 parent_id, u16 string_token) {
+    u16 i = 0;
+    u16 prefix_len = 0;
+    u16 path_len = 0;
+    u16 ch = 0;
+    u16 absolute = 0;
+    u16 *parent_path = act4c_file_path(parent_id);
+
+    if (act4c_token_length[string_token] < 3) {
+        return 0;
+    }
+    path_len = act4c_token_length[string_token] - 2;
+    if (path_len >= ACT4C_PATH_BYTES) {
+        return 0;
+    }
+    i = 0;
+    while (i < path_len) {
+        setbyte(act4c_import_name, i,
+            act4c_source_char(act4c_token_start[string_token] + 1 + i));
+        i++;
+    }
+    setbyte(act4c_import_name, path_len, 0);
+    if (getbyte(act4c_import_name, 0) == 47) {
+        absolute = 1;
+    }
+    if (absolute == 0) {
+        i = 0;
+        while (getbyte(parent_path, i) != 0) {
+            if (getbyte(parent_path, i) == 47) {
+                prefix_len = i + 1;
+            }
+            i++;
+        }
+    }
+    if (prefix_len + path_len >= ACT4C_PATH_BYTES) {
+        return 0;
+    }
+    i = 0;
+    while (i < prefix_len) {
+        setbyte(act4c_local_import, i, getbyte(parent_path, i));
+        i++;
+    }
+    ch = 0;
+    while (ch < path_len) {
+        setbyte(act4c_local_import, prefix_len + ch, getbyte(act4c_import_name, ch));
+        ch++;
+    }
+    setbyte(act4c_local_import, prefix_len + path_len, 0);
+
+    if (absolute != 0) {
+        act4c_copy_path(act4c_lib_import, act4c_local_import);
+        return 1;
+    }
+    if (path_len + 5 >= ACT4C_PATH_BYTES) {
+        return 0;
+    }
+    setbyte(act4c_lib_import, 0, 47);
+    setbyte(act4c_lib_import, 1, 76);
+    setbyte(act4c_lib_import, 2, 73);
+    setbyte(act4c_lib_import, 3, 66);
+    setbyte(act4c_lib_import, 4, 47);
+    i = 0;
+    while (i < path_len) {
+        setbyte(act4c_lib_import, 5 + i, getbyte(act4c_import_name, i));
+        i++;
+    }
+    setbyte(act4c_lib_import, 5 + path_len, 0);
+    return 1;
+}
+
+u16 act4c_read_source_file(u16 *path, u16 file_id) {
+    u16 read_status = 0;
+    u16 words = 0;
+    u16 word_offset = 0;
+    u16 total_words = 0;
+    u16 next_words = 0;
+    u16 next_bytes = 0;
+    u16 byte_offset = 0;
+    u16 file_size = 0;
+    u16 file_start = act4c_source_used;
+    u16 result = 0;
+    u16 i = 0;
+
+    if (sys_open(path, O_RDONLY, &act4c_input_fd) != 0) {
+        return 1;
+    }
+    act4c_input_open = 1;
+    if (sys_stat(path, &act4c_source_stat) != 0) {
+        result = 2;
+    } else if (act4c_source_stat.size_hi != 0) {
+        result = 3;
+    } else {
+        file_size = act4c_source_stat.size_lo;
+        if (file_start + file_size >= ACT4C_SOURCE_BYTES
+            || act4c_source_len + file_size >= ACT4C_SOURCE_BYTES) {
+            result = 3;
+        }
+    }
+    while (result == 0) {
+        words = 0;
+        read_status = sys_read(act4c_input_fd, act4c_read_buf, ACT4C_IO_WORDS, &words);
+        if (read_status == 3) {
+            break;
+        }
+        if (read_status != 0 || words == 0) {
+            result = 4;
+            break;
+        }
+        next_words = total_words + words;
+        if (next_words < total_words) {
+            result = 5;
+            break;
+        }
+        next_bytes = words << 1;
+        i = 0;
+        while (i < words) {
+            byte_offset = file_start + (total_words << 1) + (i << 1);
+            setbyte(act4c_source, byte_offset, getbyte(act4c_read_buf, i << 1));
+            setbyte(act4c_source, byte_offset + 1,
+                getbyte(act4c_read_buf, (i << 1) + 1));
+            act4c_word_sum += act4c_read_buf[i];
+            i++;
+        }
+        total_words = next_words;
+        act4c_words_read += words;
+    }
+    if (result == 0 && total_words != ((file_size + 1) >> 1)) {
+        result = 5;
+    }
+    read_status = sys_close(act4c_input_fd);
+    act4c_input_open = 0;
+    if (read_status != 0 && result == 0) {
+        result = 6;
+    }
+    if (result != 0) {
+        return result;
+    }
+    setbyte(act4c_source, file_start + file_size, 0);
+    act4c_file_start[file_id] = file_start;
+    act4c_file_length[file_id] = file_size;
+    act4c_source_len += file_size;
+    act4c_source_used = file_start + file_size + 1;
+    return 0;
+}
+
+void act4c_check_imports(void) {
+    u16 parent_id = 0;
+    u16 token_index = 0;
+    u16 new_id = 0;
+    u16 status = 0;
+    u16 *local_path = 0;
+
+    while (parent_id < act4c_file_count) {
+        token_index = act4c_file_token_start[parent_id];
+        while (token_index + 2 < act4c_file_token_end[parent_id]) {
+            if (act4c_token_type[token_index] == ACT4C_T_KEYWORD
+                && act4c_token_equals(token_index, "import") != 0
+                && act4c_token_type[token_index + 1] == ACT4C_T_STRING
+                && act4c_token_type[token_index + 2] == ACT4C_T_PUNCT
+                && act4c_token_equals(token_index + 2, ";") != 0) {
+                if (act4c_make_import_paths(parent_id, token_index + 1) == 0) {
+                    act4c_fail("import path is too long or invalid");
+                }
+                if (act4c_import_seen(act4c_local_import) == 0
+                    && act4c_import_seen(act4c_lib_import) == 0) {
+                    if (act4c_file_count >= ACT4C_MAX_FILES) {
+                        act4c_fail("import file capacity exceeded");
+                    }
+                    new_id = act4c_file_count;
+                    status = act4c_read_source_file(act4c_local_import, new_id);
+                    local_path = act4c_local_import;
+                    if (status == 1 && act4c_equal_ci(act4c_local_import,
+                        act4c_lib_import) == 0) {
+                        status = act4c_read_source_file(act4c_lib_import, new_id);
+                        local_path = act4c_lib_import;
+                    }
+                    if (status == 1) {
+                        act4c_fail("cannot open imported source file");
+                    }
+                    if (status == 2) {
+                        act4c_fail("cannot stat imported source file");
+                    }
+                    if (status == 3) {
+                        act4c_fail("source or import exceeds resident capacity");
+                    }
+                    if (status == 4 || status == 5) {
+                        act4c_fail("imported source read failed");
+                    }
+                    if (status == 6) {
+                        act4c_fail("imported source close failed");
+                    }
+                    act4c_copy_path(act4c_file_path(new_id), local_path);
+                    act4c_file_count++;
+                    if (act4c_lex_file(new_id) == 0) {
+                        act4c_lex_fail();
+                    }
+                }
+            }
+            token_index++;
+        }
+        parent_id++;
+    }
+}
+
 void act4c_fail(u16 *message) {
     if (act4c_input_open != 0) {
         sys_close(act4c_input_fd);
@@ -166,70 +767,121 @@ u16 act4c_append_hex16(u16 value) {
     return 1;
 }
 
-u16 act4c_build_output(void) {
+void act4c_print_u16(u16 value) {
+    u16 count = 0;
+    u16 digit = 0;
+    if (value == 0) {
+        sys_putc(48);
+        return;
+    }
+    while (value != 0 && count < 5) {
+        digit = value % 10;
+        act4c_number_digits[count] = 48 + digit;
+        count++;
+        value = value / 10;
+    }
+    while (count != 0) {
+        count--;
+        sys_putc(act4c_number_digits[count]);
+    }
+}
+
+void act4c_lex_fail(void) {
+    sys_puts("act4c: ");
+    sys_puts(act4c_file_path(act4c_lex_error_file));
+    sys_puts(": ");
+    if (act4c_lex_error == 2) {
+        sys_puts("token table capacity exceeded");
+    } else {
+        sys_puts("lexical error");
+    }
+    sys_puts(" at line ");
+    act4c_print_u16(act4c_lex_error_line);
+    sys_puts(", column ");
+    act4c_print_u16(act4c_lex_error_column);
+    sys_puts("\r\n");
+    sys_exit(1);
+}
+
+u16 act4c_flush_output(void) {
+    u16 i = 0;
+    u16 written = 0;
+    u16 status = 0;
+    if (act4c_output_len == 0) {
+        return 1;
+    }
+    i = 0;
+    while (i < act4c_output_len) {
+        setbyte(act4c_write_buf, i, getbyte(act4c_output_buf, i));
+        i++;
+    }
+    status = sys_write(act4c_output_fd, act4c_write_buf, act4c_output_len, &written);
+    if (status != 0 || written != act4c_output_len) {
+        return 0;
+    }
+    act4c_output_offset += act4c_output_len;
     act4c_output_len = 0;
-    if (act4c_append_text("; ACT4C resident compiler shell (Stage 1)\r\n") == 0) {
-        return 0;
-    }
-    if (act4c_append_text("; This is an I/O smoke output; ACT4 source has not been compiled.\r\n") == 0) {
-        return 0;
-    }
-    if (act4c_append_text("; Source words read: 0x") == 0) {
-        return 0;
-    }
-    if (act4c_append_hex16(act4c_words_read) == 0) {
-        return 0;
-    }
-    if (act4c_append_text("\r\n; Source word checksum: 0x") == 0) {
-        return 0;
-    }
-    if (act4c_append_hex16(act4c_word_sum) == 0) {
-        return 0;
-    }
-    if (act4c_append_text("\r\n.include ") == 0) {
-        return 0;
-    }
-    if (act4c_append_char(34) == 0 || act4c_append_text("common.inc") == 0
-        || act4c_append_char(34) == 0) {
-        return 0;
-    }
-    if (act4c_append_text("\r\n.org 0x0400\r\nNOP\r\n") == 0) {
+    return 1;
+}
+
+u16 act4c_append_token_record(u16 index) {
+    if (act4c_append_text(";T:") == 0
+        || act4c_append_hex16(act4c_token_file[index]) == 0
+        || act4c_append_char(58) == 0
+        || act4c_append_hex16(act4c_token_type[index]) == 0
+        || act4c_append_char(58) == 0
+        || act4c_append_hex16(act4c_token_line[index]) == 0
+        || act4c_append_char(58) == 0
+        || act4c_append_hex16(act4c_token_column[index]) == 0
+        || act4c_append_char(58) == 0
+        || act4c_append_hex16(act4c_token_start[index]) == 0
+        || act4c_append_char(58) == 0
+        || act4c_append_hex16(act4c_token_length[index]) == 0
+        || act4c_append_text("\r\n") == 0) {
         return 0;
     }
     return 1;
 }
 
-u16 act4c_write_output(void) {
-    u16 offset = 0;
-    u16 byte_count = 0;
+u16 act4c_build_output(void) {
     u16 i = 0;
-    u16 written = 0;
-    u16 status = 0;
-
-    while (offset < act4c_output_len) {
-        byte_count = act4c_output_len - offset;
-        if (byte_count > 128) {
-            byte_count = 128;
-        }
-        i = 0;
-        while (i < byte_count) {
-            setbyte(act4c_write_buf, i, getbyte(act4c_output_buf, offset + i));
-            i++;
-        }
-        status = sys_write(act4c_output_fd, act4c_write_buf, byte_count, &written);
-        if (status != 0 || written != byte_count) {
+    act4c_output_len = 0;
+    act4c_output_offset = 0;
+    if (act4c_append_text("; ACT4C lexer listing; not compiled assembly.\r\n; bytes=0x") == 0
+        || act4c_append_hex16(act4c_source_len) == 0
+        || act4c_append_text("; tokens=0x") == 0
+        || act4c_append_hex16(act4c_token_count) == 0
+        || act4c_append_text("\r\n") == 0) {
+        return 0;
+    }
+    if (act4c_flush_output() == 0) {
+        return 0;
+    }
+    i = 0;
+    while (i < act4c_token_count) {
+        if (act4c_output_len > 96 && act4c_flush_output() == 0) {
             return 0;
         }
-        offset += byte_count;
+        if (act4c_append_token_record(i) == 0) {
+            return 0;
+        }
+        i++;
+    }
+    if (act4c_flush_output() == 0) {
+        return 0;
+    }
+    if (act4c_append_text("; Token fields are file,kind,line,column,offset,length in hex.\r\n.include ") == 0
+        || act4c_append_char(34) == 0 || act4c_append_text("common.inc") == 0
+        || act4c_append_char(34) == 0
+        || act4c_append_text("\r\n.org 0x0400\r\nNOP\r\n") == 0
+        || act4c_flush_output() == 0) {
+        return 0;
     }
     return 1;
 }
 
 void main(void) {
     u16 status = 0;
-    u16 words = 0;
-    u16 i = 0;
-    u16 next_words = 0;
 
     act4c_args[0] = 0;
     if (sys_getargs(act4c_args, ACT4C_ARG_WORDS) != 0) {
@@ -248,47 +900,34 @@ void main(void) {
         act4c_fail("usage: ACT4C.PRG <source.a4> <output.asm>");
     }
 
-    if (sys_open(act4c_input_path, O_RDONLY, &act4c_input_fd) != 0) {
+    status = act4c_read_source_file(act4c_input_path, 0);
+    if (status == 1) {
         act4c_fail("cannot open source file");
     }
-    act4c_input_open = 1;
-    while (true) {
-        words = 0;
-        status = sys_read(act4c_input_fd, act4c_read_buf, ACT4C_IO_WORDS, &words);
-        if (status == 3) {
-            break;
-        }
-        if (status != 0) {
-            act4c_fail("source read failed");
-        }
-        if (words == 0) {
-            act4c_fail("source read returned an empty chunk");
-        }
-        next_words = act4c_words_read + words;
-        if (next_words < act4c_words_read) {
-            act4c_fail("source exceeds 65535 words");
-        }
-        act4c_words_read = next_words;
-        i = 0;
-        while (i < words) {
-            act4c_word_sum += act4c_read_buf[i];
-            i++;
-        }
+    if (status == 2) {
+        act4c_fail("cannot stat source file");
     }
-    status = sys_close(act4c_input_fd);
-    act4c_input_open = 0;
-    if (status != 0) {
+    if (status == 3) {
+        act4c_fail("source exceeds resident lexer capacity (16383 bytes)");
+    }
+    if (status == 4 || status == 5) {
+        act4c_fail("source read failed");
+    }
+    if (status == 6) {
         act4c_fail("source close failed");
     }
 
-    if (act4c_build_output() == 0) {
-        act4c_fail("stage output buffer is full");
+    act4c_copy_path(act4c_file_path(0), act4c_input_path);
+    act4c_file_count = 1;
+    if (act4c_lex_file(0) == 0) {
+        act4c_lex_fail();
     }
+    act4c_check_imports();
     if (sys_open(act4c_output_path, O_WRONLY, &act4c_output_fd) != 0) {
         act4c_fail("cannot open output file");
     }
     act4c_output_open = 1;
-    if (act4c_write_output() == 0) {
+    if (act4c_build_output() == 0) {
         act4c_fail("output write failed");
     }
     status = sys_close(act4c_output_fd);
@@ -297,7 +936,7 @@ void main(void) {
         act4c_fail("output close failed");
     }
 
-    sys_puts("act4c: wrote Stage 1 smoke assembly to ");
+    sys_puts("act4c: wrote Stage 2 lexer listing to ");
     sys_puts(act4c_output_path);
     sys_puts("\r\n");
     sys_exit(0);

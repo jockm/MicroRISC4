@@ -198,7 +198,8 @@ remains the runtime oracle.
 The audit found two manual/compiler discrepancies and reconciled them:
 `trap(vector)` now emits a zero payload as documented, and the CLI reference
 now lists `--hw-math` and accurately describes the default output filename.
-The host compiler's 19 OS regression scenarios are described in
+The Stage 0 run passed all 19 then-existing OS regression scenarios. Stage 1
+adds the resident shell test; the current 20-scenario count is in
 [`GettingStarted.md`](../GettingStarted.md).
 
 **Exit criteria:** the intended compatibility target is explicit, tested, and
@@ -208,12 +209,31 @@ small enough to run for every resident compiler change.
 
 - Build a minimal ACT4 compiler shell as `ACT4C.PRG`, bootstrapped with the
   host compiler and added to the Mr4OS application workflow.
-- Accept input/output paths and the compiler options selected for the initial
-  target.
+- Accept input/output paths. This shell stage has no code-generation options;
+  add them as the matching code-generation features arrive.
 - Implement chunked source reads, chunked output writes, argument handling,
   clean file closure, and useful OS error reporting.
 - Prove that the resident application can read a source file and write a
   complete deterministic output file before adding language support.
+
+**Status: Complete.** [`mr4src/act4/apps/act4c.a4`](../mr4src/act4/apps/act4c.a4)
+builds as `ACT4C.PRG` and is installed in `/BIN` by the OS image target. Its
+two-path interface rejects missing/extra arguments, overlong paths, and
+case-insensitively identical paths. It reads in 64-word chunks, checks for
+read/close failures and word-count overflow, and writes a bounded Stage 1
+assembly smoke artifact in 128-byte chunks. The output explicitly states that
+the frontend is not implemented and includes the words read and a checksum so
+tests can prove the entire input was consumed. No output file is opened until
+the input has been completely read and closed.
+
+The resident integration test feeds it an input larger than one syscall
+transfer, verifies the exact output and deterministic overwrite, assembles that
+output with the host assembler, and checks usage, same-path, and missing-source
+failures. This stage establishes the resident application and I/O path only; it
+does not claim to compile ACT4 source.
+
+`make os-test` passed all 20 scenarios, including the resident compiler shell
+test.
 
 **Exit criteria:** the program runs under Mr4OS, handles files larger than one
 syscall transfer, and leaves no partial output presented as a successful

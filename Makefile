@@ -737,7 +737,12 @@ ASM_ASM      := $(OS_BUILD)/asm.asm
 ASM_PRG      := $(OS_BUILD)/asm.prg
 ASM_LST      := $(OS_BUILD)/asm.lst
 
-OS_APP_PRGS := $(LS_PRG) $(PS_PRG) $(CAT_PRG) $(XI_PRG) $(FIBERS_PRG) $(MUL_PRG) $(ASM_PRG)
+ACT4C_A4     := $(OS_SRC_DIR)/apps/act4c.a4
+ACT4C_ASM    := $(OS_BUILD)/act4c.asm
+ACT4C_PRG    := $(OS_BUILD)/act4c.prg
+ACT4C_LST    := $(OS_BUILD)/act4c.lst
+
+OS_APP_PRGS := $(LS_PRG) $(PS_PRG) $(CAT_PRG) $(XI_PRG) $(FIBERS_PRG) $(MUL_PRG) $(ASM_PRG) $(ACT4C_PRG)
 
 .PHONY: os-build sd-img sim-os os-test test-os clean-os
 
@@ -769,6 +774,7 @@ $(SD_SRC_DIR): $(OS_APP_PRGS) $(SD_DATA_FILES)
 	cp $(FIBERS_PRG) $(SD_SRC_DIR)/BIN/FIBERS.PRG
 	cp $(MUL_PRG) $(SD_SRC_DIR)/BIN/MUL.PRG
 	cp $(ASM_PRG) $(SD_SRC_DIR)/BIN/ASM.PRG
+	cp $(ACT4C_PRG) $(SD_SRC_DIR)/BIN/ACT4C.PRG
 
 sd-img: $(SD_SRC_DIR)
 	python3 $(MKSDIMG) $(SD_SRC_DIR) -o $(SD_IMG) --size-mb $(SD_SIZE_MB) --spc $(SD_SPC)

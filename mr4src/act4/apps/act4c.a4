@@ -1,0 +1,304 @@
+// Resident ACT4 compiler shell.
+// Stage 1 verifies bounded OS file I/O; it does not parse or compile ACT4 yet.
+// Usage: ACT4C.PRG <source.a4> <output.asm>
+import "sys.a4";
+
+const u16 ACT4C_ARG_WORDS = 32;
+const u16 ACT4C_PATH_BYTES = 64;
+const u16 ACT4C_IO_WORDS = 64;
+const u16 ACT4C_OUTPUT_BYTES = 384;
+
+u16 act4c_args[ACT4C_ARG_WORDS];
+u16 act4c_input_path[ACT4C_PATH_BYTES >> 1];
+u16 act4c_output_path[ACT4C_PATH_BYTES >> 1];
+u16 act4c_read_buf[ACT4C_IO_WORDS];
+u16 act4c_output_buf[ACT4C_OUTPUT_BYTES >> 1];
+u16 act4c_write_buf[ACT4C_IO_WORDS];
+
+u16 act4c_arg_pos = 0;
+u16 act4c_input_fd = 0;
+u16 act4c_output_fd = 0;
+u16 act4c_input_open = 0;
+u16 act4c_output_open = 0;
+u16 act4c_words_read = 0;
+u16 act4c_word_sum = 0;
+u16 act4c_output_len = 0;
+u16 act4c_arg_error = 0;
+
+u16 act4c_is_space(u16 ch) {
+    return ch == 32 || ch == 9 || ch == 10 || ch == 13;
+}
+
+u16 act4c_upper(u16 ch) {
+    if (ch >= 97 && ch <= 122) {
+        return ch - 32;
+    }
+    return ch;
+}
+
+u16 act4c_equal_ci(u16 *left, u16 *right) {
+    u16 i = 0;
+    u16 left_ch = 0;
+    u16 right_ch = 0;
+    while (true) {
+        left_ch = act4c_upper(getbyte(left, i));
+        right_ch = act4c_upper(getbyte(right, i));
+        if (left_ch != right_ch) {
+            return 0;
+        }
+        if (left_ch == 0) {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
+u16 act4c_parse_args(void) {
+    u16 arg_count = 0;
+    u16 length = 0;
+    u16 ch = 0;
+    u16 *target = 0;
+
+    act4c_arg_pos = 0;
+    act4c_arg_error = 0;
+    while (true) {
+        while (act4c_is_space(getbyte(act4c_args, act4c_arg_pos))) {
+            act4c_arg_pos++;
+        }
+        if (getbyte(act4c_args, act4c_arg_pos) == 0) {
+            break;
+        }
+        if (arg_count >= 2) {
+            act4c_arg_error = 1;
+            return 0;
+        }
+
+        target = act4c_input_path;
+        if (arg_count == 1) {
+            target = act4c_output_path;
+        }
+        length = 0;
+        while (true) {
+            ch = getbyte(act4c_args, act4c_arg_pos);
+            if (ch == 0 || act4c_is_space(ch)) {
+                break;
+            }
+            if (length >= ACT4C_PATH_BYTES - 1) {
+                act4c_arg_error = 2;
+                return 0;
+            }
+            setbyte(target, length, ch);
+            length++;
+            act4c_arg_pos++;
+        }
+        setbyte(target, length, 0);
+        arg_count++;
+    }
+
+    if (arg_count != 2) {
+        act4c_arg_error = 1;
+        return 0;
+    }
+    if (act4c_equal_ci(act4c_input_path, act4c_output_path) != 0) {
+        act4c_arg_error = 3;
+        return 0;
+    }
+    return 1;
+}
+
+void act4c_fail(u16 *message) {
+    if (act4c_input_open != 0) {
+        sys_close(act4c_input_fd);
+        act4c_input_open = 0;
+    }
+    if (act4c_output_open != 0) {
+        sys_close(act4c_output_fd);
+        act4c_output_open = 0;
+    }
+    sys_puts("act4c: ");
+    sys_puts(message);
+    sys_puts("\r\n");
+    sys_exit(1);
+}
+
+u16 act4c_append_char(u16 ch) {
+    if (act4c_output_len >= ACT4C_OUTPUT_BYTES) {
+        return 0;
+    }
+    setbyte(act4c_output_buf, act4c_output_len, ch);
+    act4c_output_len++;
+    return 1;
+}
+
+u16 act4c_append_text(u16 *text) {
+    u16 i = 0;
+    u16 ch = 0;
+    while (true) {
+        ch = getbyte(text, i);
+        if (ch == 0) {
+            return 1;
+        }
+        if (act4c_append_char(ch) == 0) {
+            return 0;
+        }
+        i++;
+    }
+    return 1;
+}
+
+u16 act4c_append_hex16(u16 value) {
+    u16 i = 0;
+    u16 nibble = 0;
+    u16 ch = 0;
+    while (i < 4) {
+        nibble = (value >> 12) & 0x000F;
+        ch = 48 + nibble;
+        if (nibble >= 10) {
+            ch = 55 + nibble;
+        }
+        if (act4c_append_char(ch) == 0) {
+            return 0;
+        }
+        value = value << 4;
+        i++;
+    }
+    return 1;
+}
+
+u16 act4c_build_output(void) {
+    act4c_output_len = 0;
+    if (act4c_append_text("; ACT4C resident compiler shell (Stage 1)\r\n") == 0) {
+        return 0;
+    }
+    if (act4c_append_text("; This is an I/O smoke output; ACT4 source has not been compiled.\r\n") == 0) {
+        return 0;
+    }
+    if (act4c_append_text("; Source words read: 0x") == 0) {
+        return 0;
+    }
+    if (act4c_append_hex16(act4c_words_read) == 0) {
+        return 0;
+    }
+    if (act4c_append_text("\r\n; Source word checksum: 0x") == 0) {
+        return 0;
+    }
+    if (act4c_append_hex16(act4c_word_sum) == 0) {
+        return 0;
+    }
+    if (act4c_append_text("\r\n.include ") == 0) {
+        return 0;
+    }
+    if (act4c_append_char(34) == 0 || act4c_append_text("common.inc") == 0
+        || act4c_append_char(34) == 0) {
+        return 0;
+    }
+    if (act4c_append_text("\r\n.org 0x0400\r\nNOP\r\n") == 0) {
+        return 0;
+    }
+    return 1;
+}
+
+u16 act4c_write_output(void) {
+    u16 offset = 0;
+    u16 byte_count = 0;
+    u16 i = 0;
+    u16 written = 0;
+    u16 status = 0;
+
+    while (offset < act4c_output_len) {
+        byte_count = act4c_output_len - offset;
+        if (byte_count > 128) {
+            byte_count = 128;
+        }
+        i = 0;
+        while (i < byte_count) {
+            setbyte(act4c_write_buf, i, getbyte(act4c_output_buf, offset + i));
+            i++;
+        }
+        status = sys_write(act4c_output_fd, act4c_write_buf, byte_count, &written);
+        if (status != 0 || written != byte_count) {
+            return 0;
+        }
+        offset += byte_count;
+    }
+    return 1;
+}
+
+void main(void) {
+    u16 status = 0;
+    u16 words = 0;
+    u16 i = 0;
+    u16 next_words = 0;
+
+    act4c_args[0] = 0;
+    if (sys_getargs(act4c_args, ACT4C_ARG_WORDS) != 0) {
+        act4c_fail("could not read command arguments");
+    }
+    if (_sys_r2 >= ACT4C_ARG_WORDS) {
+        act4c_fail("command arguments exceed the OS buffer");
+    }
+    if (act4c_parse_args() == 0) {
+        if (act4c_arg_error == 2) {
+            act4c_fail("path is too long (maximum 63 bytes)");
+        }
+        if (act4c_arg_error == 3) {
+            act4c_fail("source and output paths must differ");
+        }
+        act4c_fail("usage: ACT4C.PRG <source.a4> <output.asm>");
+    }
+
+    if (sys_open(act4c_input_path, O_RDONLY, &act4c_input_fd) != 0) {
+        act4c_fail("cannot open source file");
+    }
+    act4c_input_open = 1;
+    while (true) {
+        words = 0;
+        status = sys_read(act4c_input_fd, act4c_read_buf, ACT4C_IO_WORDS, &words);
+        if (status == 3) {
+            break;
+        }
+        if (status != 0) {
+            act4c_fail("source read failed");
+        }
+        if (words == 0) {
+            act4c_fail("source read returned an empty chunk");
+        }
+        next_words = act4c_words_read + words;
+        if (next_words < act4c_words_read) {
+            act4c_fail("source exceeds 65535 words");
+        }
+        act4c_words_read = next_words;
+        i = 0;
+        while (i < words) {
+            act4c_word_sum += act4c_read_buf[i];
+            i++;
+        }
+    }
+    status = sys_close(act4c_input_fd);
+    act4c_input_open = 0;
+    if (status != 0) {
+        act4c_fail("source close failed");
+    }
+
+    if (act4c_build_output() == 0) {
+        act4c_fail("stage output buffer is full");
+    }
+    if (sys_open(act4c_output_path, O_WRONLY, &act4c_output_fd) != 0) {
+        act4c_fail("cannot open output file");
+    }
+    act4c_output_open = 1;
+    if (act4c_write_output() == 0) {
+        act4c_fail("output write failed");
+    }
+    status = sys_close(act4c_output_fd);
+    act4c_output_open = 0;
+    if (status != 0) {
+        act4c_fail("output close failed");
+    }
+
+    sys_puts("act4c: wrote Stage 1 smoke assembly to ");
+    sys_puts(act4c_output_path);
+    sys_puts("\r\n");
+    sys_exit(0);
+}

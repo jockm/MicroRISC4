@@ -713,6 +713,140 @@ ERET
 
 
 # ------------------------------------------------------------------------------
+# Stage 1: Resident ACT4 compiler shell file I/O and argument handling
+# ------------------------------------------------------------------------------
+def test_os_resident_compiler_shell(_args):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        sd_root = root / "sd_root"
+        bin_dir = sd_root / "BIN"
+        work = sd_root / "WORK"
+        bin_dir.mkdir(parents=True)
+        work.mkdir()
+        shutil.copy(OS_BUILD / "act4c.prg", bin_dir / "ACT4C.PRG")
+
+        source_bytes = b"ACT4C Stage 1 source record 0123456789\r\n" * 16
+        assert len(source_bytes) > 128 and len(source_bytes) % 2 == 0
+        (work / "INPUT.A4").write_bytes(source_bytes)
+
+        sd_img = root / "act4c_test.img"
+        subprocess.run(
+            [
+                sys.executable,
+                str(TOOLS_DIR / "mksdimage.py"),
+                str(sd_root),
+                "-o",
+                str(sd_img),
+                "--size-mb",
+                "16",
+                "--spc",
+                "1",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        sim = mr4sim.MicroRISC4Sim(core_id=0)
+        sim.sd_card = mr4sim.SpiSdCard(sd_img.read_bytes())
+        sim.load_binary(str(OS_BUILD / "os_main.bin"))
+        sim.load_symbols(str(OS_BUILD / "os_main.lst"))
+        sim.pc = 0x0100
+        uart_out, bad_writes = attach_uart_and_watch(sim)
+
+        worker = mr4sim.MicroRISC4Sim(core_id=1)
+        worker.load_binary(str(BUILD_DIR / "worker_stub.bin"))
+        worker.pc = 0x0100
+        worker._poll_stdin = lambda: None
+        mr4sim.connect_os_worker(sim, worker)
+        assert run_until_prompt(sim, uart_out, 1500000, worker=worker), "OS boot timed out"
+
+        procs_addr = sim.sym_to_addr["_procs"]
+        pid1_state = procs_addr + 10
+
+        def run_app(command: str, max_steps: int = 10000000) -> str:
+            start = len(uart_out)
+            for ch in command + "\r":
+                sim.rx_queue.append(ord(ch))
+            completed = run_until_prompt(sim, uart_out, max_steps, worker=worker)
+            output = "".join(uart_out[start:])
+            assert completed, f"{command} prompt timeout; output={output!r}"
+            return output
+
+        output = run_app("! ACT4C.PRG INPUT.A4 OUTPUT.ASM")
+        assert "act4c: wrote Stage 1 smoke assembly to OUTPUT.ASM" in output, output
+        assert sim.mem[pid1_state] == 0 and sim.mem[pid1_state + 1] == 0
+
+        words = [
+            int.from_bytes(source_bytes[offset : offset + 2], "little")
+            for offset in range(0, len(source_bytes), 2)
+        ]
+        word_count = len(words)
+        word_sum = sum(words) & 0xFFFF
+        expected = (
+            b"; ACT4C resident compiler shell (Stage 1)\r\n"
+            b"; This is an I/O smoke output; ACT4 source has not been compiled.\r\n"
+            + f"; Source words read: 0x{word_count:04X}\r\n".encode("ascii")
+            + f"; Source word checksum: 0x{word_sum:04X}\r\n".encode("ascii")
+            + b'.include "common.inc"\r\n.org 0x0400\r\nNOP\r\n'
+        )
+        actual = read_fat32_file(sim.sd_card.image, "WORK/OUTPUT.ASM")
+        assert len(expected) > 128 and actual == expected, (
+            f"Resident compiler shell output mismatch ({len(actual)} vs "
+            f"{len(expected)} bytes); actual={actual!r}; expected={expected!r}"
+        )
+
+        output_asm = work / "OUTPUT.ASM"
+        output_asm.write_bytes(actual)
+        expected_prg = root / "expected.prg"
+        reference = subprocess.run(
+            [
+                sys.executable,
+                str(TOOLS_DIR / "mr4asm.py"),
+                "-I",
+                str(LIB_DIR),
+                "--sparsebin",
+                str(output_asm),
+                "-o",
+                str(expected_prg),
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert reference.returncode == 0, reference.stderr.decode("utf-8", errors="replace")
+        assert expected_prg.is_file() and expected_prg.stat().st_size > 0
+
+        output = run_app("! ACT4C.PRG INPUT.A4 OUTPUT.ASM")
+        assert "act4c: wrote Stage 1 smoke assembly to OUTPUT.ASM" in output, output
+        assert read_fat32_file(sim.sd_card.image, "WORK/OUTPUT.ASM") == expected
+
+        output = run_app("! ACT4C.PRG INPUT.A4")
+        assert "usage: ACT4C.PRG <source.a4> <output.asm>" in output, output
+        assert sim.mem[pid1_state] == 0 and sim.mem[pid1_state + 1] == 1
+
+        output = run_app("! ACT4C.PRG INPUT.A4 OUTPUT.ASM EXTRA")
+        assert "usage: ACT4C.PRG <source.a4> <output.asm>" in output, output
+        assert sim.mem[pid1_state] == 0 and sim.mem[pid1_state + 1] == 1
+
+        output = run_app("! ACT4C.PRG INPUT.A4 input.a4")
+        assert "source and output paths must differ" in output, output
+        assert sim.mem[pid1_state] == 0 and sim.mem[pid1_state + 1] == 1
+        assert read_fat32_file(sim.sd_card.image, "WORK/INPUT.A4") == source_bytes
+
+        output = run_app("! ACT4C.PRG MISSING.A4 MISSING.ASM")
+        assert "cannot open source file" in output, output
+        assert sim.mem[pid1_state] == 0 and sim.mem[pid1_state + 1] == 1
+        try:
+            read_fat32_file(sim.sd_card.image, "WORK/MISSING.ASM")
+        except AssertionError as error:
+            assert "path component not found" in str(error), error
+        else:
+            raise AssertionError("Output was created after source-open failure")
+        assert not bad_writes, f"Bad low-memory writes: {bad_writes}"
+
+
+# ------------------------------------------------------------------------------
 # Test 4: Lean Ring MBOX Doorbell (Trap 14 ERET) -> GO Grant -> SYS_PUTC -> Shell
 # ------------------------------------------------------------------------------
 def test_os_async_trap1(args):
@@ -2951,6 +3085,7 @@ TESTS = [
     ("trap_isr", test_trap_isr),
     ("os_shell_fs", test_os_shell_fs),
     ("os_resident_assembler", test_os_resident_assembler),
+    ("os_resident_compiler_shell", test_os_resident_compiler_shell),
     ("os_async_trap1", test_os_async_trap1),
     ("os_multicore_apps", test_os_multicore_apps),
     ("os_mul", test_os_mul),

@@ -25,8 +25,11 @@ DirEntry sh_ent;
 
 u16 sh_script_fd = 0xFFFF;  // Active FAT32 FD for do/@ script (0xFFFF = idle)
 u16 sh_sc_buf[LINE_WORDS];  // 64-byte read-ahead buffer for script runner
+u16 sh_script_args[LINE_WORDS];
+u16 sh_sc_expand[LINE_WORDS];
 u16 sh_sc_pos    = 0;
 u16 sh_sc_len    = 0;
+u16 sh_sc_expand_len = 0;
 
 void shell_prompt(void) {
     uart_puts("mr4> ");
@@ -611,6 +614,7 @@ void shell_script_close(void) {
     }
     sh_sc_pos = 0;
     sh_sc_len = 0;
+    setbyte(sh_script_args, 0, 0);
 }
 
 // Resolve script path for `do` and `@`:
@@ -666,8 +670,10 @@ u16 shell_resolve_script_path(u16 *name, u16 *out) {
     return 0;
 }
 
-void shell_cmd_do(u16 *path_arg) {
+void shell_cmd_do(u16 *path_arg, u16 arg_off) {
     u16 sc_path[16];
+    u16 i  = 0;
+    u16 ch = 0;
 
     if (sh_script_fd != 0xFFFF) {
         uart_puts("Script already running\r\n");
@@ -689,6 +695,16 @@ void shell_cmd_do(u16 *path_arg) {
         uart_nl();
         return;
     }
+    setbyte(sh_script_args, 0, 0);
+    while ((arg_off + i) < (LINE_MAX - 1)) {
+        ch = getbyte(sh_line, arg_off + i);
+        setbyte(sh_script_args, i, ch);
+        if (ch == 0) {
+            break;
+        }
+        i++;
+    }
+    setbyte(sh_script_args, i, 0);
     sh_sc_pos = 0;
     sh_sc_len = 0;
 }
@@ -799,6 +815,7 @@ void shell_exec(void) {
     u16 err = 0;
     u16 i   = 0;
     u16 ch  = 0;
+    u16 arg_off = 0;
 
     shell_tokenize();
     if (getbyte(sh_cmd, 0) == 0) {
@@ -825,8 +842,11 @@ void shell_exec(void) {
                 pid++;
             }
             setbyte(sh_arg, pid, 0);
+            arg_off = sh_arg_idx;
+        } else {
+            arg_off = sh_rest_idx;
         }
-        shell_cmd_do(sh_arg);
+        shell_cmd_do(sh_arg, arg_off);
         return;
     }
     if (ch == 33 || ch == 38) {
@@ -854,9 +874,9 @@ void shell_exec(void) {
     }
 
     if (str_eq(sh_cmd, "help") == 1) {
-        uart_puts("Commands: ps, ! <file> [args], run/& <file> [args], do/@ <file>, fg [--fgoutput] <pid>, bg <pid>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write/append <file> <text>, cp/mv <src> <dst>, rm <file>, df, echo <text>, clear\r\n");
+        uart_puts("Commands: ps, ! <file> [args], run/& <file> [args], do/@ <file> [args] ($1, $2, ...), fg [--fgoutput] <pid>, bg <pid>, kill <pid>, pwd, cd [dir], ls [dir], mkdir <dir>, rmdir <dir>, cat <file>, stat <path>, write/append <file> <text>, cp/mv <src> <dst>, rm <file>, df, echo <text>, clear\r\n");
     } else if (str_eq(sh_cmd, "do") == 1) {
-        shell_cmd_do(sh_arg);
+        shell_cmd_do(sh_arg, sh_rest_idx);
     } else if (str_eq(sh_cmd, "ps") == 1) {
         proc_print_ps();
     } else if (str_eq(sh_cmd, "fg") == 1) {
@@ -1017,6 +1037,108 @@ u16 shell_script_read_line(void) {
     return 0;
 }
 
+u16 shell_script_append_char(u16 ch) {
+    if (sh_sc_expand_len >= (LINE_MAX - 1)) {
+        return 0;
+    }
+    setbyte(sh_sc_expand, sh_sc_expand_len, ch);
+    sh_sc_expand_len++;
+    return 1;
+}
+
+u16 shell_script_append_arg(u16 arg_num) {
+    u16 i = 0;
+    u16 current = 1;
+    u16 ch = 0;
+
+    while (current < arg_num && getbyte(sh_script_args, i) != 0) {
+        while (getbyte(sh_script_args, i) != 0 && getbyte(sh_script_args, i) != 32) {
+            i++;
+        }
+        while (getbyte(sh_script_args, i) == 32) {
+            i++;
+        }
+        current++;
+    }
+    if (current != arg_num) {
+        return 1;
+    }
+    while (true) {
+        ch = getbyte(sh_script_args, i);
+        if (ch == 0 || ch == 32) {
+            break;
+        }
+        if (shell_script_append_char(ch) == 0) {
+            return 0;
+        }
+        i++;
+    }
+    return 1;
+}
+
+u16 shell_script_expand_line(void) {
+    u16 i = 0;
+    u16 ch = 0;
+    u16 next = 0;
+    u16 arg_num = 0;
+    u16 digit_start = 0;
+    u16 digit = 0;
+
+    sh_sc_expand_len = 0;
+    while (true) {
+        ch = getbyte(sh_line, i);
+        if (ch == 0) {
+            break;
+        }
+        next = getbyte(sh_line, i + 1);
+        if (ch == 36 && next >= 48 && next <= 57) {
+            i++;
+            digit_start = i;
+            arg_num = 0;
+            while (true) {
+                digit = getbyte(sh_line, i);
+                if (digit < 48 || digit > 57) {
+                    break;
+                }
+                if (arg_num < 64) {
+                    arg_num = (arg_num * 10) + digit - 48;
+                    if (arg_num > 63) {
+                        arg_num = 64;
+                    }
+                }
+                i++;
+            }
+            if (arg_num == 0) {
+                if (shell_script_append_char(36) == 0) {
+                    return 0;
+                }
+                while (digit_start < i) {
+                    if (shell_script_append_char(getbyte(sh_line, digit_start)) == 0) {
+                        return 0;
+                    }
+                    digit_start++;
+                }
+            } else if (shell_script_append_arg(arg_num) == 0) {
+                return 0;
+            }
+            continue;
+        }
+        if (shell_script_append_char(ch) == 0) {
+            return 0;
+        }
+        i++;
+    }
+    setbyte(sh_sc_expand, sh_sc_expand_len, 0);
+    i = 0;
+    while (i < sh_sc_expand_len) {
+        setbyte(sh_line, i, getbyte(sh_sc_expand, i));
+        i++;
+    }
+    setbyte(sh_line, i, 0);
+    sh_len = sh_sc_expand_len;
+    return 1;
+}
+
 // Execute one pending command from an active script whenever no fg worker is running.
 void shell_script_step(void) {
     if (sh_script_fd == 0xFFFF || fg_pid != 0) {
@@ -1026,6 +1148,11 @@ void shell_script_step(void) {
         shell_script_close();
         sh_len = 0;
         shell_prompt();
+        return;
+    }
+    if (shell_script_expand_line() == 0) {
+        uart_puts("Script expansion too long\r\n");
+        sh_len = 0;
         return;
     }
     shell_exec();

@@ -2328,6 +2328,12 @@ void main(void) {
         )
         work_dir = sd_root / "WORK"
         work_dir.mkdir()
+        (work_dir / "ARGUMENT.TXT").write_text("PROGRAM_ARG_PASSED\n", encoding="utf-8")
+        (work_dir / "ARGS.DO").write_text(
+            "echo PARAMS:$1:$2\n"
+            "! cat $1\n",
+            encoding="utf-8",
+        )
         (work_dir / "FULL.DO").write_text(
             "echo FULL_A\r\n"
             "   # indented comment\r\n"
@@ -2376,6 +2382,17 @@ void main(void) {
             return "".join(uart_out[start:])
 
         assert "/WORK\r\n" in send_cmd("pwd\r"), "OS did not start in /WORK"
+
+        out_args = send_cmd("do args.do ARGUMENT.TXT second\r")
+        assert "PARAMS:ARGUMENT.TXT:second\r\n" in out_args, f"Script parameters did not expand:\n{out_args!r}"
+        assert "PROGRAM_ARG_PASSED" in out_args, f"Expanded argument did not reach CAT.PRG:\n{out_args!r}"
+        out_at = send_cmd("@args.do ARGUMENT.TXT third\r")
+        assert "PARAMS:ARGUMENT.TXT:third\r\n" in out_at, f"@ script parameters did not expand:\n{out_at!r}"
+        assert "PROGRAM_ARG_PASSED" in out_at, f"@ argument did not reach CAT.PRG:\n{out_at!r}"
+        out_at_spaced = send_cmd("@ args.do ARGUMENT.TXT fourth\r")
+        assert "PARAMS:ARGUMENT.TXT:fourth\r\n" in out_at_spaced, (
+            f"spaced @ script parameters did not expand:\n{out_at_spaced!r}"
+        )
 
         # 1. @hello -> resolves /BIN/HELLO.DO, runs silently, waits on ! cat, launches &fibers
         out1 = send_cmd("@hello\r")

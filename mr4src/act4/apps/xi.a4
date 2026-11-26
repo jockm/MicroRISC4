@@ -8,7 +8,8 @@ import "term.a4";
 
 const u16 XI_BUF_BYTES = 32768;
 const u16 XI_BUF_WORDS = XI_BUF_BYTES >> 1;
-const u16 XI_SCREEN_LINES = 16;
+const u16 XI_SCREEN_COLS = 80; // Old School Width
+const u16 XI_SCREEN_ROWS = 24; // Old School Height
 const u16 XI_YANK_BYTES = 256;
 const u16 XI_YANK_WORDS = XI_YANK_BYTES >> 1;
 
@@ -322,8 +323,8 @@ void xi_ensure_cursor_visible(void) {
     if (xi_cur_line < xi_top_line) {
         xi_top_line = xi_cur_line;
     }
-    if (xi_cur_line >= (xi_top_line + XI_SCREEN_LINES)) {
-        xi_top_line = xi_cur_line - XI_SCREEN_LINES + 1;
+    if (xi_cur_line >= (xi_top_line + XI_SCREEN_ROWS)) {
+        xi_top_line = xi_cur_line - XI_SCREEN_ROWS + 1;
     }
     if (xi_top_line >= count) {
         xi_top_line = 0;
@@ -331,8 +332,8 @@ void xi_ensure_cursor_visible(void) {
     if (xi_cur_col < xi_left_col) {
         xi_left_col = xi_cur_col;
     }
-    if (xi_cur_col >= (xi_left_col + 80)) {
-        xi_left_col = xi_cur_col - 79;
+    if (xi_cur_col >= (xi_left_col + XI_SCREEN_COLS)) {
+        xi_left_col = xi_cur_col - (XI_SCREEN_COLS - 1);
     }
 }
 
@@ -371,7 +372,7 @@ void xi_redraw(void) {
         term_cursor_show();
         return;
     }
-    while (row < XI_SCREEN_LINES) {
+    while (row < XI_SCREEN_ROWS) {
         line = xi_top_line + row;
         term_goto(row + 1, 1);
         term_clear_eol();
@@ -973,14 +974,14 @@ void xi_normal_key(u16 key) {
     } else if (key == KEY_RIGHT) {
         xi_move_right();
     } else if (key == KEY_PGUP) {
-        if (xi_cur_line >= XI_SCREEN_LINES) {
-            xi_cur_line = xi_cur_line - XI_SCREEN_LINES;
+        if (xi_cur_line >= XI_SCREEN_ROWS) {
+            xi_cur_line = xi_cur_line - XI_SCREEN_ROWS;
         } else {
             xi_cur_line = 0;
         }
     } else if (key == KEY_PGDN) {
-        if (xi_cur_line < (xi_line_count() - XI_SCREEN_LINES - 1)) {
-            xi_cur_line = xi_cur_line + XI_SCREEN_LINES;
+        if (xi_cur_line < (xi_line_count() - XI_SCREEN_ROWS - 1)) {
+            xi_cur_line = xi_cur_line + XI_SCREEN_ROWS;
         } else if (xi_line_count() > 1) {
             xi_cur_line = xi_line_count() - 1;
         }
